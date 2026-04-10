@@ -12,7 +12,7 @@ type ResolvedModule struct {
 	AST         *ast.Module
 	Env         *Environment
 	Annotations *Annotations
-	Errors      []ResolveError
+	Errors      []Error
 }
 
 // Environment holds all top-level declarations in scope.
@@ -22,13 +22,13 @@ type Environment struct {
 	Imports    map[string]*ResolvedModule
 }
 
-// ResolveError describes a name resolution failure.
-type ResolveError struct {
+// Error describes a name resolution failure.
+type Error struct {
 	Pos     ast.Span
 	Message string
 }
 
-func (e ResolveError) Error() string {
+func (e Error) Error() string {
 	return fmt.Sprintf("%s:%d:%d: %s", e.Pos.File, e.Pos.StartLine, e.Pos.StartCol, e.Message)
 }
 
@@ -67,7 +67,7 @@ var primitiveTypes = map[string]bool{
 type resolver struct {
 	env    *Environment
 	ann    *Annotations
-	errors []ResolveError
+	errors []Error
 	mod    *ast.Module
 }
 
@@ -109,7 +109,7 @@ func Resolve(mod *ast.Module, importLoader func(path string) (*ast.Module, error
 
 // errorf records a resolution error without stopping.
 func (r *resolver) errorf(span ast.Span, format string, args ...interface{}) {
-	r.errors = append(r.errors, ResolveError{
+	r.errors = append(r.errors, Error{
 		Pos:     span,
 		Message: fmt.Sprintf(format, args...),
 	})
