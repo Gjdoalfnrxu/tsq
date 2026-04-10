@@ -119,9 +119,11 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "TaintedField", Relation: "TaintedField", File: "tsq_taint.qll"},
 			{Name: "SanitizedEdge", Relation: "SanitizedEdge", File: "tsq_taint.qll"},
 			{Name: "TaintAlert", Relation: "TaintAlert", File: "tsq_taint.qll"},
+			// v2 Phase 2b: CodeQL-compatible DataFlow module
+			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
+			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
 		},
 		Unavailable: []UnavailableClass{
-			{Name: "DataFlow", Reason: "IPA-dependent; requires inter-procedural analysis engine", VersionTarget: "v3"},
 			{Name: "TaintTracking", Reason: "IPA-dependent; requires data flow framework", VersionTarget: "v3"},
 		},
 	}

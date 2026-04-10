@@ -9,17 +9,17 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	m := V1Manifest()
 	// v2: 28 original + 5 promoted from unavailable + 12 new v2 = 45
 	// But some relations share bridge classes. Count: 28 + 17 = 45
-	if got := len(m.Available); got != 69 {
-		t.Errorf("expected 69 available classes, got %d", got)
+	if got := len(m.Available); got != 71 {
+		t.Errorf("expected 71 available classes, got %d", got)
 	}
 }
 
 // TestV1ManifestUnavailableCount checks the expected number of unavailable classes.
 func TestV1ManifestUnavailableCount(t *testing.T) {
 	m := V1Manifest()
-	// v2: only DataFlow and TaintTracking remain unavailable
-	if got := len(m.Unavailable); got != 2 {
-		t.Errorf("expected 2 unavailable classes, got %d", got)
+	// v2: only TaintTracking remains unavailable (DataFlow now available via compat_dataflow.qll)
+	if got := len(m.Unavailable); got != 1 {
+		t.Errorf("expected 1 unavailable classes, got %d", got)
 	}
 }
 
@@ -35,12 +35,12 @@ func TestAllRelationsCovered(t *testing.T) {
 // TestCheckQueryWarnings verifies that importing unavailable classes produces warnings.
 func TestCheckQueryWarnings(t *testing.T) {
 	m := V1Manifest()
-	warnings := m.CheckQuery([]string{"DataFlow", "TaintTracking", "ASTNode"})
-	if len(warnings) != 2 {
-		t.Errorf("expected 2 warnings for DataFlow+TaintTracking, got %d", len(warnings))
+	warnings := m.CheckQuery([]string{"TaintTracking", "ASTNode"})
+	if len(warnings) != 1 {
+		t.Errorf("expected 1 warning for TaintTracking, got %d", len(warnings))
 	}
 	for _, w := range warnings {
-		if w.Import != "DataFlow" && w.Import != "TaintTracking" {
+		if w.Import != "TaintTracking" {
 			t.Errorf("unexpected warning import: %s", w.Import)
 		}
 	}

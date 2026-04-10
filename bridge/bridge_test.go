@@ -21,7 +21,7 @@ func TestBridgeFilesNotEmpty(t *testing.T) {
 // TestBridgeFilesParseBasicStructure does a lightweight structural parse
 // of each .qll file to verify they contain valid-looking QL class declarations.
 func TestBridgeFilesParseBasicStructure(t *testing.T) {
-	classRe := regexp.MustCompile(`(?m)^class\s+(\w+)\s+extends\s+`)
+	classRe := regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?class\s+(\w+)\s+extends\s+`)
 	predicateRe := regexp.MustCompile(`(?m)^\s+(?:override\s+)?(string|int|predicate|ASTNode|File|Call|JsxElement|Function|Parameter|CallArg|ParameterRest|ParameterOptional|ParamIsFunctionType|CallArgSpread|VarDecl|Assign|ExprMayRef|ExprIsCall|FieldRead|FieldWrite|Await|Cast|DestructureField|ArrayDestructure|DestructureRest|JsxAttribute|ImportBinding|ExportBinding|ExtractError|SchemaVersion|Contains)\s+\w+\(`)
 
 	files := LoadBridge()
@@ -96,16 +96,16 @@ func TestBridgeRelationArities(t *testing.T) {
 	}
 }
 
-// TestBridgeNoDataFlowClasses ensures we fail-closed: no DataFlow or
-// TaintTracking classes in the bridge.
-func TestBridgeNoDataFlowClasses(t *testing.T) {
-	forbidden := []string{"DataFlow", "TaintTracking", "TaintStep", "PathGraph"}
+// TestBridgeNoTaintTrackingClasses ensures we fail-closed: no TaintTracking
+// classes in the bridge (DataFlow is now allowed via compat_dataflow.qll).
+func TestBridgeNoTaintTrackingClasses(t *testing.T) {
+	forbidden := []string{"TaintTracking", "TaintStep"}
 	files := LoadBridge()
 	for name, data := range files {
 		src := string(data)
 		for _, kw := range forbidden {
 			if strings.Contains(src, "class "+kw) {
-				t.Errorf("bridge file %q contains forbidden class %q — fail-closed: no data flow in v1", name, kw)
+				t.Errorf("bridge file %q contains forbidden class %q — fail-closed: not yet implemented", name, kw)
 			}
 		}
 	}
