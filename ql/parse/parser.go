@@ -484,6 +484,19 @@ func (p *Parser) parseTypeRef() (*ast.TypeRef, error) {
 	startLine := p.current.Line
 	startCol := p.current.Col
 
+	// Support @type references (database types used in bridge .qll files).
+	if p.at(TokAt) {
+		p.advance()
+		ident, err := p.expect(TokIdent)
+		if err != nil {
+			return nil, err
+		}
+		return &ast.TypeRef{
+			Path: []string{"@" + ident.Lit},
+			Span: ast.Span{File: p.file, StartLine: startLine, StartCol: startCol},
+		}, nil
+	}
+
 	name, err := p.expect(TokIdent)
 	if err != nil {
 		return nil, err
