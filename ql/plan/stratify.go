@@ -11,7 +11,7 @@ type edgeKind int
 
 const (
 	edgePositive edgeKind = iota
-	edgeNegative // negative literal or aggregate dependency
+	edgeNegative          // negative literal or aggregate dependency
 )
 
 type depEdge struct {
@@ -177,7 +177,6 @@ func stratify(rules []datalog.Rule) ([][]datalog.Rule, []error) {
 	// Assign stratum numbers per SCC.
 	// Start with the topological order. For negative edges crossing SCC boundaries,
 	// ensure the dependency SCC has a strictly lower stratum than the using SCC.
-	sccIdx := map[string]int{} // SCC identifier (first pred) → index in ordered
 	sccOfPred := map[string]int{}
 	for i, scc := range ordered {
 		for _, p := range scc {
@@ -270,8 +269,6 @@ func stratify(rules []datalog.Rule) ([][]datalog.Rule, []error) {
 
 	// Predicates that only appear in bodies (base facts) → stratum 0.
 	// They don't have rules, so they're implicitly at stratum 0. No action needed.
-
-	_ = sccIdx // silence unused warning
 
 	return result, nil
 }

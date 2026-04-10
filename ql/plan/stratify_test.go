@@ -187,10 +187,10 @@ func TestStratifyAggregateTreatedLikeNegation(t *testing.T) {
 	aggLit := datalog.Literal{
 		Positive: true,
 		Agg: &datalog.Aggregate{
-			Func:     "count",
-			Var:      "x",
-			TypeName: "T",
-			Body:     []datalog.Literal{posLit("Q", "x")},
+			Func:      "count",
+			Var:       "x",
+			TypeName:  "T",
+			Body:      []datalog.Literal{posLit("Q", "x")},
 			ResultVar: datalog.Var{Name: "_v1"},
 		},
 	}

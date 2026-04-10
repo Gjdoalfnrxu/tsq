@@ -27,12 +27,16 @@ type PlannedRule struct {
 type JoinStep struct {
 	Literal  datalog.Literal // the literal being joined (may be negative)
 	JoinCols [][2]int        // pairs of (bodyVar, headVar) positions — for index building
-	IsFilter bool            // true if this step filters (not a new relation scan)
+	// IsFilter is true if all variables in Literal are already bound, meaning this step
+	// acts as a filter rather than introducing new bindings.
+	// Note: IsFilter=true on a negative literal (Literal.Positive==false) means anti-join,
+	// not positive membership filter. Callers must check Literal.Positive to distinguish.
+	IsFilter bool
 }
 
 // PlannedAggregate is an aggregate to evaluate after the stratum fixpoint.
 type PlannedAggregate struct {
-	ResultRelation string        // name of the relation that holds aggregate results
+	ResultRelation string // name of the relation that holds aggregate results
 	Agg            datalog.Aggregate
 	GroupByVars    []datalog.Var // variables that form the group key
 }

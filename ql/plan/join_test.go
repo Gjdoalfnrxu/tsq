@@ -169,6 +169,36 @@ func TestJoinComparisonPlacedAfterOperandsBound(t *testing.T) {
 	}
 }
 
+// TestJoinOrderAggregateAfterPositives: aggregate literal is placed after positive literals.
+func TestJoinOrderAggregateAfterPositives(t *testing.T) {
+	// P(x, total) :- A(x), count<y : T(y)>(total).
+	// The positive literal A(x) should come before the aggregate literal.
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: atom("P", "x", "total"),
+				Body: []datalog.Literal{posLit("A", "x"), aggLit("count", "T", "y", "total")},
+			},
+		},
+	}
+	ep, errs := plan.Plan(prog, nil)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	r := ep.Strata[0].Rules[0]
+	if len(r.JoinOrder) != 2 {
+		t.Fatalf("expected 2 join steps, got %d", len(r.JoinOrder))
+	}
+	// Positive literal A should come first.
+	if r.JoinOrder[0].Literal.Atom.Predicate != "A" {
+		t.Errorf("expected A first, got %s", r.JoinOrder[0].Literal.Atom.Predicate)
+	}
+	// Aggregate literal should come second.
+	if r.JoinOrder[1].Literal.Agg == nil {
+		t.Errorf("expected aggregate as second step")
+	}
+}
+
 // TestJoinNegativeLiteralPlacedAfterVarsBound.
 func TestJoinNegativeLiteralPlacedAfterVarsBound(t *testing.T) {
 	// P(x) :- A(x), not B(x).
