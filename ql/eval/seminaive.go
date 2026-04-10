@@ -40,7 +40,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 			headName := rule.Head.Predicate
 			headRel := allRels[headName]
 
-			newTuples := EvalRule(rule, allRels)
+			newTuples := Rule(rule, allRels)
 			for _, t := range newTuples {
 				if headRel.Add(t) {
 					dr, ok := deltaRels[headName]
@@ -76,7 +76,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				headName := rule.Head.Predicate
 				headRel := allRels[headName]
 
-				newTuples := EvalRuleDelta(rule, allRels, deltaRels)
+				newTuples := RuleDelta(rule, allRels, deltaRels)
 				for _, t := range newTuples {
 					if headRel.Add(t) {
 						dr, ok := nextDelta[headName]
@@ -93,7 +93,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 
 		// Evaluate aggregates after fixpoint.
 		for _, agg := range stratum.Aggregates {
-			resultRel := EvalAggregate(agg, allRels)
+			resultRel := Aggregate(agg, allRels)
 			allRels[agg.ResultRelation] = resultRel
 		}
 	}

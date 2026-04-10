@@ -7,10 +7,10 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
-// EvalAggregate evaluates a planned aggregate and returns the result relation.
+// Aggregate evaluates a planned aggregate and returns the result relation.
 // The result relation is named agg.ResultRelation and contains
 // (groupKey..., aggregatedValue) tuples.
-func EvalAggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
+func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 	// Compute bindings over the aggregate body using raw literals (no planner ordering).
 	bindings := evalLiterals(agg.Agg.Body, rels)
 

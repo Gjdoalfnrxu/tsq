@@ -51,9 +51,8 @@ func cmpStep(op string, left, right datalog.Term) plan.JoinStep {
 	}
 }
 
-func v(name string) datalog.Var      { return datalog.Var{Name: name} }
-func ic(n int64) datalog.IntConst    { return datalog.IntConst{Value: n} }
-func sc(s string) datalog.StringConst { return datalog.StringConst{Value: s} }
+func v(name string) datalog.Var   { return datalog.Var{Name: name} }
+func ic(n int64) datalog.IntConst { return datalog.IntConst{Value: n} }
 
 // head builds a PlannedRule head atom.
 func head(pred string, args ...datalog.Term) datalog.Atom {
@@ -63,9 +62,11 @@ func head(pred string, args ...datalog.Term) datalog.Atom {
 // Test 2-relation join: Edge(x,y) ∧ Edge(y,z) → Path(x,z)
 // Edge: (1,2),(2,3),(3,4)
 // 2-hop paths via common intermediate:
-//   x=1,y=2 → Edge(2,z): z=3 → Path(1,3)
-//   x=2,y=3 → Edge(3,z): z=4 → Path(2,4)
-//   x=3,y=4 → no Edge(4,...) → nothing
+//
+//	x=1,y=2 → Edge(2,z): z=3 → Path(1,3)
+//	x=2,y=3 → Edge(3,z): z=4 → Path(2,4)
+//	x=3,y=4 → no Edge(4,...) → nothing
+//
 // Result: 2 tuples.
 func TestEvalRuleTwoRelationJoin(t *testing.T) {
 	edge := makeRelation("Edge", 2,
@@ -83,7 +84,7 @@ func TestEvalRuleTwoRelationJoin(t *testing.T) {
 		},
 	}
 
-	results := EvalRule(rule, rels)
+	results := Rule(rule, rels)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 path tuples (2-hops), got %d: %v", len(results), results)
 	}
@@ -114,7 +115,7 @@ func TestEvalRuleThreeRelationJoin(t *testing.T) {
 		},
 	}
 
-	results := EvalRule(rule, rels)
+	results := Rule(rule, rels)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d: %v", len(results), results)
 	}
@@ -138,7 +139,7 @@ func TestEvalRuleNoMatch(t *testing.T) {
 		},
 	}
 
-	results := EvalRule(rule, rels)
+	results := Rule(rule, rels)
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results, got %d: %v", len(results), results)
 	}
@@ -162,7 +163,7 @@ func TestEvalRuleComparisonFilter(t *testing.T) {
 		},
 	}
 
-	results := EvalRule(rule, rels)
+	results := Rule(rule, rels)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results (x=1,x=2), got %d: %v", len(results), results)
 	}
@@ -184,7 +185,7 @@ func TestEvalRuleSelfJoin(t *testing.T) {
 		},
 	}
 
-	results := EvalRule(rule, rels)
+	results := Rule(rule, rels)
 	// Each edge should match exactly itself once.
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d: %v", len(results), results)
@@ -205,7 +206,7 @@ func TestEvalRuleAntiJoin(t *testing.T) {
 		},
 	}
 
-	results := EvalRule(rule, rels)
+	results := Rule(rule, rels)
 	// x=2 is in B, so excluded. Expected: x=1, x=3.
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d: %v", len(results), results)

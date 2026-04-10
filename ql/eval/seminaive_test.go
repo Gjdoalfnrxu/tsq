@@ -195,7 +195,8 @@ func TestSeminaiveTwoStrataWithNegation(t *testing.T) {
 //
 // Base: Val(1), Val(2), Val(3).
 // Stratum 0: A(x) :- Val(x). [fixpoint: A = {1,2,3}]
-//            count(x | A(x)) → Cnt(3).
+//
+//	count(x | A(x)) → Cnt(3).
 func TestSeminaiveAggregateAfterFixpoint(t *testing.T) {
 	val := makeRelation("Val", 1, IntVal{1}, IntVal{2}, IntVal{3})
 	baseRels := map[string]*Relation{"Val": val}
@@ -251,6 +252,84 @@ func TestSeminaiveAggregateAfterFixpoint(t *testing.T) {
 	cnt := rs.Rows[0][0].(IntVal).V
 	if cnt != 3 {
 		t.Errorf("expected count=3, got %d", cnt)
+	}
+}
+
+// TestSeminaiveSelfRecursivePath verifies correct semi-naive evaluation for
+// a purely self-recursive path rule on a 4-node chain: 1→2→3→4.
+//
+// Rules:
+//
+//	Path(x,y) :- Edge(x,y).
+//	Path(x,z) :- Path(x,y), Path(y,z).
+//
+// Expected 6 pairs: (1,2),(2,3),(3,4),(1,3),(2,4),(1,4).
+// The purely self-recursive rule requires position-aware delta substitution:
+// each semi-naive variant must use delta at exactly ONE of the two Path
+// positions, not both. Using delta at both would over-count and miss pairs.
+func TestSeminaiveSelfRecursivePath(t *testing.T) {
+	edge := makeRelation("Edge", 2,
+		IntVal{1}, IntVal{2},
+		IntVal{2}, IntVal{3},
+		IntVal{3}, IntVal{4},
+	)
+	baseRels := map[string]*Relation{"Edge": edge}
+
+	ep := &plan.ExecutionPlan{
+		Strata: []plan.Stratum{
+			{
+				Rules: []plan.PlannedRule{
+					// Path(x,y) :- Edge(x,y).
+					{
+						Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{v("x"), v("y")}},
+						JoinOrder: []plan.JoinStep{
+							positiveStep("Edge", v("x"), v("y")),
+						},
+					},
+					// Path(x,z) :- Path(x,y), Path(y,z).
+					{
+						Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{v("x"), v("z")}},
+						JoinOrder: []plan.JoinStep{
+							positiveStep("Path", v("x"), v("y")),
+							positiveStep("Path", v("y"), v("z")),
+						},
+					},
+				},
+			},
+		},
+		Query: &plan.PlannedQuery{
+			Select: []datalog.Term{v("a"), v("b")},
+			JoinOrder: []plan.JoinStep{
+				positiveStep("Path", v("a"), v("b")),
+			},
+		},
+	}
+
+	rs, err := Evaluate(context.Background(), ep, baseRels)
+	if err != nil {
+		t.Fatalf("Evaluate failed: %v", err)
+	}
+
+	got := make(map[[2]int64]bool)
+	for _, row := range rs.Rows {
+		from := row[0].(IntVal).V
+		to := row[1].(IntVal).V
+		got[[2]int64{from, to}] = true
+	}
+
+	expected := [][2]int64{
+		{1, 2}, {2, 3}, {3, 4},
+		{1, 3}, {2, 4},
+		{1, 4},
+	}
+
+	if len(rs.Rows) != len(expected) {
+		t.Fatalf("expected %d path tuples, got %d: %v", len(expected), len(rs.Rows), rs.Rows)
+	}
+	for _, pair := range expected {
+		if !got[pair] {
+			t.Errorf("missing path (%d,%d)", pair[0], pair[1])
+		}
 	}
 }
 

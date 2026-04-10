@@ -57,7 +57,7 @@ func TestAggCount(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
@@ -83,7 +83,7 @@ func TestAggCountNoGroup(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "x", nil, "count", "cnt")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 result, got %d", result.Len())
@@ -104,7 +104,7 @@ func TestAggMin(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "v", []string{"g"}, "min", "minv")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
@@ -125,7 +125,7 @@ func TestAggMax(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "v", []string{"g"}, "max", "maxv")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
@@ -146,7 +146,7 @@ func TestAggSum(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "v", []string{"g"}, "sum", "sumv")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
@@ -173,7 +173,7 @@ func TestAggAvg(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "v", []string{"g"}, "avg", "avgv")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
@@ -190,7 +190,7 @@ func TestAggEmptyInput(t *testing.T) {
 	rels := map[string]*Relation{"R": rel}
 
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result := EvalAggregate(agg, rels)
+	result := Aggregate(agg, rels)
 
 	// No groups → empty result.
 	if result.Len() != 0 {

@@ -40,21 +40,28 @@ func lookupTerm(t datalog.Term, b binding) (Value, bool) {
 	}
 }
 
-// EvalRule evaluates a single PlannedRule against the given relations.
+// Rule evaluates a single PlannedRule against the given relations.
 // Returns all result tuples for the rule head.
-func EvalRule(rule plan.PlannedRule, rels map[string]*Relation) []Tuple {
+func Rule(rule plan.PlannedRule, rels map[string]*Relation) []Tuple {
 	initial := []binding{make(binding)}
 	bindings := evalJoinSteps(rule.JoinOrder, rels, initial)
 	return projectHead(rule.Head, bindings)
 }
 
-// EvalRuleDelta evaluates a rule in semi-naive mode.
-// It generates one variant per body literal, substituting that literal's
-// relation with the delta relation (new tuples only). Results are unioned
-// and returned; tuples already in the head full relation are excluded.
-func EvalRuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[string]*Relation) []Tuple {
-	// Build the augmented relation set for each variant.
-	// For each step i that has a delta, generate results using delta for that step.
+// RuleDelta evaluates a rule in semi-naive mode.
+// It generates one variant per body literal, substituting ONLY that literal's
+// position with the delta relation (new tuples only). Results are unioned
+// and returned.
+//
+// The substitution is position-aware: for a rule like
+//
+//	Path(x,z) :- Path(x,y), Path(y,z)
+//
+// when di=0, only the first Path literal uses delta; the second uses full.
+// When di=1, only the second Path literal uses delta; the first uses full.
+// This avoids the delta×delta over-counting that a global predicate replacement
+// would produce.
+func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[string]*Relation) []Tuple {
 	seen := make(map[string]struct{})
 	var results []Tuple
 
@@ -72,10 +79,9 @@ func EvalRuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels m
 			continue
 		}
 
-		// Build a merged relation view where step i uses delta only.
-		deltaView := buildDeltaView(rels, deltaRels, pred, delta, di)
+		// Evaluate the join sequence with delta substitution only at step di.
 		initial := []binding{make(binding)}
-		bindings := evalJoinSteps(rule.JoinOrder, deltaView, initial)
+		bindings := evalJoinStepsWithDelta(rule.JoinOrder, rels, deltaRels, di, delta, initial)
 		tuples := projectHead(rule.Head, bindings)
 		for _, t := range tuples {
 			k := tupleKey(t)
@@ -88,23 +94,6 @@ func EvalRuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels m
 	return results
 }
 
-// buildDeltaView returns a map of relations where the named predicate is
-// replaced by a relation containing only the delta tuples (for delta at
-// step di). All other relations are passed through unchanged.
-func buildDeltaView(rels map[string]*Relation, deltaRels map[string]*Relation, pred string, delta *Relation, _ int) map[string]*Relation {
-	view := make(map[string]*Relation, len(rels))
-	for k, v := range rels {
-		view[k] = v
-	}
-	// Replace with delta-only relation.
-	dr := NewRelation(pred, delta.Arity)
-	for _, t := range delta.Tuples() {
-		dr.Add(t)
-	}
-	view[pred] = dr
-	return view
-}
-
 // evalJoinSteps processes a sequence of JoinSteps, starting from the given
 // bindings, and returns all final bindings.
 func evalJoinSteps(steps []plan.JoinStep, rels map[string]*Relation, initial []binding) []binding {
@@ -114,6 +103,34 @@ func evalJoinSteps(steps []plan.JoinStep, rels map[string]*Relation, initial []b
 			return nil
 		}
 		current = applyStep(step, rels, current)
+	}
+	return current
+}
+
+// evalJoinStepsWithDelta processes a sequence of JoinSteps like evalJoinSteps,
+// but at step deltaIdx it substitutes the relation for deltaRel (the delta
+// relation for that predicate). All other steps use the full relations in rels.
+// This ensures only one literal position is delta-substituted per variant,
+// which is required for correct semi-naive evaluation.
+func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, deltaRels map[string]*Relation, deltaIdx int, deltaRel *Relation, initial []binding) []binding {
+	current := initial
+	for i, step := range steps {
+		if len(current) == 0 {
+			return nil
+		}
+		if i == deltaIdx {
+			// Use the delta relation for this step only.
+			// Build a merged map where only this literal's predicate is replaced.
+			pred := step.Literal.Atom.Predicate
+			merged := make(map[string]*Relation, len(rels)+1)
+			for k, v := range rels {
+				merged[k] = v
+			}
+			merged[pred] = deltaRel
+			current = applyStep(step, merged, current)
+		} else {
+			current = applyStep(step, rels, current)
+		}
 	}
 	return current
 }
@@ -149,7 +166,7 @@ func applyComparison(cmp *datalog.Comparison, bindings []binding) []binding {
 			// Unbound variable in comparison — skip (shouldn't happen with valid plans).
 			continue
 		}
-		ok, err := EvalComparison(cmp.Op, lv, rv)
+		ok, err := Compare(cmp.Op, lv, rv)
 		if err == nil && ok {
 			out = append(out, b)
 		}
@@ -211,7 +228,7 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 					match = false
 					break
 				}
-				eq, err := EvalComparison("=", t[col], boundVals[j])
+				eq, err := Compare("=", t[col], boundVals[j])
 				if err != nil || !eq {
 					match = false
 					break
@@ -281,7 +298,7 @@ func applyNegative(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 					match = false
 					break
 				}
-				eq, err := EvalComparison("=", t[col], boundVals[j])
+				eq, err := Compare("=", t[col], boundVals[j])
 				if err != nil || !eq {
 					match = false
 					break

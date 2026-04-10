@@ -68,15 +68,26 @@ func partialKey(t Tuple, cols []int) string {
 	return b.String()
 }
 
-// colMask builds a uint64 bitmask from a list of column indices.
-func colMask(cols []int) uint64 {
-	var mask uint64
-	for _, c := range cols {
-		if c < 64 {
-			mask |= 1 << uint(c)
+// sortedColKey returns a canonical string key for a column list, based on the
+// sorted column indices. This ensures Index([0,2]) and Index([2,0]) produce
+// the same key, and that Lookup always uses the same ordering as Index build.
+func sortedColKey(cols []int) string {
+	// Copy and sort so the key is order-independent.
+	sorted := make([]int, len(cols))
+	copy(sorted, cols)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
 		}
 	}
-	return mask
+	var b strings.Builder
+	for i, c := range sorted {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%d", c)
+	}
+	return b.String()
 }
 
 // HashIndex maps a key (values of specific columns) to matching tuple indices.
@@ -104,8 +115,7 @@ type Relation struct {
 	Arity   int
 	tuples  []Tuple
 	set     map[string]struct{} // deduplication
-	Delta   []Tuple             // new tuples from last iteration (semi-naive)
-	indexes map[uint64]*HashIndex
+	indexes map[string]*HashIndex
 }
 
 // NewRelation creates an empty relation.
@@ -114,7 +124,7 @@ func NewRelation(name string, arity int) *Relation {
 		Name:    name,
 		Arity:   arity,
 		set:     make(map[string]struct{}),
-		indexes: make(map[uint64]*HashIndex),
+		indexes: make(map[string]*HashIndex),
 	}
 }
 
@@ -127,11 +137,10 @@ func (r *Relation) Add(t Tuple) bool {
 	}
 	r.set[k] = struct{}{}
 	r.tuples = append(r.tuples, t)
-	// Invalidate all indexes since the tuple list grew.
-	for mask, idx := range r.indexes {
+	// Update all existing indexes incrementally.
+	for _, idx := range r.indexes {
 		colKey := partialKey(t, idx.cols)
 		idx.index[colKey] = append(idx.index[colKey], len(r.tuples)-1)
-		_ = mask
 	}
 	return true
 }
@@ -153,19 +162,28 @@ func (r *Relation) Len() int {
 }
 
 // Index returns (building lazily) a HashIndex over the given columns.
+// cols is sorted canonically so Index([0,2]) and Index([2,0]) share one index.
 func (r *Relation) Index(cols []int) *HashIndex {
-	mask := colMask(cols)
-	if hi, ok := r.indexes[mask]; ok {
+	// Canonicalise col order for the map key and index build.
+	sorted := make([]int, len(cols))
+	copy(sorted, cols)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	key := sortedColKey(sorted)
+	if hi, ok := r.indexes[key]; ok {
 		return hi
 	}
 	hi := &HashIndex{
-		cols:  cols,
+		cols:  sorted,
 		index: make(map[string][]int, len(r.tuples)),
 	}
 	for i, t := range r.tuples {
-		k := partialKey(t, cols)
+		k := partialKey(t, sorted)
 		hi.index[k] = append(hi.index[k], i)
 	}
-	r.indexes[mask] = hi
+	r.indexes[key] = hi
 	return hi
 }

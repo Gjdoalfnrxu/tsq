@@ -5,12 +5,12 @@ import (
 	"strconv"
 )
 
-// EvalComparison evaluates a comparison between two Values.
+// Compare evaluates a comparison between two Values.
 // Handles "=", "!=", "<", ">", "<=", ">=".
 // IntVal vs IntVal: numeric comparison.
 // StrVal vs StrVal: lexicographic comparison.
 // Mixed types: "!=" returns true, "=" returns false, others return error.
-func EvalComparison(op string, left, right Value) (bool, error) {
+func Compare(op string, left, right Value) (bool, error) {
 	switch l := left.(type) {
 	case IntVal:
 		switch r := right.(type) {
@@ -84,10 +84,10 @@ func mixedTypeComparison(op string) (bool, error) {
 	}
 }
 
-// EvalArithmetic evaluates an arithmetic operation between two Values.
+// Arithmetic evaluates an arithmetic operation between two Values.
 // Handles "+", "-", "*", "/", "%".
 // IntVal only for numeric ops; StrVal "+" as concatenation.
-func EvalArithmetic(op string, left, right Value) (Value, error) {
+func Arithmetic(op string, left, right Value) (Value, error) {
 	if op == "+" {
 		// Allow string concatenation.
 		ls, lok := left.(StrVal)

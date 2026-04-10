@@ -15,7 +15,8 @@ import (
 // simple query plan, evaluates it, and checks results.
 //
 // Fact: Node(id=1, file=10, kind="function", startLine=1, startCol=0, endLine=5, endCol=1)
-//       Node(id=2, file=10, kind="call",     startLine=3, startCol=2, endLine=3, endCol=10)
+//
+//	Node(id=2, file=10, kind="call",     startLine=3, startCol=2, endLine=3, endCol=10)
 //
 // Query: Find all Node(id, _, kind, _, _, _, _) where kind = "function" → expect id=1.
 func TestEvaluatorIntegration(t *testing.T) {
