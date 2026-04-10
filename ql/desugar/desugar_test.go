@@ -1047,3 +1047,179 @@ module M {
 		t.Error("expected M::Base rule body to contain M::Sub")
 	}
 }
+
+// --- Phase 1e: String builtins ---
+
+func TestDesugarStringBuiltinLength(t *testing.T) {
+	src := `
+class Foo extends @foo {
+	Foo() { any() }
+	string getName() { result = "hi" }
+}
+from string s
+where s.length() > 0
+select s
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// The query body should contain __builtin_string_length
+	if prog.Query == nil {
+		t.Fatal("expected query")
+	}
+	found := false
+	for _, lit := range prog.Query.Body {
+		if lit.Atom.Predicate == "__builtin_string_length" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected __builtin_string_length in query body")
+		t.Logf("query body: %v", prog.Query.Body)
+	}
+}
+
+func TestDesugarStringBuiltinToUpperCase(t *testing.T) {
+	src := `
+from string s
+where s = "hello"
+select s.toUpperCase()
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	if prog.Query == nil {
+		t.Fatal("expected query")
+	}
+	found := false
+	for _, lit := range prog.Query.Body {
+		if lit.Atom.Predicate == "__builtin_string_toUpperCase" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected __builtin_string_toUpperCase in query body")
+	}
+}
+
+// --- Phase 1f: If-then-else ---
+
+func TestDesugarIfThenElse(t *testing.T) {
+	src := `predicate foo(int x) {
+		if x > 0 then x < 100 else x > -100
+	}`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// IfThenElse desugars to a disjunction, which produces synthetic rules
+	rule := findRuleExact(prog, "foo")
+	if rule == nil {
+		t.Fatal("expected rule for foo")
+	}
+
+	// The body should reference a synthetic _disj predicate
+	found := false
+	for _, lit := range rule.Body {
+		if strings.HasPrefix(lit.Atom.Predicate, "_disj") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected synthetic _disj predicate from if-then-else desugaring")
+		t.Logf("body: %v", rule.Body)
+	}
+}
+
+// --- Phase 1g: Transitive closure ---
+
+func TestDesugarClosurePlus(t *testing.T) {
+	src := `predicate foo() { edge+(x, y) }`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	rule := findRuleExact(prog, "foo")
+	if rule == nil {
+		t.Fatal("expected rule for foo")
+	}
+
+	// The body should reference a synthetic _closure predicate
+	closurePred := ""
+	for _, lit := range rule.Body {
+		if strings.HasPrefix(lit.Atom.Predicate, "_closure") {
+			closurePred = lit.Atom.Predicate
+			break
+		}
+	}
+	if closurePred == "" {
+		t.Fatal("expected synthetic _closure predicate in body")
+	}
+
+	// There should be synthetic rules for the closure:
+	// _closure(x, y) :- edge(x, y).
+	// _closure(x, y) :- edge(x, z), _closure(z, y).
+	var closureRules []*datalog.Rule
+	for i := range prog.Rules {
+		if prog.Rules[i].Head.Predicate == closurePred {
+			closureRules = append(closureRules, &prog.Rules[i])
+		}
+	}
+	if len(closureRules) != 2 {
+		t.Fatalf("expected 2 closure rules, got %d", len(closureRules))
+	}
+
+	// One should have body with just edge, another with edge + closure
+	baseFound := false
+	recursiveFound := false
+	for _, r := range closureRules {
+		if len(r.Body) == 1 && r.Body[0].Atom.Predicate == "edge" {
+			baseFound = true
+		}
+		if len(r.Body) == 2 {
+			hasEdge := false
+			hasClosure := false
+			for _, lit := range r.Body {
+				if lit.Atom.Predicate == "edge" {
+					hasEdge = true
+				}
+				if lit.Atom.Predicate == closurePred {
+					hasClosure = true
+				}
+			}
+			if hasEdge && hasClosure {
+				recursiveFound = true
+			}
+		}
+	}
+	if !baseFound {
+		t.Error("expected base closure rule: _closure(x,y) :- edge(x,y)")
+	}
+	if !recursiveFound {
+		t.Error("expected recursive closure rule: _closure(x,y) :- edge(x,z), _closure(z,y)")
+	}
+}
+
+func TestDesugarClosureStar(t *testing.T) {
+	src := `predicate foo() { edge*(x, y) }`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	rule := findRuleExact(prog, "foo")
+	if rule == nil {
+		t.Fatal("expected rule for foo")
+	}
+
+	// Star closure desugars as (x = y) or edge+(x, y), which means a synthetic _disj
+	found := false
+	for _, lit := range rule.Body {
+		if strings.HasPrefix(lit.Atom.Predicate, "_disj") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected synthetic _disj predicate from star closure desugaring")
+	}
+}
