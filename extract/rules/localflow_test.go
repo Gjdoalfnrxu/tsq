@@ -279,7 +279,8 @@ func TestAllSystemRulesCount(t *testing.T) {
 	lf := LocalFlowRules()
 	sm := SummaryRules()
 	co := CompositionRules()
-	expected := len(cg) + len(lf) + len(sm) + len(co)
+	ta := TaintRules()
+	expected := len(cg) + len(lf) + len(sm) + len(co) + len(ta)
 	if len(all) != expected {
 		t.Errorf("expected %d rules, got %d", expected, len(all))
 	}

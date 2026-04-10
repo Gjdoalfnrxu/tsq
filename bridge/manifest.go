@@ -109,9 +109,14 @@ func v2Manifest() *CapabilityManifest {
 			// v2 Phase C3: inter-procedural composition
 			{Name: "InterFlow", Relation: "InterFlow", File: "tsq_composition.qll"},
 			{Name: "FlowStar", Relation: "FlowStar", File: "tsq_composition.qll"},
-			// v2 Phase D placeholders: taint analysis base relations
+			// v2 Phase D: taint analysis
 			{Name: "TaintSink", Relation: "TaintSink", File: "tsq_taint.qll"},
 			{Name: "TaintSource", Relation: "TaintSource", File: "tsq_taint.qll"},
+			{Name: "Sanitizer", Relation: "Sanitizer", File: "tsq_taint.qll"},
+			{Name: "TaintedSym", Relation: "TaintedSym", File: "tsq_taint.qll"},
+			{Name: "TaintedField", Relation: "TaintedField", File: "tsq_taint.qll"},
+			{Name: "SanitizedEdge", Relation: "SanitizedEdge", File: "tsq_taint.qll"},
+			{Name: "TaintAlert", Relation: "TaintAlert", File: "tsq_taint.qll"},
 		},
 		Unavailable: []UnavailableClass{
 			{Name: "DataFlow", Reason: "IPA-dependent; requires inter-procedural analysis engine", VersionTarget: "v3"},

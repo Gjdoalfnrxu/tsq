@@ -304,7 +304,7 @@ func init() {
 		{Name: "dstSym", Type: TypeEntityRef},
 	}})
 
-	// v2 Phase D placeholders: taint analysis base relations (empty until Phase D)
+	// v2 Phase D: taint analysis base relations
 	RegisterRelation(RelationDef{Name: "TaintSink", Version: 2, Columns: []ColumnDef{
 		{Name: "sinkExpr", Type: TypeEntityRef},
 		{Name: "sinkKind", Type: TypeString},
@@ -312,6 +312,32 @@ func init() {
 	RegisterRelation(RelationDef{Name: "TaintSource", Version: 2, Columns: []ColumnDef{
 		{Name: "srcExpr", Type: TypeEntityRef},
 		{Name: "sourceKind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "Sanitizer", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "kind", Type: TypeString},
+	}})
+
+	// v2 Phase D: taint analysis derived relations
+	RegisterRelation(RelationDef{Name: "TaintedSym", Version: 2, Columns: []ColumnDef{
+		{Name: "sym", Type: TypeEntityRef},
+		{Name: "kind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "TaintedField", Version: 2, Columns: []ColumnDef{
+		{Name: "baseSym", Type: TypeEntityRef},
+		{Name: "fieldName", Type: TypeString},
+		{Name: "kind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "SanitizedEdge", Version: 2, Columns: []ColumnDef{
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
+		{Name: "kind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "TaintAlert", Version: 2, Columns: []ColumnDef{
+		{Name: "srcExpr", Type: TypeEntityRef},
+		{Name: "sinkExpr", Type: TypeEntityRef},
+		{Name: "srcKind", Type: TypeString},
+		{Name: "sinkKind", Type: TypeString},
 	}})
 
 	// Diagnostics
