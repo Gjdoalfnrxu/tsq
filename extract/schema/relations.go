@@ -340,6 +340,11 @@ func init() {
 		{Name: "sinkKind", Type: TypeString},
 	}})
 
+	// v2 Phase F: framework-derived relations
+	RegisterRelation(RelationDef{Name: "ExpressHandler", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},
