@@ -192,6 +192,26 @@ type Forall struct {
 
 func (Forall) formulaNode() {}
 
+// IfThenElse: if cond then thenBranch else elseBranch
+type IfThenElse struct {
+	BaseFormula
+	Cond Formula
+	Then Formula
+	Else Formula
+}
+
+func (IfThenElse) formulaNode() {}
+
+// ClosureCall: pred+(args...) or pred*(args...)
+type ClosureCall struct {
+	BaseFormula
+	Name string // predicate name
+	Plus bool   // true for +, false for *
+	Args []Expr
+}
+
+func (ClosureCall) formulaNode() {}
+
 // None: none() — always false
 type None struct{ BaseFormula }
 

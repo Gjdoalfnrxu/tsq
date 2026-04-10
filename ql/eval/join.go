@@ -149,6 +149,22 @@ func applyStep(step plan.JoinStep, rels map[string]*Relation, bindings []binding
 		return bindings
 	}
 
+	// Builtin predicate — evaluate procedurally.
+	if IsBuiltin(lit.Atom.Predicate) {
+		if lit.Positive {
+			return ApplyBuiltin(lit.Atom, bindings)
+		}
+		// Negated builtin: keep bindings where the builtin produces no results.
+		var out []binding
+		for _, b := range bindings {
+			result := ApplyBuiltin(lit.Atom, []binding{b})
+			if len(result) == 0 {
+				out = append(out, b)
+			}
+		}
+		return out
+	}
+
 	if lit.Positive {
 		return applyPositive(lit.Atom, rels, bindings)
 	}

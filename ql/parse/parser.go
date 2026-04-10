@@ -39,6 +39,30 @@ func (p *Parser) advance() Token {
 	return prev
 }
 
+// parserState captures the parser and lexer state for backtracking.
+type parserState struct {
+	current Token
+	lexPos  int
+	lexLine int
+	lexCol  int
+}
+
+func (p *Parser) saveState() parserState {
+	return parserState{
+		current: p.current,
+		lexPos:  p.lexer.pos,
+		lexLine: p.lexer.line,
+		lexCol:  p.lexer.col,
+	}
+}
+
+func (p *Parser) restoreState(s parserState) {
+	p.current = s.current
+	p.lexer.pos = s.lexPos
+	p.lexer.line = s.lexLine
+	p.lexer.col = s.lexCol
+}
+
 func (p *Parser) at(t TokenType) bool {
 	return p.current.Type == t
 }
@@ -89,6 +113,12 @@ func tokenName(t TokenType) string {
 		return "'='"
 	case TokEOF:
 		return "EOF"
+	case TokKwIf:
+		return "'if'"
+	case TokKwThen:
+		return "'then'"
+	case TokKwElse:
+		return "'else'"
 	default:
 		return fmt.Sprintf("token(%d)", t)
 	}
@@ -692,12 +722,68 @@ func (p *Parser) parseNot() (ast.Formula, error) {
 			Formula:     f,
 		}, nil
 	}
+	if p.at(TokKwIf) {
+		return p.parseIfThenElse()
+	}
 	return p.parseComparisonOrAtom()
+}
+
+func (p *Parser) parseIfThenElse() (ast.Formula, error) {
+	tok := p.advance() // consume 'if'
+	cond, err := p.parseFormula()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokKwThen); err != nil {
+		return nil, err
+	}
+	thenF, err := p.parseFormula()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokKwElse); err != nil {
+		return nil, err
+	}
+	elseF, err := p.parseFormula()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.IfThenElse{
+		BaseFormula: ast.BaseFormula{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},
+		Cond:        cond,
+		Then:        thenF,
+		Else:        elseF,
+	}, nil
 }
 
 func (p *Parser) parseComparisonOrAtom() (ast.Formula, error) {
 	// Try to parse an expression, and if followed by comparison op or instanceof, make it a comparison/instanceof.
 	// Otherwise, it must be a formula atom (predicate call, exists, forall, etc.)
+
+	// Check for closure call: ident+(args...) or ident*(args...)
+	if p.at(TokIdent) {
+		saved := p.saveState()
+		name := p.advance()
+		if p.at(TokPlus) || p.at(TokStar) {
+			isPlus := p.at(TokPlus)
+			p.advance() // consume + or *
+			if p.at(TokLParen) {
+				// This is a closure call
+				args, err := p.parseArgList()
+				if err != nil {
+					return nil, err
+				}
+				return &ast.ClosureCall{
+					BaseFormula: ast.BaseFormula{Span: ast.Span{File: p.file, StartLine: name.Line, StartCol: name.Col}},
+					Name:        name.Lit,
+					Plus:        isPlus,
+					Args:        args,
+				}, nil
+			}
+		}
+		// Not a closure call — restore state
+		p.restoreState(saved)
+	}
 
 	// Check for formula atoms first
 	switch p.current.Type {

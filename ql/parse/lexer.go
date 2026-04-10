@@ -69,6 +69,9 @@ const (
 	TokKwMax
 	TokKwSum
 	TokKwAvg
+	TokKwIf
+	TokKwThen
+	TokKwElse
 
 	TokEOF
 	TokError // malformed input
@@ -104,6 +107,9 @@ var keywords = map[string]TokenType{
 	"max":        TokKwMax,
 	"sum":        TokKwSum,
 	"avg":        TokKwAvg,
+	"if":         TokKwIf,
+	"then":       TokKwThen,
+	"else":       TokKwElse,
 }
 
 // Token is a single QL token.

@@ -963,3 +963,110 @@ func TestLexerModulePrivateKeywords(t *testing.T) {
 		t.Errorf("expected TokKwPrivate, got %d (lit=%q)", tok.Type, tok.Lit)
 	}
 }
+
+// --- Phase 1e-1g tests ---
+
+func TestLexerIfThenElseKeywords(t *testing.T) {
+	l := parse.NewLexer("if then else", "test.ql")
+	expected := []parse.TokenType{parse.TokKwIf, parse.TokKwThen, parse.TokKwElse, parse.TokEOF}
+	for i, exp := range expected {
+		tok := l.Next()
+		if tok.Type != exp {
+			t.Errorf("token %d: expected type %d, got %d (lit=%q)", i, exp, tok.Type, tok.Lit)
+		}
+	}
+}
+
+func TestIfThenElse(t *testing.T) {
+	mod := mustParse(t, `predicate foo() { if a() then b() else c() }`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	ite, ok := body.(*ast.IfThenElse)
+	if !ok {
+		t.Fatalf("expected IfThenElse, got %T", body)
+	}
+	condPC, ok := ite.Cond.(*ast.PredicateCall)
+	if !ok {
+		t.Fatalf("expected PredicateCall for cond, got %T", ite.Cond)
+	}
+	if condPC.Name != "a" {
+		t.Errorf("expected cond name 'a', got %q", condPC.Name)
+	}
+	thenPC, ok := ite.Then.(*ast.PredicateCall)
+	if !ok {
+		t.Fatalf("expected PredicateCall for then, got %T", ite.Then)
+	}
+	if thenPC.Name != "b" {
+		t.Errorf("expected then name 'b', got %q", thenPC.Name)
+	}
+	elsePC, ok := ite.Else.(*ast.PredicateCall)
+	if !ok {
+		t.Fatalf("expected PredicateCall for else, got %T", ite.Else)
+	}
+	if elsePC.Name != "c" {
+		t.Errorf("expected else name 'c', got %q", elsePC.Name)
+	}
+}
+
+func TestIfThenElseComplex(t *testing.T) {
+	mod := mustParse(t, `predicate foo() { if a() and b() then c() else d() }`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	ite, ok := body.(*ast.IfThenElse)
+	if !ok {
+		t.Fatalf("expected IfThenElse, got %T", body)
+	}
+	_, ok = ite.Cond.(*ast.Conjunction)
+	if !ok {
+		t.Fatalf("expected Conjunction for cond, got %T", ite.Cond)
+	}
+}
+
+func TestClosureCallPlus(t *testing.T) {
+	mod := mustParse(t, `predicate foo() { reaches+(x, y) }`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	cc, ok := body.(*ast.ClosureCall)
+	if !ok {
+		t.Fatalf("expected ClosureCall, got %T", body)
+	}
+	if cc.Name != "reaches" {
+		t.Errorf("expected name 'reaches', got %q", cc.Name)
+	}
+	if !cc.Plus {
+		t.Error("expected Plus=true")
+	}
+	if len(cc.Args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(cc.Args))
+	}
+}
+
+func TestClosureCallStar(t *testing.T) {
+	mod := mustParse(t, `predicate foo() { reaches*(x, y) }`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	cc, ok := body.(*ast.ClosureCall)
+	if !ok {
+		t.Fatalf("expected ClosureCall, got %T", body)
+	}
+	if cc.Name != "reaches" {
+		t.Errorf("expected name 'reaches', got %q", cc.Name)
+	}
+	if cc.Plus {
+		t.Error("expected Plus=false for star closure")
+	}
+}
+
+func TestClosureCallInConjunction(t *testing.T) {
+	mod := mustParse(t, `predicate foo() { reaches+(x, y) and y = 42 }`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	conj, ok := body.(*ast.Conjunction)
+	if !ok {
+		t.Fatalf("expected Conjunction, got %T", body)
+	}
+	_, ok = conj.Left.(*ast.ClosureCall)
+	if !ok {
+		t.Fatalf("expected ClosureCall on left, got %T", conj.Left)
+	}
+}

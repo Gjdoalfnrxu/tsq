@@ -599,6 +599,16 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 		// any() — always true; no constraints.
 		return nil
 
+	case *ast.IfThenElse:
+		// Desugar as: (cond and then) or (not cond and else)
+		thenBranch := &ast.Conjunction{Left: n.Cond, Right: n.Then}
+		elseBranch := &ast.Conjunction{Left: &ast.Negation{Formula: n.Cond}, Right: n.Else}
+		disj := &ast.Disjunction{Left: thenBranch, Right: elseBranch}
+		return d.desugarFormula(disj, gen)
+
+	case *ast.ClosureCall:
+		return d.desugarClosureCall(n, gen)
+
 	default:
 		d.errorf("unknown formula type %T", f)
 		return nil
@@ -608,6 +618,24 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 // desugarPredicateCall handles a PredicateCall used as a formula.
 func (d *desugarer) desugarPredicateCall(pc *ast.PredicateCall, gen *freshVarGen) []datalog.Literal {
 	if pc.Recv != nil {
+		// Check if receiver is a string type and method is a builtin.
+		recvType := d.resolveReceiverType(pc.Recv)
+		if recvType == "string" && stringBuiltins[pc.Name] {
+			recvTerm, extraLits := d.desugarExpr(pc.Recv, gen)
+			predName := "__builtin_string_" + pc.Name
+			args := []datalog.Term{recvTerm}
+			for _, arg := range pc.Args {
+				t, lits := d.desugarExpr(arg, gen)
+				extraLits = append(extraLits, lits...)
+				args = append(args, t)
+			}
+			lit := datalog.Literal{
+				Positive: true,
+				Atom:     datalog.Atom{Predicate: predName, Args: args},
+			}
+			return append(extraLits, lit)
+		}
+
 		// Method call as formula (predicate call on receiver — no result).
 		recvTerm, extraLits := d.desugarExpr(pc.Recv, gen)
 		args := []datalog.Term{recvTerm}
@@ -815,6 +843,28 @@ func (d *desugarer) desugarExpr(e ast.Expr, gen *freshVarGen) (datalog.Term, []d
 func (d *desugarer) desugarMethodCallExpr(mc *ast.MethodCall, gen *freshVarGen) (datalog.Term, []datalog.Literal) {
 	recv, lits := d.desugarExpr(mc.Recv, gen)
 
+	// Check if receiver is a string type — if so, emit a builtin predicate.
+	recvType := d.resolveReceiverType(mc.Recv)
+	if recvType == "string" && stringBuiltins[mc.Method] {
+		predName := "__builtin_string_" + mc.Method
+		args := []datalog.Term{recv}
+		for _, arg := range mc.Args {
+			t, argLits := d.desugarExpr(arg, gen)
+			lits = append(lits, argLits...)
+			args = append(args, t)
+		}
+		// matches and regexpMatch are predicates (no result), but when used
+		// as an expression they shouldn't have a result variable.
+		// In expression context, all builtins produce a result.
+		fresh := gen.next()
+		args = append(args, fresh)
+		lits = append(lits, datalog.Literal{
+			Positive: true,
+			Atom:     datalog.Atom{Predicate: predName, Args: args},
+		})
+		return fresh, lits
+	}
+
 	// Determine the predicate name.
 	predName := d.resolveMethodCallPred(mc, mc.Method)
 
@@ -973,6 +1023,86 @@ func (d *desugarer) desugarAggregateExpr(a *ast.Aggregate, gen *freshVarGen) (da
 	}
 
 	return fresh, []datalog.Literal{lit}
+}
+
+// ---- Closure call desugaring ----
+
+// desugarClosureCall handles pred+(args) and pred*(args) transitive closure syntax.
+func (d *desugarer) desugarClosureCall(cc *ast.ClosureCall, gen *freshVarGen) []datalog.Literal {
+	if len(cc.Args) != 2 {
+		d.errorf("closure call %s requires exactly 2 arguments, got %d", cc.Name, len(cc.Args))
+		return nil
+	}
+
+	arg0, lits0 := d.desugarExpr(cc.Args[0], gen)
+	arg1, lits1 := d.desugarExpr(cc.Args[1], gen)
+	extraLits := append(lits0, lits1...)
+
+	if cc.Plus {
+		// pred+(x, y): transitive closure (one or more steps)
+		synthName := d.freshSynthName("_closure")
+		z := gen.next()
+
+		// _closure(x, y) :- pred(x, y).
+		d.syntheticRules = append(d.syntheticRules, datalog.Rule{
+			Head: datalog.Atom{Predicate: synthName, Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{{
+				Positive: true,
+				Atom:     datalog.Atom{Predicate: cc.Name, Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+			}},
+		})
+
+		// _closure(x, y) :- pred(x, z), _closure(z, y).
+		d.syntheticRules = append(d.syntheticRules, datalog.Rule{
+			Head: datalog.Atom{Predicate: synthName, Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: cc.Name, Args: []datalog.Term{datalog.Var{Name: "x"}, z}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: synthName, Args: []datalog.Term{z, datalog.Var{Name: "y"}}}},
+			},
+		})
+
+		lit := datalog.Literal{
+			Positive: true,
+			Atom:     datalog.Atom{Predicate: synthName, Args: []datalog.Term{arg0, arg1}},
+		}
+		return append(extraLits, lit)
+	}
+
+	// pred*(x, y): reflexive-transitive closure
+	// Desugar as: (x = y) or pred+(x, y)
+	plusCall := &ast.ClosureCall{
+		Name: cc.Name,
+		Plus: true,
+		Args: cc.Args,
+	}
+	eqFormula := &ast.Comparison{
+		Left:  cc.Args[0],
+		Right: cc.Args[1],
+		Op:    "=",
+	}
+	disj := &ast.Disjunction{
+		Left:  eqFormula,
+		Right: plusCall,
+	}
+	return d.desugarFormula(disj, gen)
+}
+
+// ---- String builtin desugaring ----
+
+// isStringBuiltin returns true if the method name is a known string builtin.
+var stringBuiltins = map[string]bool{
+	"length":      true,
+	"indexOf":     true,
+	"substring":   true,
+	"matches":     true,
+	"regexpMatch": true,
+	"toUpperCase": true,
+	"toLowerCase": true,
+	"trim":        true,
+	"replaceAll":  true,
+	"charAt":      true,
+	"toInt":       true,
+	"toString":    true,
 }
 
 // ---- Helpers ----
