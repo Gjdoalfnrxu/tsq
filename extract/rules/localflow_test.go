@@ -78,9 +78,10 @@ func TestVarDeclFlow(t *testing.T) {
 func TestReturnFlow(t *testing.T) {
 	// fn=1, sym_x=10, returnSym=99, stmtNode=50, retExpr=200
 	baseRels := localFlowBaseRels(map[string]*eval.Relation{
-		"ReturnStmt": makeRel("ReturnStmt", 3, iv(1), iv(50), iv(200)),
-		"ExprMayRef": makeRel("ExprMayRef", 2, iv(200), iv(10)),
-		"ReturnSym":  makeRel("ReturnSym", 2, iv(1), iv(99)),
+		"ReturnStmt":    makeRel("ReturnStmt", 3, iv(1), iv(50), iv(200)),
+		"ExprMayRef":    makeRel("ExprMayRef", 2, iv(200), iv(10)),
+		"ReturnSym":     makeRel("ReturnSym", 2, iv(1), iv(99)),
+		"SymInFunction": makeRel("SymInFunction", 2, iv(10), iv(1), iv(99), iv(1)),
 	})
 
 	query := &datalog.Query{

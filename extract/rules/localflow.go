@@ -41,12 +41,14 @@ func LocalFlowRules() []datalog.Rule {
 		// LocalFlow(fn, retSym, returnSym) :-
 		//   ReturnStmt(fn, _, retExpr),
 		//   ExprMayRef(retExpr, retSym),
-		//   ReturnSym(fn, returnSym).
+		//   ReturnSym(fn, returnSym),
+		//   SymInFunction(retSym, fn).
 		rule("LocalFlow",
 			[]datalog.Term{v("fn"), v("retSym"), v("returnSym")},
 			pos("ReturnStmt", v("fn"), w(), v("retExpr")),
 			pos("ExprMayRef", v("retExpr"), v("retSym")),
 			pos("ReturnSym", v("fn"), v("returnSym")),
+			pos("SymInFunction", v("retSym"), v("fn")),
 		),
 
 		// Rule 4: Destructuring flow (field-insensitive).
