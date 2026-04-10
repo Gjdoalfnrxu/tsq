@@ -277,8 +277,10 @@ func TestAllSystemRulesCount(t *testing.T) {
 	all := AllSystemRules()
 	cg := CallGraphRules()
 	lf := LocalFlowRules()
-	if len(all) != len(cg)+len(lf) {
-		t.Errorf("expected %d rules, got %d", len(cg)+len(lf), len(all))
+	sm := SummaryRules()
+	expected := len(cg) + len(lf) + len(sm)
+	if len(all) != expected {
+		t.Errorf("expected %d rules, got %d", expected, len(all))
 	}
 }
 
