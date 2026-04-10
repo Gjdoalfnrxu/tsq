@@ -29,8 +29,8 @@ type ImportDecl struct {
 // ClassDecl represents a QL class declaration.
 type ClassDecl struct {
 	Name       string
-	SuperTypes []TypeRef    // types listed in `extends` clause
-	CharPred   *Formula     // characteristic predicate body (the Foo() { ... } block)
+	SuperTypes []TypeRef // types listed in `extends` clause
+	CharPred   *Formula  // characteristic predicate body (the Foo() { ... } block)
 	Members    []MemberDecl
 	Span       Span
 }
@@ -38,7 +38,7 @@ type ClassDecl struct {
 // MemberDecl is a method or field declaration inside a class.
 type MemberDecl struct {
 	Name       string
-	ReturnType *TypeRef  // nil for predicates (no return type)
+	ReturnType *TypeRef // nil for predicates (no return type)
 	Params     []ParamDecl
 	Body       *Formula
 	Override   bool // has `override` modifier
@@ -145,7 +145,7 @@ func (Comparison) formulaNode() {}
 // PredicateCall: pred(args...) or this.method(args...)
 type PredicateCall struct {
 	BaseFormula
-	Recv Expr   // nil for non-method calls
+	Recv Expr // nil for non-method calls
 	Name string
 	Args []Expr
 }
@@ -272,7 +272,7 @@ type Aggregate struct {
 	Decls []VarDecl
 	Guard Formula // optional
 	Body  Formula
-	Expr  Expr    // the expression to aggregate over (for min/max/sum/avg)
+	Expr  Expr // the expression to aggregate over (for min/max/sum/avg)
 }
 
 func (Aggregate) exprNode() {}

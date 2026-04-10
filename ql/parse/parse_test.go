@@ -134,6 +134,20 @@ func TestLexerUnterminatedString(t *testing.T) {
 	}
 }
 
+func TestLex_UnterminatedBlockComment(t *testing.T) {
+	l := parse.NewLexer("foo /* unterminated", "test.ql")
+	// First token should be the identifier "foo"
+	tok := l.Next()
+	if tok.Type != parse.TokIdent || tok.Lit != "foo" {
+		t.Errorf("expected ident 'foo', got type=%d lit=%q", tok.Type, tok.Lit)
+	}
+	// Second token must be TokError, not TokEOF
+	tok = l.Next()
+	if tok.Type != parse.TokError {
+		t.Errorf("expected TokError for unterminated block comment, got type=%d lit=%q", tok.Type, tok.Lit)
+	}
+}
+
 // --- Parser tests ---
 
 func TestEmptyModule(t *testing.T) {
@@ -736,9 +750,9 @@ func TestErrorParseErrorLocation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	pe, ok := err.(*parse.ParseError)
+	pe, ok := err.(*parse.Error)
 	if !ok {
-		t.Fatalf("expected *ParseError, got %T", err)
+		t.Fatalf("expected *parse.Error, got %T", err)
 	}
 	if pe.File != "test.ql" {
 		t.Errorf("expected file 'test.ql', got %q", pe.File)

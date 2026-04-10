@@ -7,15 +7,15 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
 )
 
-// ParseError is returned for malformed QL input.
-type ParseError struct {
+// Error is returned for malformed QL input.
+type Error struct {
 	File    string
 	Line    int
 	Col     int
 	Message string
 }
 
-func (e *ParseError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("%s:%d:%d: %s", e.File, e.Line, e.Col, e.Message)
 }
 
@@ -23,8 +23,6 @@ func (e *ParseError) Error() string {
 type Parser struct {
 	lexer   *Lexer
 	current Token
-	peeked  Token
-	hasPeek bool
 	file    string
 }
 
@@ -37,21 +35,8 @@ func NewParser(src, file string) *Parser {
 
 func (p *Parser) advance() Token {
 	prev := p.current
-	if p.hasPeek {
-		p.current = p.peeked
-		p.hasPeek = false
-	} else {
-		p.current = p.lexer.Next()
-	}
+	p.current = p.lexer.Next()
 	return prev
-}
-
-func (p *Parser) peek() Token {
-	if !p.hasPeek {
-		p.peeked = p.lexer.Next()
-		p.hasPeek = true
-	}
-	return p.peeked
 }
 
 func (p *Parser) at(t TokenType) bool {
@@ -66,7 +51,7 @@ func (p *Parser) expect(t TokenType) (Token, error) {
 }
 
 func (p *Parser) errorf(format string, args ...interface{}) error {
-	return &ParseError{
+	return &Error{
 		File:    p.file,
 		Line:    p.current.Line,
 		Col:     p.current.Col,
@@ -956,7 +941,7 @@ func (p *Parser) parsePrimary() (ast.Expr, error) {
 		tok := p.advance()
 		val, err := strconv.ParseInt(tok.Lit, 10, 64)
 		if err != nil {
-			return nil, &ParseError{File: p.file, Line: tok.Line, Col: tok.Col, Message: "invalid integer: " + tok.Lit}
+			return nil, &Error{File: p.file, Line: tok.Line, Col: tok.Col, Message: "invalid integer: " + tok.Lit}
 		}
 		return &ast.IntLiteral{
 			BaseExpr: ast.BaseExpr{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},

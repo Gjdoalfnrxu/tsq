@@ -10,7 +10,7 @@ type TokenType int
 
 const (
 	// Literals
-	TokIdent  TokenType = iota
+	TokIdent TokenType = iota
 	TokInt
 	TokString
 
@@ -117,18 +117,12 @@ type Lexer struct {
 	line int
 	col  int
 	file string
+	err  *Token // pending error token (e.g. unterminated block comment)
 }
 
 // NewLexer creates a Lexer for the given source.
 func NewLexer(src, file string) *Lexer {
 	return &Lexer{src: []rune(src), pos: 0, line: 1, col: 1, file: file}
-}
-
-func (l *Lexer) peek() rune {
-	if l.pos >= len(l.src) {
-		return 0
-	}
-	return l.src[l.pos]
 }
 
 func (l *Lexer) advance() rune {
@@ -185,9 +179,15 @@ func (l *Lexer) skipWhitespaceAndComments() {
 				continue
 			}
 			if l.src[l.pos+1] == '*' {
+				errLine := l.line
+				errCol := l.col
 				l.advance()
 				l.advance()
-				l.skipBlockComment()
+				if !l.skipBlockComment() {
+					tok := Token{Type: TokError, Lit: "unterminated block comment", Line: errLine, Col: errCol}
+					l.err = &tok
+					return
+				}
 				continue
 			}
 		}
@@ -198,6 +198,12 @@ func (l *Lexer) skipWhitespaceAndComments() {
 // Next returns the next token.
 func (l *Lexer) Next() Token {
 	l.skipWhitespaceAndComments()
+
+	if l.err != nil {
+		tok := *l.err
+		l.err = nil
+		return tok
+	}
 
 	if l.pos >= len(l.src) {
 		return Token{Type: TokEOF, Lit: "", Line: l.line, Col: l.col}
