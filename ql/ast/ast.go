@@ -48,21 +48,29 @@ type ClassDecl struct {
 
 // MemberDecl is a method or field declaration inside a class.
 type MemberDecl struct {
-	Name       string
-	ReturnType *TypeRef // nil for predicates (no return type)
-	Params     []ParamDecl
-	Body       *Formula
-	Override   bool // has `override` modifier
-	Span       Span
+	Name        string
+	ReturnType  *TypeRef // nil for predicates (no return type)
+	Params      []ParamDecl
+	Body        *Formula
+	Override    bool // has `override` modifier
+	Annotations []Annotation
+	Span        Span
 }
 
 // PredicateDecl is a top-level predicate definition.
 type PredicateDecl struct {
-	Name       string
-	ReturnType *TypeRef // nil for predicates
-	Params     []ParamDecl
-	Body       *Formula
-	Span       Span
+	Name        string
+	ReturnType  *TypeRef // nil for predicates
+	Params      []ParamDecl
+	Body        *Formula
+	Annotations []Annotation
+	Span        Span
+}
+
+// Annotation represents a predicate or member annotation.
+type Annotation struct {
+	Name string   // e.g. "private", "deprecated", "pragma", "bindingset", "language"
+	Args []string // e.g. ["inline"] for pragma[inline], ["x","y"] for bindingset[x,y]
 }
 
 // ParamDecl is a parameter in a predicate or method.
@@ -192,6 +200,16 @@ type Forall struct {
 
 func (Forall) formulaNode() {}
 
+// Forex: forex(decls | guard | body) — like forall but requires at least one match
+type Forex struct {
+	BaseFormula
+	Decls []VarDecl
+	Guard Formula
+	Body  Formula
+}
+
+func (Forex) formulaNode() {}
+
 // IfThenElse: if cond then thenBranch else elseBranch
 type IfThenElse struct {
 	BaseFormula
@@ -299,11 +317,12 @@ func (Cast) exprNode() {}
 // Aggregate: count(Type v | formula) etc.
 type Aggregate struct {
 	BaseExpr
-	Op    string // "count", "min", "max", "sum", "avg"
-	Decls []VarDecl
-	Guard Formula // optional
-	Body  Formula
-	Expr  Expr // the expression to aggregate over (for min/max/sum/avg)
+	Op        string // "count", "min", "max", "sum", "avg", "concat", "strictcount", "strictsum", "rank"
+	Decls     []VarDecl
+	Guard     Formula // optional
+	Body      Formula
+	Expr      Expr   // the expression to aggregate over (for min/max/sum/avg)
+	Separator string // separator for concat (default "")
 }
 
 func (Aggregate) exprNode() {}

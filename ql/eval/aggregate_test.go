@@ -197,3 +197,120 @@ func TestAggEmptyInput(t *testing.T) {
 		t.Errorf("expected 0 results for empty input, got %d", result.Len())
 	}
 }
+
+// --- Phase 1h: Additional aggregates ---
+
+// TestAggStrictcount tests strictcount — like count but no result for empty set.
+func TestAggStrictcount(t *testing.T) {
+	rel := makeRelation("R", 2,
+		IntVal{1}, IntVal{10},
+		IntVal{1}, IntVal{20},
+		IntVal{2}, IntVal{30},
+	)
+	rels := map[string]*Relation{"R": rel}
+
+	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 2 {
+		t.Fatalf("expected 2 groups, got %d", result.Len())
+	}
+	counts := map[int64]int64{}
+	for _, row := range result.Tuples() {
+		counts[row[0].(IntVal).V] = row[1].(IntVal).V
+	}
+	if counts[1] != 2 {
+		t.Errorf("group 1: expected strictcount=2, got %d", counts[1])
+	}
+	if counts[2] != 1 {
+		t.Errorf("group 2: expected strictcount=1, got %d", counts[2])
+	}
+}
+
+// TestAggStrictcountEmpty tests strictcount returns no result for empty set.
+func TestAggStrictcountEmpty(t *testing.T) {
+	rel := NewRelation("R", 2)
+	rels := map[string]*Relation{"R": rel}
+
+	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 0 {
+		t.Errorf("expected 0 results for empty strictcount, got %d", result.Len())
+	}
+}
+
+// TestAggStrictsum tests strictsum — like sum but no result for empty set.
+func TestAggStrictsum(t *testing.T) {
+	rel := makeRelation("R", 2,
+		IntVal{1}, IntVal{10},
+		IntVal{1}, IntVal{20},
+	)
+	rels := map[string]*Relation{"R": rel}
+
+	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 1 {
+		t.Fatalf("expected 1 group, got %d", result.Len())
+	}
+	sval := result.Tuples()[0][1].(IntVal).V
+	if sval != 30 {
+		t.Errorf("expected strictsum=30, got %d", sval)
+	}
+}
+
+// TestAggStrictsumEmpty tests strictsum returns no result for empty set.
+func TestAggStrictsumEmpty(t *testing.T) {
+	rel := NewRelation("R", 2)
+	rels := map[string]*Relation{"R": rel}
+
+	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 0 {
+		t.Errorf("expected 0 results for empty strictsum, got %d", result.Len())
+	}
+}
+
+// TestAggConcat tests concat aggregate.
+func TestAggConcat(t *testing.T) {
+	rel := makeRelation("R", 2,
+		IntVal{1}, StrVal{"hello"},
+		IntVal{1}, StrVal{"world"},
+	)
+	rels := map[string]*Relation{"R": rel}
+
+	agg := makeAgg("R", "v", []string{"g"}, "concat", "cval")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 1 {
+		t.Fatalf("expected 1 group, got %d", result.Len())
+	}
+	cval := result.Tuples()[0][1].(StrVal).V
+	// With default empty separator
+	if cval != "helloworld" {
+		t.Errorf("expected concat='helloworld', got %q", cval)
+	}
+}
+
+// TestAggRank tests rank aggregate (v1 approximation).
+func TestAggRank(t *testing.T) {
+	rel := makeRelation("R", 2,
+		IntVal{1}, IntVal{10},
+		IntVal{1}, IntVal{20},
+		IntVal{1}, IntVal{30},
+	)
+	rels := map[string]*Relation{"R": rel}
+
+	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 1 {
+		t.Fatalf("expected 1 group, got %d", result.Len())
+	}
+	rval := result.Tuples()[0][1].(IntVal).V
+	if rval != 3 {
+		t.Errorf("expected rank=3 (v1 approximation = count), got %d", rval)
+	}
+}

@@ -408,6 +408,16 @@ func (r *resolver) resolveFormula(f ast.Formula, s *scope) {
 		r.resolveQuantified(n.Decls, n.Guard, n.Body, s)
 	case *ast.Forall:
 		r.resolveQuantified(n.Decls, n.Guard, n.Body, s)
+	case *ast.Forex:
+		r.resolveQuantified(n.Decls, n.Guard, n.Body, s)
+	case *ast.IfThenElse:
+		r.resolveFormula(n.Cond, s)
+		r.resolveFormula(n.Then, s)
+		r.resolveFormula(n.Else, s)
+	case *ast.ClosureCall:
+		for _, arg := range n.Args {
+			r.resolveExpr(arg, s)
+		}
 	case *ast.None, *ast.Any:
 		// nothing to resolve
 	}
@@ -490,6 +500,13 @@ func (r *resolver) resolveVariable(v *ast.Variable, s *scope) {
 			return
 		}
 		// `this` is pre-bound in s; no additional annotation needed.
+		return
+	case "super":
+		if s.inClass == nil {
+			r.errorf(v.GetSpan(), "`super` used outside a class body")
+			return
+		}
+		// `super` refers to the parent class instance; valid in override methods.
 		return
 	case "result":
 		// Valid if we're inside a method with a return type, or a predicate with return type.

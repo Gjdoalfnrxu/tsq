@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
@@ -79,7 +80,7 @@ func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 
 	for _, gk := range groupOrder {
 		g := groupMap[gk]
-		aggResult, err := computeAggregate(agg.Agg.Func, g.values)
+		aggResult, err := computeAggregate(agg.Agg.Func, g.values, agg.Agg.Separator)
 		if err != nil {
 			// Skip groups where aggregation fails (e.g., mixed types).
 			continue
@@ -94,11 +95,14 @@ func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 }
 
 // computeAggregate applies the named aggregate function to a list of Values.
-func computeAggregate(fn string, vals []Value) (Value, error) {
+func computeAggregate(fn string, vals []Value, separator string) (Value, error) {
 	if len(vals) == 0 {
 		switch fn {
 		case "count":
 			return IntVal{V: 0}, nil
+		case "strictcount", "strictsum":
+			// strict variants return no result for empty sets
+			return nil, fmt.Errorf("aggregate %q over empty set", fn)
 		default:
 			return nil, fmt.Errorf("aggregate %q over empty set", fn)
 		}
@@ -106,6 +110,9 @@ func computeAggregate(fn string, vals []Value) (Value, error) {
 
 	switch fn {
 	case "count":
+		return IntVal{V: int64(len(vals))}, nil
+
+	case "strictcount":
 		return IntVal{V: int64(len(vals))}, nil
 
 	case "min":
@@ -151,6 +158,17 @@ func computeAggregate(fn string, vals []Value) (Value, error) {
 		}
 		return IntVal{V: sum}, nil
 
+	case "strictsum":
+		var sum int64
+		for _, v := range vals {
+			iv, err := asInt64(v)
+			if err != nil {
+				return nil, fmt.Errorf("strictsum: %w", err)
+			}
+			sum += iv
+		}
+		return IntVal{V: sum}, nil
+
 	case "avg":
 		var sum int64
 		for _, v := range vals {
@@ -162,6 +180,9 @@ func computeAggregate(fn string, vals []Value) (Value, error) {
 		}
 		return IntVal{V: sum / int64(len(vals))}, nil
 
+	case "concat":
+		return concatValues(vals, separator), nil
+
 	case "rank":
 		// Ordinal rank — return position in group (1-indexed).
 		// For a simple implementation, rank is just the count of values seen.
@@ -171,6 +192,22 @@ func computeAggregate(fn string, vals []Value) (Value, error) {
 	default:
 		return nil, fmt.Errorf("unknown aggregate function %q", fn)
 	}
+}
+
+// concatValues concatenates string representations of values with a separator.
+func concatValues(vals []Value, sep string) StrVal {
+	parts := make([]string, len(vals))
+	for i, v := range vals {
+		switch sv := v.(type) {
+		case StrVal:
+			parts[i] = sv.V
+		case IntVal:
+			parts[i] = fmt.Sprintf("%d", sv.V)
+		default:
+			parts[i] = fmt.Sprintf("%v", v)
+		}
+	}
+	return StrVal{V: strings.Join(parts, sep)}
 }
 
 func asInt64(v Value) (int64, error) {
