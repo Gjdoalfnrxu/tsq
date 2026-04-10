@@ -2,7 +2,7 @@ package bridge
 
 import "embed"
 
-//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll
+//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll
 var bridgeFS embed.FS
 
 // LoadBridge returns all embedded .qll files as a map from filename to contents.
@@ -26,6 +26,7 @@ func LoadBridge() map[string][]byte {
 		"tsq_express.qll",
 		"tsq_react.qll",
 		"tsq_node.qll",
+		"compat_javascript.qll",
 	}
 	result := make(map[string][]byte, len(files))
 	for _, name := range files {
@@ -69,6 +70,7 @@ func ImportLoader(bridgeFiles map[string][]byte, parseFn func(src, file string) 
 		"tsq::express":     "tsq_express.qll",
 		"tsq::react":       "tsq_react.qll",
 		"tsq::node":        "tsq_node.qll",
+		"javascript":       "compat_javascript.qll",
 	}
 	return func(path string) (interface{}, bool) {
 		filename, ok := pathToFile[path]
