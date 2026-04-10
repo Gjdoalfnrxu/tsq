@@ -797,3 +797,45 @@ select n as "node"
 		t.Error("expected select clause, got nil")
 	}
 }
+
+// TestAtTypeWithKeywordName regression: @extends should parse as a type reference
+// even though "extends" is a keyword. This was broken before the parser fix.
+func TestAtTypeWithKeywordName(t *testing.T) {
+	src := `class Extends extends @extends {
+    Extends() { Extends(this, _) }
+    int getChild() { result = this }
+}`
+	mod := mustParse(t, src)
+	if len(mod.Classes) != 1 {
+		t.Fatalf("expected 1 class, got %d", len(mod.Classes))
+	}
+	cls := mod.Classes[0]
+	if cls.Name != "Extends" {
+		t.Errorf("expected class name 'Extends', got %q", cls.Name)
+	}
+	if len(cls.SuperTypes) != 1 {
+		t.Fatalf("expected 1 super type, got %d", len(cls.SuperTypes))
+	}
+	if cls.SuperTypes[0].String() != "@extends" {
+		t.Errorf("expected super type '@extends', got %q", cls.SuperTypes[0].String())
+	}
+}
+
+// TestAtTypeWithOtherKeywords verifies @from, @select, @class also work.
+func TestAtTypeWithOtherKeywords(t *testing.T) {
+	keywords := []string{"from", "select", "class", "where", "as", "import", "override"}
+	for _, kw := range keywords {
+		t.Run(kw, func(t *testing.T) {
+			src := `class Foo extends @` + kw + ` {
+    Foo() { Foo(this) }
+}`
+			mod := mustParse(t, src)
+			if len(mod.Classes) != 1 {
+				t.Fatalf("expected 1 class, got %d", len(mod.Classes))
+			}
+			if mod.Classes[0].SuperTypes[0].String() != "@"+kw {
+				t.Errorf("expected @%s, got %s", kw, mod.Classes[0].SuperTypes[0].String())
+			}
+		})
+	}
+}

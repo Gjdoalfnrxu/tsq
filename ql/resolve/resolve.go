@@ -568,28 +568,7 @@ func (r *resolver) lookupMemberRec(cd *ast.ClassDecl, name string, visited map[s
 }
 
 // memberDefiningClass returns the ClassDecl that directly defines name,
-// walking up the supertype chain from cd.
+// walking up the supertype chain from cd. Delegates to ast.MemberDefiningClass.
 func (r *resolver) memberDefiningClass(cd *ast.ClassDecl, name string) *ast.ClassDecl {
-	visited := make(map[string]bool)
-	return r.memberDefiningClassRec(cd, name, visited)
-}
-
-func (r *resolver) memberDefiningClassRec(cd *ast.ClassDecl, name string, visited map[string]bool) *ast.ClassDecl {
-	if cd == nil || visited[cd.Name] {
-		return nil
-	}
-	visited[cd.Name] = true
-	for i := range cd.Members {
-		if cd.Members[i].Name == name {
-			return cd
-		}
-	}
-	for _, st := range cd.SuperTypes {
-		if superCD, ok := r.env.Classes[st.String()]; ok {
-			if found := r.memberDefiningClassRec(superCD, name, visited); found != nil {
-				return found
-			}
-		}
-	}
-	return nil
+	return ast.MemberDefiningClass(cd, name, r.env.Classes)
 }

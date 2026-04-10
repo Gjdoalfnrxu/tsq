@@ -140,10 +140,10 @@ func (fw *FactWalker) enterNode(node ASTNode) (bool, error) {
 	fw.stack = append(fw.stack, id)
 
 	// Kind-specific fact emission
-	switch kind {
-	case "FunctionDeclaration", "ArrowFunction", "FunctionExpression", "MethodDefinition",
-		"GeneratorFunction", "GeneratorFunctionDeclaration":
+	if IsFunctionKind(kind) {
 		fw.emitFunction(node, id, kind)
+	}
+	switch kind {
 	case "CallExpression":
 		fw.emitCall(node, id)
 	case "VariableDeclarator":

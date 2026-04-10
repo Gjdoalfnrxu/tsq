@@ -485,14 +485,18 @@ func (p *Parser) parseTypeRef() (*ast.TypeRef, error) {
 	startCol := p.current.Col
 
 	// Support @type references (database types used in bridge .qll files).
+	// After '@', any token with a Lit value (including keywords like "extends")
+	// is accepted as the type name. This is necessary because relation names
+	// may coincide with QL keywords (e.g., @extends for the Extends relation).
 	if p.at(TokAt) {
 		p.advance()
-		ident, err := p.expect(TokIdent)
-		if err != nil {
-			return nil, err
+		tok := p.current
+		if tok.Lit == "" {
+			return nil, p.errorf("expected identifier after @, got %s", tokenName(tok.Type))
 		}
+		p.advance()
 		return &ast.TypeRef{
-			Path: []string{"@" + ident.Lit},
+			Path: []string{"@" + tok.Lit},
 			Span: ast.Span{File: p.file, StartLine: startLine, StartCol: startCol},
 		}, nil
 	}
