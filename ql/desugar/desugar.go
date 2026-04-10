@@ -36,6 +36,8 @@ type desugarer struct {
 	ann    *resolve.Annotations
 	env    *resolve.Environment
 	errors []error
+	// currentClass tracks the class being desugared (for super resolution).
+	currentClass *ast.ClassDecl
 	// subClasses maps class name → names of classes that directly extend it.
 	subClasses map[string][]string
 	// syntheticRules accumulates rules generated for disjunction/negation.
@@ -202,6 +204,10 @@ func (d *desugarer) desugarModuleDecl(md *ast.ModuleDecl, prefix string) []datal
 
 // desugarClass emits the characteristic predicate rule and all method rules.
 func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
+	prevClass := d.currentClass
+	d.currentClass = cd
+	defer func() { d.currentClass = prevClass }()
+
 	var rules []datalog.Rule
 
 	if cd.IsAbstract {
@@ -320,6 +326,11 @@ func (d *desugarer) desugarMethod(cd *ast.ClassDecl, md *ast.MemberDecl) []datal
 // excludeSubs is the set of direct subclasses that override this method;
 // they are added as "not SubClass(this)" constraints to the body.
 func (d *desugarer) buildMethodRule(cd *ast.ClassDecl, md *ast.MemberDecl, headPred string, excludeSubs []string) datalog.Rule {
+	// Set currentClass so super resolution works correctly for this method's body.
+	prevClass := d.currentClass
+	d.currentClass = cd
+	defer func() { d.currentClass = prevClass }()
+
 	gen := &freshVarGen{}
 
 	// Head args: (this [, params...] [, result])
@@ -982,24 +993,24 @@ func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
 	return mangle(recvType, pc.Name)
 }
 
-// resolveSuperMethod resolves a super.method() call by finding the parent class
-// that defines the method. It searches the first (leftmost) supertype chain.
+// resolveSuperMethod resolves a super.method() call by finding the method in
+// the parent class. Uses currentClass to determine which class we're in.
 func (d *desugarer) resolveSuperMethod(methodName string) string {
-	// Find the current class context from annotations.
-	// We need to find which class we're in. Walk all classes to find the one
-	// that has a member calling super.
-	// Heuristic: look through all classes for one that defines methodName and
-	// has a supertype that also defines it.
-	for _, cd := range d.env.Classes {
-		for _, st := range cd.SuperTypes {
-			if parentCD, ok := d.env.Classes[st.String()]; ok {
-				defClass := d.memberDefiningClass(parentCD, methodName)
-				if defClass != nil {
-					return mangle(defClass.Name, methodName)
-				}
+	if d.currentClass == nil {
+		d.errorf("super used outside of a class body")
+		return methodName
+	}
+	// Walk the supertype chain (left-to-right priority for multiple inheritance).
+	for _, st := range d.currentClass.SuperTypes {
+		stName := st.String()
+		if parentCD, ok := d.env.Classes[stName]; ok {
+			defClass := d.memberDefiningClass(parentCD, methodName)
+			if defClass != nil {
+				return mangle(defClass.Name, methodName)
 			}
 		}
 	}
+	d.errorf("super.%s(): method not found in parent classes of %s", methodName, d.currentClass.Name)
 	return methodName
 }
 
