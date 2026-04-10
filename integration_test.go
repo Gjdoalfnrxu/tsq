@@ -17,6 +17,7 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/extract"
 	"github.com/Gjdoalfnrxu/tsq/extract/db"
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
+	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/desugar"
 	"github.com/Gjdoalfnrxu/tsq/ql/eval"
 	"github.com/Gjdoalfnrxu/tsq/ql/parse"
@@ -534,4 +535,97 @@ func TestExtractionProducesExpectedRelations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMagicSetPreservesResults verifies that magic-set transformation produces
+// identical results to naive evaluation. This test lives here (not in ql/plan)
+// to avoid import cycles between plan and eval.
+func TestMagicSetPreservesResults(t *testing.T) {
+	// Transitive closure: Path(x,y) :- Edge(x,y). Path(x,z) :- Edge(x,y), Path(y,z).
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+				},
+			},
+			{
+				Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "z"}}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "y"}, datalog.Var{Name: "z"}}}},
+				},
+			},
+		},
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+
+	// Graph: 1→2→3→4, 1→3
+	edgeRel := eval.NewRelation("Edge", 2)
+	edges := [][2]int64{{1, 2}, {2, 3}, {3, 4}, {1, 3}}
+	for _, e := range edges {
+		edgeRel.Add(eval.Tuple{eval.IntVal{V: e[0]}, eval.IntVal{V: e[1]}})
+	}
+
+	// Evaluate without magic-set.
+	ep1, errs1 := plan.Plan(prog, nil)
+	if len(errs1) > 0 {
+		t.Fatalf("plan error: %v", errs1)
+	}
+	baseRels1 := map[string]*eval.Relation{"Edge": edgeRel}
+	rs1, err := eval.Evaluate(context.Background(), ep1, baseRels1)
+	if err != nil {
+		t.Fatalf("evaluate without magic-set: %v", err)
+	}
+
+	// Evaluate with magic-set (bind Path column 0).
+	ep2, errs2 := plan.PlanWithMagicSet(prog, nil, map[string][]int{"Path": {0}})
+	if len(errs2) > 0 {
+		t.Fatalf("magic-set plan error: %v", errs2)
+	}
+
+	// Seed magic_Path with all source nodes.
+	magicRel := eval.NewRelation("magic_Path", 1)
+	seenVals := make(map[int64]bool)
+	for _, e := range edges {
+		for _, v := range []int64{e[0], e[1]} {
+			if !seenVals[v] {
+				seenVals[v] = true
+				magicRel.Add(eval.Tuple{eval.IntVal{V: v}})
+			}
+		}
+	}
+	baseRels2 := map[string]*eval.Relation{"Edge": edgeRel, "magic_Path": magicRel}
+	rs2, err := eval.Evaluate(context.Background(), ep2, baseRels2)
+	if err != nil {
+		t.Fatalf("evaluate with magic-set: %v", err)
+	}
+
+	// Compare results.
+	toSet := func(rs *eval.ResultSet) map[string]bool {
+		s := make(map[string]bool)
+		for _, row := range rs.Rows {
+			s[fmt.Sprintf("%v", row)] = true
+		}
+		return s
+	}
+	set1, set2 := toSet(rs1), toSet(rs2)
+
+	for k := range set1 {
+		if !set2[k] {
+			t.Errorf("magic-set missing result: %s", k)
+		}
+	}
+	for k := range set2 {
+		if !set1[k] {
+			t.Errorf("magic-set has extra result: %s", k)
+		}
+	}
+	t.Logf("both evaluations produced %d results", len(set1))
 }

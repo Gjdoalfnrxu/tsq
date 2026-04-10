@@ -24,7 +24,6 @@ type EvalOption func(*evalConfig)
 
 type evalConfig struct {
 	maxIterations int
-	magicSet      bool
 	parallel      bool
 }
 
@@ -33,13 +32,6 @@ type evalConfig struct {
 // the results computed so far. A value of 0 means no limit.
 func WithMaxIterations(n int) EvalOption {
 	return func(c *evalConfig) { c.maxIterations = n }
-}
-
-// WithMagicSet enables magic-set transformation, which prunes irrelevant
-// tuples based on the query's bound arguments. The transformation rewrites
-// the program before evaluation; the semi-naive engine runs unchanged.
-func WithMagicSet() EvalOption {
-	return func(c *evalConfig) { c.magicSet = true }
 }
 
 // WithParallel enables parallel evaluation of independent rules within

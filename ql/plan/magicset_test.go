@@ -105,7 +105,7 @@ func TestMagicSetTransformPreservesResults(t *testing.T) {
 			t.Fatal("magic-set plan has nil query")
 		}
 
-		// Verify that the magic-set program added magic predicates.
+		// Verify structural properties: magic-set plan should have magic predicates.
 		hasMagic := false
 		for _, s := range ep2.Strata {
 			for _, r := range s.Rules {
@@ -114,8 +114,11 @@ func TestMagicSetTransformPreservesResults(t *testing.T) {
 				}
 			}
 		}
-		// Magic predicates should exist when bindings are provided.
-		_ = hasMagic // We don't require magic predicates for all programs (base-only rules may not generate them).
+		_ = hasMagic // Base-only rules may not generate magic predicates.
+
+		// NOTE: End-to-end evaluation comparison (magic-set vs naive produces
+		// identical results) is tested in the integration test at the repo root
+		// (TestMagicSetPreservesResults) to avoid import cycles between plan and eval.
 	})
 }
 
