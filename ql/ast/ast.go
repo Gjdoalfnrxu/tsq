@@ -15,7 +15,17 @@ type Module struct {
 	Imports    []ImportDecl
 	Classes    []ClassDecl
 	Predicates []PredicateDecl
+	Modules    []ModuleDecl
 	Select     *SelectClause // nil for library modules (.qll)
+	Span       Span
+}
+
+// ModuleDecl represents a QL module declaration.
+type ModuleDecl struct {
+	Name       string
+	Classes    []ClassDecl
+	Predicates []PredicateDecl
+	Modules    []ModuleDecl // nested modules
 	Span       Span
 }
 
@@ -29,6 +39,7 @@ type ImportDecl struct {
 // ClassDecl represents a QL class declaration.
 type ClassDecl struct {
 	Name       string
+	IsAbstract bool      // true for `abstract class`
 	SuperTypes []TypeRef // types listed in `extends` clause
 	CharPred   *Formula  // characteristic predicate body (the Foo() { ... } block)
 	Members    []MemberDecl

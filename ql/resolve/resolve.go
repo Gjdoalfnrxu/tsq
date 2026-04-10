@@ -21,6 +21,7 @@ type Environment struct {
 	Predicates map[string]*ast.PredicateDecl
 	Classes    map[string]*ast.ClassDecl
 	Imports    map[string]*ResolvedModule
+	Modules    map[string]*ast.ModuleDecl
 }
 
 // Error describes a name resolution failure.
@@ -80,6 +81,7 @@ func Resolve(mod *ast.Module, importLoader func(path string) (*ast.Module, error
 		Predicates: make(map[string]*ast.PredicateDecl),
 		Classes:    make(map[string]*ast.ClassDecl),
 		Imports:    make(map[string]*ResolvedModule),
+		Modules:    make(map[string]*ast.ModuleDecl),
 	}
 	ann := &Annotations{
 		ExprResolutions: make(map[ast.Expr]*Resolution),
@@ -170,6 +172,41 @@ func (r *resolver) firstPass(mod *ast.Module) {
 		} else {
 			r.env.Predicates[pd.Name] = pd
 		}
+	}
+	// Register module declarations and their members with qualified names.
+	for i := range mod.Modules {
+		md := &mod.Modules[i]
+		r.registerModule(md, "")
+	}
+}
+
+// registerModule registers a module and its contents with qualified names.
+func (r *resolver) registerModule(md *ast.ModuleDecl, prefix string) {
+	qualName := md.Name
+	if prefix != "" {
+		qualName = prefix + "::" + md.Name
+	}
+	r.env.Modules[qualName] = md
+
+	// Register classes with qualified names.
+	for i := range md.Classes {
+		cd := &md.Classes[i]
+		qn := qualName + "::" + cd.Name
+		if _, dup := r.env.Classes[qn]; !dup {
+			r.env.Classes[qn] = cd
+		}
+	}
+	// Register predicates with qualified names.
+	for i := range md.Predicates {
+		pd := &md.Predicates[i]
+		qn := qualName + "::" + pd.Name
+		if _, dup := r.env.Predicates[qn]; !dup {
+			r.env.Predicates[qn] = pd
+		}
+	}
+	// Recurse for nested modules.
+	for i := range md.Modules {
+		r.registerModule(&md.Modules[i], qualName)
 	}
 }
 

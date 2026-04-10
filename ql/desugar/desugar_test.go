@@ -766,6 +766,206 @@ int countFoos(Foo f) { result = 0 }
 	}
 }
 
+// --- Phase 1b: Disjunction via rule splitting ---
+
+func TestDesugarDisjunction(t *testing.T) {
+	src := `
+class Foo { Foo() { any() } }
+predicate test(Foo x) { a(x) or b(x) }
+`
+	rm := parseAndResolve(t, src)
+	prog, errs := desugar.Desugar(rm)
+	// Should NOT produce "disjunction not supported" error anymore.
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "disjunction") {
+			t.Fatalf("unexpected disjunction error: %v", e)
+		}
+	}
+
+	// Should have synthetic _disj rules.
+	var disjRules []*datalog.Rule
+	for i := range prog.Rules {
+		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_disj") {
+			disjRules = append(disjRules, &prog.Rules[i])
+		}
+	}
+	if len(disjRules) != 2 {
+		t.Fatalf("expected 2 synthetic disjunction rules, got %d", len(disjRules))
+	}
+
+	// The test predicate's body should reference the synthetic predicate.
+	r := findRuleExact(prog, "test")
+	if r == nil {
+		t.Fatal("expected rule 'test'")
+	}
+	hasDisjCall := false
+	for _, lit := range r.Body {
+		if strings.HasPrefix(lit.Atom.Predicate, "_disj") {
+			hasDisjCall = true
+		}
+	}
+	if !hasDisjCall {
+		t.Errorf("test rule body should call _disj synthetic predicate, body: %v", r.Body)
+	}
+}
+
+func TestDesugarDisjunctionInClass(t *testing.T) {
+	src := `
+class Foo {
+	Foo() { any() }
+	predicate isAorB() { a(this) or b(this) }
+}
+`
+	rm := parseAndResolve(t, src)
+	prog, errs := desugar.Desugar(rm)
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "disjunction") {
+			t.Fatalf("unexpected disjunction error: %v", e)
+		}
+	}
+
+	// Should have synthetic rules.
+	hasSynth := false
+	for i := range prog.Rules {
+		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_disj") {
+			hasSynth = true
+			break
+		}
+	}
+	if !hasSynth {
+		t.Error("expected synthetic _disj rules")
+	}
+}
+
+// --- Phase 1c: Negation of conjunctions ---
+
+func TestDesugarNegationOfConjunction(t *testing.T) {
+	src := `
+class Foo { Foo() { any() } }
+predicate test(Foo x) { not (a(x) and b(x)) }
+`
+	rm := parseAndResolve(t, src)
+	prog, errs := desugar.Desugar(rm)
+	// Should NOT produce "negation of conjunction not supported" error.
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "negation of conjunction") {
+			t.Fatalf("unexpected negation error: %v", e)
+		}
+	}
+
+	// Should have a synthetic _neg rule.
+	var negRules []*datalog.Rule
+	for i := range prog.Rules {
+		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_neg") {
+			negRules = append(negRules, &prog.Rules[i])
+		}
+	}
+	if len(negRules) != 1 {
+		t.Fatalf("expected 1 synthetic _neg rule, got %d", len(negRules))
+	}
+
+	// The test predicate's body should have a negated reference to _neg.
+	r := findRuleExact(prog, "test")
+	if r == nil {
+		t.Fatal("expected rule 'test'")
+	}
+	hasNegCall := false
+	for _, lit := range r.Body {
+		if !lit.Positive && strings.HasPrefix(lit.Atom.Predicate, "_neg") {
+			hasNegCall = true
+		}
+	}
+	if !hasNegCall {
+		t.Errorf("test rule body should have negated _neg call, body: %v", r.Body)
+	}
+}
+
+// --- Phase 1d: Abstract classes ---
+
+func TestDesugarAbstractClass(t *testing.T) {
+	src := `
+abstract class Base { Base() { any() } }
+class ConcreteA extends Base { ConcreteA() { any() } }
+class ConcreteB extends Base { ConcreteB() { any() } }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// Base should have rules: Base(this) :- ConcreteA(this). and Base(this) :- ConcreteB(this).
+	var baseRules []*datalog.Rule
+	for i := range prog.Rules {
+		if prog.Rules[i].Head.Predicate == "Base" {
+			baseRules = append(baseRules, &prog.Rules[i])
+		}
+	}
+	if len(baseRules) != 2 {
+		t.Fatalf("expected 2 rules for abstract class Base (one per subclass), got %d", len(baseRules))
+	}
+
+	hasA := false
+	hasB := false
+	for _, r := range baseRules {
+		if bodyContainsPred(r.Body, "ConcreteA") {
+			hasA = true
+		}
+		if bodyContainsPred(r.Body, "ConcreteB") {
+			hasB = true
+		}
+	}
+	if !hasA {
+		t.Error("expected Base rule with ConcreteA(this)")
+	}
+	if !hasB {
+		t.Error("expected Base rule with ConcreteB(this)")
+	}
+}
+
+func TestDesugarAbstractClassNoSubclasses(t *testing.T) {
+	src := `abstract class Lonely { Lonely() { any() } }`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// With no concrete subclasses, the abstract class has no derivation rules
+	// and its extent is naturally empty (no rules = empty relation).
+	r := findRuleExact(prog, "Lonely")
+	if r != nil {
+		t.Fatal("expected no rule for abstract class with no subclasses")
+	}
+}
+
+func TestDesugarAbstractClassMethodsStillWork(t *testing.T) {
+	src := `
+abstract class Base { Base() { any() } int getX() { result = 1 } }
+class Sub extends Base { Sub() { any() } }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// Method rule should still be emitted.
+	r := findRule(prog, "Base_getX")
+	if r == nil {
+		t.Fatal("expected Base_getX method rule for abstract class")
+	}
+}
+
+// --- Phase 1a: Module desugaring ---
+
+func TestDesugarModuleClass(t *testing.T) {
+	src := `
+module DataFlow {
+	class Node extends @node { Node() { any() } }
+}
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// Should produce a rule with qualified name DataFlow::Node.
+	r := findRuleExact(prog, "DataFlow::Node")
+	if r == nil {
+		t.Fatal("expected rule for DataFlow::Node")
+	}
+}
+
 // 25. Program.String() roundtrip: output is non-empty and contains predicate names.
 func TestDesugarProgramString(t *testing.T) {
 	src := `
@@ -787,5 +987,63 @@ class Bar extends Foo {
 	}
 	if !strings.Contains(str, "Bar") {
 		t.Errorf("String() should contain 'Bar': %q", str)
+	}
+}
+
+// --- Adversarial regression tests ---
+
+// Disjunction with asymmetric variables: only shared vars go in the head.
+func TestDesugarDisjunctionAsymmetricVars(t *testing.T) {
+	src := `
+predicate a(int x, int y) { any() }
+predicate b(int x) { any() }
+predicate test(int x) { a(x, _) or b(x) }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// Find the synthetic disjunction rule.
+	var synthRules []*datalog.Rule
+	for i := range prog.Rules {
+		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_disj") {
+			synthRules = append(synthRules, &prog.Rules[i])
+		}
+	}
+	if len(synthRules) != 2 {
+		t.Fatalf("expected 2 synthetic disjunction rules, got %d", len(synthRules))
+	}
+	// Head args should only contain x (the shared variable), not y or _.
+	for _, r := range synthRules {
+		for _, arg := range r.Head.Args {
+			if v, ok := arg.(datalog.Var); ok && v.Name != "x" {
+				t.Errorf("synthetic disjunction head should only have shared var x, got %q", v.Name)
+			}
+		}
+	}
+}
+
+// Abstract class in module: subclass lookup uses qualified names.
+func TestDesugarAbstractClassInModule(t *testing.T) {
+	src := `
+module M {
+	abstract class Base { Base() { any() } }
+	class Sub extends Base { Sub() { any() } }
+}
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// M::Base should have a rule: M::Base(this) :- M::Sub(this).
+	var baseRules []*datalog.Rule
+	for i := range prog.Rules {
+		if prog.Rules[i].Head.Predicate == "M::Base" {
+			baseRules = append(baseRules, &prog.Rules[i])
+		}
+	}
+	if len(baseRules) != 1 {
+		t.Fatalf("expected 1 rule for M::Base (from M::Sub), got %d", len(baseRules))
+	}
+	if !bodyContainsPred(baseRules[0].Body, "M::Sub") {
+		t.Error("expected M::Base rule body to contain M::Sub")
 	}
 }
