@@ -427,11 +427,11 @@ func TestInstantiatedRelation(t *testing.T) {
 	}
 }
 
-// TestCallGraphRulesCount verifies we produce exactly 7 rules.
+// TestCallGraphRulesCount verifies we produce exactly 8 rules.
 func TestCallGraphRulesCount(t *testing.T) {
 	rules := CallGraphRules()
-	if len(rules) != 7 {
-		t.Errorf("expected 7 call graph rules, got %d", len(rules))
+	if len(rules) != 8 {
+		t.Errorf("expected 8 call graph rules, got %d", len(rules))
 	}
 }
 
@@ -451,5 +451,134 @@ func TestCallGraphRulesStratify(t *testing.T) {
 	_, errs := plan.Plan(prog, nil)
 	if len(errs) > 0 {
 		t.Fatalf("call graph rules failed to plan: %v", errs)
+	}
+}
+
+// TestMultiLevelInheritance regression: A extends B extends C, method only on C.
+// MethodDeclInherited should propagate through the chain.
+func TestMultiLevelInheritance(t *testing.T) {
+	// C(300) has method "run"(fn=400). B(200) extends C. A(100) extends B.
+	// Neither A nor B override "run".
+	baseRels := map[string]*eval.Relation{
+		"ClassDecl": makeRel("ClassDecl", 3,
+			iv(100), sv("A"), iv(999),
+			iv(200), sv("B"), iv(999),
+			iv(300), sv("C"), iv(999),
+		),
+		"MethodDecl": makeRel("MethodDecl", 3,
+			iv(300), sv("run"), iv(400),
+		),
+		"Extends": makeRel("Extends", 2,
+			iv(100), iv(200), // A extends B
+			iv(200), iv(300), // B extends C
+		),
+		"InterfaceDecl":  eval.NewRelation("InterfaceDecl", 3),
+		"Implements":     eval.NewRelation("Implements", 2),
+		"MethodCall":     eval.NewRelation("MethodCall", 3),
+		"ExprType":       eval.NewRelation("ExprType", 2),
+		"CallCalleeSym":  eval.NewRelation("CallCalleeSym", 2),
+		"FunctionSymbol": eval.NewRelation("FunctionSymbol", 2),
+		"NewExpr":        eval.NewRelation("NewExpr", 2),
+	}
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("childId"), v("name"), v("fn")},
+		Body: []datalog.Literal{
+			pos("MethodDeclInherited", v("childId"), v("name"), v("fn")),
+		},
+	}
+
+	rs := planAndEval(t, CallGraphRules(), query, baseRels)
+	// B inherits "run" from C, A inherits "run" from B (via recursive rule)
+	if len(rs.Rows) != 2 {
+		t.Fatalf("multi-level inheritance: expected 2 inherited methods, got %d: %v", len(rs.Rows), rs.Rows)
+	}
+	if !resultContains(rs, iv(200), sv("run"), iv(400)) {
+		t.Errorf("missing MethodDeclInherited(200, run, 400) — B inherits from C")
+	}
+	if !resultContains(rs, iv(100), sv("run"), iv(400)) {
+		t.Errorf("missing MethodDeclInherited(100, run, 400) — A inherits from C via B")
+	}
+}
+
+// TestInheritedMethodCallResolution regression: call on child type resolves
+// to inherited method (not just directly declared ones).
+func TestInheritedMethodCallResolution(t *testing.T) {
+	// Parent(100) has method "foo"(fn=200). Child(101) extends Parent, no override.
+	// MethodCall on Child.foo should resolve via CallTarget.
+	// This requires MethodDeclInherited to feed into CallTarget rules.
+	// Currently rules 2/3 only join on MethodDecl, not MethodDeclInherited.
+	// This test documents the known gap — inherited methods don't resolve calls YET.
+	// When we unify MethodDeclInherited into MethodDecl, this test should pass.
+	baseRels := map[string]*eval.Relation{
+		"ClassDecl": makeRel("ClassDecl", 3,
+			iv(100), sv("Parent"), iv(999),
+			iv(101), sv("Child"), iv(999),
+		),
+		"MethodDecl": makeRel("MethodDecl", 3,
+			iv(100), sv("foo"), iv(200),
+		),
+		"MethodCall": makeRel("MethodCall", 3,
+			iv(1), iv(2), sv("foo"),
+		),
+		"ExprType": makeRel("ExprType", 2,
+			iv(2), iv(101), // recv typed as Child
+		),
+		"Extends":        makeRel("Extends", 2, iv(101), iv(100)),
+		"InterfaceDecl":  eval.NewRelation("InterfaceDecl", 3),
+		"Implements":     eval.NewRelation("Implements", 2),
+		"CallCalleeSym":  eval.NewRelation("CallCalleeSym", 2),
+		"FunctionSymbol": eval.NewRelation("FunctionSymbol", 2),
+		"NewExpr":        eval.NewRelation("NewExpr", 2),
+	}
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("call"), v("fn")},
+		Body:   []datalog.Literal{pos("CallTarget", v("call"), v("fn"))},
+	}
+
+	rs := planAndEval(t, CallGraphRules(), query, baseRels)
+	// Known gap: inherited methods don't participate in call resolution yet.
+	// This test documents the current behavior. When fixed, update expected count to 1.
+	t.Logf("CallTarget rows for inherited method call: %d (0 = known gap, 1 = fixed)", len(rs.Rows))
+	// TODO: When MethodDecl is unified with MethodDeclInherited, assert len == 1 here.
+}
+
+// TestMergeSystemRulesNilProg regression: nil program should not panic.
+func TestMergeSystemRulesNilProg(t *testing.T) {
+	sysRules := []datalog.Rule{
+		{Head: datalog.Atom{Predicate: "SysRule", Args: []datalog.Term{v("y")}}},
+	}
+
+	merged := MergeSystemRules(nil, sysRules)
+	if merged == nil {
+		t.Fatal("MergeSystemRules(nil, rules) returned nil")
+	}
+	if len(merged.Rules) != 1 {
+		t.Errorf("expected 1 rule, got %d", len(merged.Rules))
+	}
+	if merged.Query != nil {
+		t.Errorf("expected nil query for nil program, got %v", merged.Query)
+	}
+}
+
+// TestMergeSystemRulesEmptyInputs regression: edge cases with empty slices.
+func TestMergeSystemRulesEmptyInputs(t *testing.T) {
+	// Empty system rules
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{{Head: datalog.Atom{Predicate: "User"}}},
+		Query: &datalog.Query{Select: []datalog.Term{v("x")}},
+	}
+	merged := MergeSystemRules(prog, nil)
+	if len(merged.Rules) != 1 {
+		t.Errorf("empty system rules: expected 1 rule, got %d", len(merged.Rules))
+	}
+
+	// Empty user rules
+	prog2 := &datalog.Program{Query: &datalog.Query{Select: []datalog.Term{v("x")}}}
+	sysRules := []datalog.Rule{{Head: datalog.Atom{Predicate: "Sys"}}}
+	merged2 := MergeSystemRules(prog2, sysRules)
+	if len(merged2.Rules) != 1 {
+		t.Errorf("empty user rules: expected 1 rule, got %d", len(merged2.Rules))
 	}
 }

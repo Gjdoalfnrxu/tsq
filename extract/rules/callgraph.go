@@ -72,13 +72,23 @@ func CallGraphRules() []datalog.Rule {
 			pos("MethodDecl", v("classId"), v("name"), v("fn")),
 		),
 
-		// 4. Inheritance (inherited methods):
+		// 4a. Inheritance (base case): inherit from parent's own methods.
 		//    MethodDeclInherited(childId, name, fn) :- Extends(childId, parentId),
 		//        MethodDecl(parentId, name, fn), not MethodDeclDirect(childId, name, _).
 		rule("MethodDeclInherited",
 			[]datalog.Term{v("childId"), v("name"), v("fn")},
 			pos("Extends", v("childId"), v("parentId")),
 			pos("MethodDecl", v("parentId"), v("name"), v("fn")),
+			neg("MethodDeclDirect", v("childId"), v("name"), w()),
+		),
+
+		// 4b. Inheritance (recursive): inherit methods parent itself inherited.
+		//    MethodDeclInherited(childId, name, fn) :- Extends(childId, parentId),
+		//        MethodDeclInherited(parentId, name, fn), not MethodDeclDirect(childId, name, _).
+		rule("MethodDeclInherited",
+			[]datalog.Term{v("childId"), v("name"), v("fn")},
+			pos("Extends", v("childId"), v("parentId")),
+			pos("MethodDeclInherited", v("parentId"), v("name"), v("fn")),
 			neg("MethodDeclDirect", v("childId"), v("name"), w()),
 		),
 
