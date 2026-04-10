@@ -1,0 +1,362 @@
+# 2026/04/10 10:18:09.660252 [TestPropertyJoinCommutativity] [rapid] draw nRels: 4
+# 2026/04/10 10:18:09.660257 [TestPropertyJoinCommutativity] [rapid] draw arity_r0: 4
+# 2026/04/10 10:18:09.660258 [TestPropertyJoinCommutativity] [rapid] draw arity_r1: 2
+# 2026/04/10 10:18:09.660259 [TestPropertyJoinCommutativity] [rapid] draw arity_r2: 3
+# 2026/04/10 10:18:09.660260 [TestPropertyJoinCommutativity] [rapid] draw arity_r3: 2
+# 2026/04/10 10:18:09.660261 [TestPropertyJoinCommutativity] [rapid] draw ntuples_r0: 6
+# 2026/04/10 10:18:09.660262 [TestPropertyJoinCommutativity] [rapid] draw val_r0_0_0: 2
+# 2026/04/10 10:18:09.660262 [TestPropertyJoinCommutativity] [rapid] draw val_r0_0_1: 8
+# 2026/04/10 10:18:09.660263 [TestPropertyJoinCommutativity] [rapid] draw val_r0_0_2: 5
+# 2026/04/10 10:18:09.660264 [TestPropertyJoinCommutativity] [rapid] draw val_r0_0_3: 8
+# 2026/04/10 10:18:09.660265 [TestPropertyJoinCommutativity] [rapid] draw val_r0_1_0: 0
+# 2026/04/10 10:18:09.660266 [TestPropertyJoinCommutativity] [rapid] draw val_r0_1_1: 9
+# 2026/04/10 10:18:09.660266 [TestPropertyJoinCommutativity] [rapid] draw val_r0_1_2: 2
+# 2026/04/10 10:18:09.660267 [TestPropertyJoinCommutativity] [rapid] draw val_r0_1_3: 0
+# 2026/04/10 10:18:09.660268 [TestPropertyJoinCommutativity] [rapid] draw val_r0_2_0: 1
+# 2026/04/10 10:18:09.660269 [TestPropertyJoinCommutativity] [rapid] draw val_r0_2_1: 3
+# 2026/04/10 10:18:09.660269 [TestPropertyJoinCommutativity] [rapid] draw val_r0_2_2: 9
+# 2026/04/10 10:18:09.660270 [TestPropertyJoinCommutativity] [rapid] draw val_r0_2_3: 7
+# 2026/04/10 10:18:09.660271 [TestPropertyJoinCommutativity] [rapid] draw val_r0_3_0: 1
+# 2026/04/10 10:18:09.660272 [TestPropertyJoinCommutativity] [rapid] draw val_r0_3_1: 4
+# 2026/04/10 10:18:09.660272 [TestPropertyJoinCommutativity] [rapid] draw val_r0_3_2: 6
+# 2026/04/10 10:18:09.660273 [TestPropertyJoinCommutativity] [rapid] draw val_r0_3_3: 5
+# 2026/04/10 10:18:09.660274 [TestPropertyJoinCommutativity] [rapid] draw val_r0_4_0: 5
+# 2026/04/10 10:18:09.660274 [TestPropertyJoinCommutativity] [rapid] draw val_r0_4_1: 4
+# 2026/04/10 10:18:09.660275 [TestPropertyJoinCommutativity] [rapid] draw val_r0_4_2: 2
+# 2026/04/10 10:18:09.660276 [TestPropertyJoinCommutativity] [rapid] draw val_r0_4_3: 1
+# 2026/04/10 10:18:09.660277 [TestPropertyJoinCommutativity] [rapid] draw val_r0_5_0: 6
+# 2026/04/10 10:18:09.660277 [TestPropertyJoinCommutativity] [rapid] draw val_r0_5_1: 3
+# 2026/04/10 10:18:09.660278 [TestPropertyJoinCommutativity] [rapid] draw val_r0_5_2: 0
+# 2026/04/10 10:18:09.660278 [TestPropertyJoinCommutativity] [rapid] draw val_r0_5_3: 3
+# 2026/04/10 10:18:09.660279 [TestPropertyJoinCommutativity] [rapid] draw ntuples_r1: 6
+# 2026/04/10 10:18:09.660280 [TestPropertyJoinCommutativity] [rapid] draw val_r1_0_0: 0
+# 2026/04/10 10:18:09.660281 [TestPropertyJoinCommutativity] [rapid] draw val_r1_0_1: 3
+# 2026/04/10 10:18:09.660282 [TestPropertyJoinCommutativity] [rapid] draw val_r1_1_0: 7
+# 2026/04/10 10:18:09.660282 [TestPropertyJoinCommutativity] [rapid] draw val_r1_1_1: 1
+# 2026/04/10 10:18:09.660283 [TestPropertyJoinCommutativity] [rapid] draw val_r1_2_0: 0
+# 2026/04/10 10:18:09.660284 [TestPropertyJoinCommutativity] [rapid] draw val_r1_2_1: 3
+# 2026/04/10 10:18:09.660285 [TestPropertyJoinCommutativity] [rapid] draw val_r1_3_0: 3
+# 2026/04/10 10:18:09.660286 [TestPropertyJoinCommutativity] [rapid] draw val_r1_3_1: 1
+# 2026/04/10 10:18:09.660287 [TestPropertyJoinCommutativity] [rapid] draw val_r1_4_0: 7
+# 2026/04/10 10:18:09.660287 [TestPropertyJoinCommutativity] [rapid] draw val_r1_4_1: 0
+# 2026/04/10 10:18:09.660288 [TestPropertyJoinCommutativity] [rapid] draw val_r1_5_0: 4
+# 2026/04/10 10:18:09.660289 [TestPropertyJoinCommutativity] [rapid] draw val_r1_5_1: 6
+# 2026/04/10 10:18:09.660290 [TestPropertyJoinCommutativity] [rapid] draw ntuples_r2: 5
+# 2026/04/10 10:18:09.660290 [TestPropertyJoinCommutativity] [rapid] draw val_r2_0_0: 8
+# 2026/04/10 10:18:09.660291 [TestPropertyJoinCommutativity] [rapid] draw val_r2_0_1: 2
+# 2026/04/10 10:18:09.660291 [TestPropertyJoinCommutativity] [rapid] draw val_r2_0_2: 0
+# 2026/04/10 10:18:09.660292 [TestPropertyJoinCommutativity] [rapid] draw val_r2_1_0: 9
+# 2026/04/10 10:18:09.660293 [TestPropertyJoinCommutativity] [rapid] draw val_r2_1_1: 3
+# 2026/04/10 10:18:09.660293 [TestPropertyJoinCommutativity] [rapid] draw val_r2_1_2: 6
+# 2026/04/10 10:18:09.660294 [TestPropertyJoinCommutativity] [rapid] draw val_r2_2_0: 2
+# 2026/04/10 10:18:09.660295 [TestPropertyJoinCommutativity] [rapid] draw val_r2_2_1: 6
+# 2026/04/10 10:18:09.660295 [TestPropertyJoinCommutativity] [rapid] draw val_r2_2_2: 0
+# 2026/04/10 10:18:09.660296 [TestPropertyJoinCommutativity] [rapid] draw val_r2_3_0: 0
+# 2026/04/10 10:18:09.660297 [TestPropertyJoinCommutativity] [rapid] draw val_r2_3_1: 8
+# 2026/04/10 10:18:09.660297 [TestPropertyJoinCommutativity] [rapid] draw val_r2_3_2: 8
+# 2026/04/10 10:18:09.660298 [TestPropertyJoinCommutativity] [rapid] draw val_r2_4_0: 7
+# 2026/04/10 10:18:09.660299 [TestPropertyJoinCommutativity] [rapid] draw val_r2_4_1: 1
+# 2026/04/10 10:18:09.660299 [TestPropertyJoinCommutativity] [rapid] draw val_r2_4_2: 3
+# 2026/04/10 10:18:09.660300 [TestPropertyJoinCommutativity] [rapid] draw ntuples_r3: 7
+# 2026/04/10 10:18:09.660301 [TestPropertyJoinCommutativity] [rapid] draw val_r3_0_0: 8
+# 2026/04/10 10:18:09.660302 [TestPropertyJoinCommutativity] [rapid] draw val_r3_0_1: 0
+# 2026/04/10 10:18:09.660302 [TestPropertyJoinCommutativity] [rapid] draw val_r3_1_0: 6
+# 2026/04/10 10:18:09.660303 [TestPropertyJoinCommutativity] [rapid] draw val_r3_1_1: 9
+# 2026/04/10 10:18:09.660304 [TestPropertyJoinCommutativity] [rapid] draw val_r3_2_0: 2
+# 2026/04/10 10:18:09.660304 [TestPropertyJoinCommutativity] [rapid] draw val_r3_2_1: 2
+# 2026/04/10 10:18:09.660305 [TestPropertyJoinCommutativity] [rapid] draw val_r3_3_0: 3
+# 2026/04/10 10:18:09.660306 [TestPropertyJoinCommutativity] [rapid] draw val_r3_3_1: 9
+# 2026/04/10 10:18:09.660307 [TestPropertyJoinCommutativity] [rapid] draw val_r3_4_0: 1
+# 2026/04/10 10:18:09.660307 [TestPropertyJoinCommutativity] [rapid] draw val_r3_4_1: 3
+# 2026/04/10 10:18:09.660308 [TestPropertyJoinCommutativity] [rapid] draw val_r3_5_0: 4
+# 2026/04/10 10:18:09.660309 [TestPropertyJoinCommutativity] [rapid] draw val_r3_5_1: 7
+# 2026/04/10 10:18:09.660311 [TestPropertyJoinCommutativity] [rapid] draw val_r3_6_0: 3
+# 2026/04/10 10:18:09.660311 [TestPropertyJoinCommutativity] [rapid] draw val_r3_6_1: 1
+# 2026/04/10 10:18:09.660312 [TestPropertyJoinCommutativity] [rapid] draw nBody: 2
+# 2026/04/10 10:18:09.660313 [TestPropertyJoinCommutativity] [rapid] draw bodyRelIdx_0: 2
+# 2026/04/10 10:18:09.660314 [TestPropertyJoinCommutativity] [rapid] draw varIdx_0_0: 0
+# 2026/04/10 10:18:09.660315 [TestPropertyJoinCommutativity] [rapid] draw reuse_0_1: 0
+# 2026/04/10 10:18:09.660315 [TestPropertyJoinCommutativity] [rapid] draw bvIdx_0_1: 0
+# 2026/04/10 10:18:09.660316 [TestPropertyJoinCommutativity] [rapid] draw reuse_0_2: 2
+# 2026/04/10 10:18:09.660316 [TestPropertyJoinCommutativity] [rapid] draw varIdx_0_2: 2
+# 2026/04/10 10:18:09.660317 [TestPropertyJoinCommutativity] [rapid] draw bodyRelIdx_1: 3
+# 2026/04/10 10:18:09.660318 [TestPropertyJoinCommutativity] [rapid] draw reuse_1_0: 2
+# 2026/04/10 10:18:09.660318 [TestPropertyJoinCommutativity] [rapid] draw varIdx_1_0: 0
+# 2026/04/10 10:18:09.660319 [TestPropertyJoinCommutativity] [rapid] draw reuse_1_1: 0
+# 2026/04/10 10:18:09.660319 [TestPropertyJoinCommutativity] [rapid] draw bvIdx_1_1: 1
+# 2026/04/10 10:18:09.660320 [TestPropertyJoinCommutativity] [rapid] draw headIdx: 1
+# 2026/04/10 10:18:09.660321 [TestPropertyJoinCommutativity] [rapid] draw headVar_0: 1
+# 2026/04/10 10:18:09.660321 [TestPropertyJoinCommutativity] [rapid] draw headVar_1: 1
+# 2026/04/10 10:18:09.660368 [TestPropertyJoinCommutativity] join commutativity violated for r1: order1 has 6 tuples, order2 has 5
+# rule1: r1(Z, Z) :- r2(X, X, Z), r3(X, Z).
+# 
+# rule2: r1(Z, Z) :- r3(X, Z), r2(X, X, Z).
+# 
+v0.4.8#6507898598159111325
+0x0
+0x19de6e09cd4594
+0x2
+0xd639d59a274e8
+0x751a2150a2ec2
+0x2
+0x1b76b634f75363
+0x126bed70ed7fe
+0x0
+0x8187c3d22de9
+0x1021b3cf916875
+0x1
+0x1f3740d425b6fb
+0x1bb4e29bf61cbb
+0x0
+0xe13c0eb4b4684
+0x12d18956ab1c6
+0x1
+0x31c3bb33d0ae2
+0x1bacb87a652212
+0x2
+0x969c8e8d4407d
+0x162eb085449c60
+0x8
+0x52d0d3d005617
+0x7ffc3f557e08a
+0x5
+0xc6b90686c7bcc
+0xa7b5c73f86770
+0x8
+0x16e0cc1e93468d
+0x120aac8cdf8e38
+0x0
+0x133ec0059ba2f0
+0x1f2c811fac244d
+0xffffffffffffffff
+0xbf90bc2cb7518
+0x58d3237d9b07c
+0x2
+0xc80e6ece77368
+0x13101d811c55b6
+0x0
+0x4f92678404e93
+0xc4b0dde2be80b
+0x1
+0x1ff6f2a795f51b
+0x477249edd3450
+0x3
+0x7fc985cfff35c
+0x1920210bacc17e
+0x9
+0x18c5e674c99c62
+0x120db11f801fba
+0x7
+0x143835bb7dbd39
+0x14457ef4c1fb7b
+0x1
+0x18525fb3bf6dfd
+0x1e758ea901602b
+0x4
+0xd2045240ec52f
+0x796091dd7fe5a
+0x6
+0x169432685226dd
+0x12c661e502d33f
+0x5
+0xd0c1294427ce4
+0x1c164ff3456f25
+0x5
+0x1998be203a947
+0x1d710d3dfe1cac
+0x4
+0x14d28b04167f3f
+0xd3a26239b1eeb
+0x2
+0x14b87457885970
+0x48004574af429
+0x1
+0x3cf396cf73b86
+0x12c60c5b592ee4
+0x6
+0x3f1e3bb755513
+0x3edd44f2715b6
+0x3
+0x1152534402ae29
+0xff98a230079d
+0x0
+0x14703ec0f14f0d
+0x437f98f020ffc
+0x3
+0x5c8330f57d8c2
+0x18e8413d4d707
+0x1
+0x6cfae0420ba15
+0x17b27f6d7cf85
+0x0
+0x10eb909becf23b
+0x1ddd6d3a029b90
+0x3
+0x16b10adc12ce8e
+0xde34127d9a01c
+0x7
+0xa935f381d5e40
+0x1e2d4e7d093647
+0x1
+0xba2a22447259e
+0x342fbb1ce804f
+0x0
+0xb39dcf12d5220
+0xc9fa2ee2a07b2
+0x3
+0xd84d42e67142c
+0x847cc683952ad
+0x3
+0x1cf62ac2bfdb1a
+0x68bfaea5ef70
+0x1
+0x1568ed481604de
+0x7b1adf57b5262
+0x7
+0xba3c56d146146
+0x1a4738738258b
+0x0
+0x3b587f1f23b5f
+0xe5c9159a8765d
+0x4
+0x1161901d80a93d
+0x136a691c772972
+0x6
+0x7840d4997375d
+0x18897ad6c0ab3
+0x0
+0xfcaf1227dcdb5
+0xb3bfbb34ad9b6
+0x8
+0x154ddcd5059c25
+0xd6c6b1f3ad287
+0x2
+0x15b67acaa831b9
+0xda86d3d37b10e
+0x0
+0x13e861aa7be1ad
+0xc6e9ed88ec563
+0x9
+0x14813900d27ce8
+0xe9127a05ae1eb
+0x3
+0x9796ec4c0a8c5
+0x10c75cd215378e
+0x6
+0x1de3b70dc9109
+0x102e0d74a1d9c3
+0x2
+0x10450803a26f1c
+0x1f1cd5a6e06f73
+0x6
+0x1532e9a498bce4
+0x337a94563b45a
+0x0
+0x12c5eeeebc0ff6
+0x11cc0586dad53
+0x0
+0x1af4f90d75cb91
+0x18f107f23a72fd
+0x8
+0x9c46b67a3f027
+0x118fe00d328c79
+0x8
+0x136abe8033c75e
+0x15efc8b5cff184
+0x7
+0x992c015457442
+0x4bb4a79948d79
+0x1
+0x1dc1caf8925a3d
+0x5fd840d38c866
+0x3
+0x191db44dde9c25
+0xd3ca760de3164
+0x2
+0xc14e1dfce20e6
+0x1a2968d070fb09
+0x8
+0x1eb804d8d0bf88
+0x1090466865de04
+0x0
+0xcaf2de87811c1
+0xe7f3864c7c651
+0x6
+0x171eb9279a05ef
+0x12dbb728040fb7
+0x9
+0x138af1d7ae5521
+0x183c28b166bfee
+0x2
+0x94207a7d7ec19
+0x503fbc3ee8467
+0x2
+0xdfe4753733fd2
+0x450550ca39f40
+0x3
+0x795c2eb18e88b
+0x153d1fafcd48dc
+0x9
+0x88f060a51f030
+0x17446439b46af8
+0x1
+0x664fa9a3f6af5
+0xf4a733e1b5efb
+0x3
+0x10a93c599b8401
+0x117a465ab87d82
+0x4
+0x1dcd8ab9b67ebf
+0x90d34fb98dd67
+0x7
+0x70b947b6c1e6b
+0xd2273736a0db2
+0x3
+0x1e7bf9c9b0c552
+0x19db8aa97a3212
+0x1
+0x17b0f9c7a9c32f
+0xef81ce247d6cc
+0x0
+0xea03c296004f4
+0x189564a22e714d
+0x2
+0x6
+0xcbcdd70f20187
+0x0
+0x5
+0xef5d74a24bb29
+0x0
+0x9
+0x1ff097ebccd231
+0x6533502df7ebd
+0x1
+0xb649818401ad0
+0x2
+0x7
+0x1a1311a8e9de9f
+0x2
+0x103e381ea767cb
+0x13920681bb972e
+0x3
+0x543e8823394ad
+0x127eca0c309091
+0x2
+0x1eee0aaf69b4d0
+0x37d764a97ea39
+0x0
+0x1f13cd309b3158
+0x6a2116d4d7391
+0x0
+0x183674889f2f53
+0xcd75207225af8
+0x1
+0x1b55a545c6dfa7
+0x4cbcfcaa654ad
+0x1
+0x9c44ab2396412
+0x1df554cfb9e97
+0x1
+0xf3e2563a9ce5
+0xbfa6ca6256324
+0x1

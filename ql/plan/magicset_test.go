@@ -21,25 +21,6 @@ func TestMagicSetTransformPreservesResults(t *testing.T) {
 			baseNames[i] = fmt.Sprintf("Base%d", i)
 		}
 
-		// Generate base facts as flat int tuples.
-		type baseFact struct {
-			pred string
-			args []int
-		}
-		var facts []baseFact
-		arity := 2 // keep it simple
-
-		for _, name := range baseNames {
-			nFacts := rapid.IntRange(3, 8).Draw(t, fmt.Sprintf("nFacts_%s", name))
-			for fi := 0; fi < nFacts; fi++ {
-				args := make([]int, arity)
-				for ai := 0; ai < arity; ai++ {
-					args[ai] = rapid.IntRange(0, 5).Draw(t, fmt.Sprintf("fact_%s_%d_%d", name, fi, ai))
-				}
-				facts = append(facts, baseFact{pred: name, args: args})
-			}
-		}
-
 		// Create a simple IDB rule: Derived(x,y) :- Base0(x,z), Base1(z,y).
 		bodyIdx0 := rapid.IntRange(0, nBase-1).Draw(t, "bodyIdx0")
 		bodyIdx1 := rapid.IntRange(0, nBase-1).Draw(t, "bodyIdx1")
@@ -92,7 +73,7 @@ func TestMagicSetTransformPreservesResults(t *testing.T) {
 
 		// Plan with magic-set (bind first column of Derived).
 		queryBindings := map[string][]int{"Derived": {0}}
-		ep2, errs2 := PlanWithMagicSet(prog, nil, queryBindings)
+		ep2, errs2 := WithMagicSet(prog, nil, queryBindings)
 		if len(errs2) > 0 {
 			t.Skip("magic-set plan error: ", errs2[0])
 		}
@@ -321,9 +302,9 @@ func TestMagicSetPlannable(t *testing.T) {
 			boundCols = []int{col}
 		}
 
-		_, errs := PlanWithMagicSet(prog, nil, map[string][]int{"Path": boundCols})
+		_, errs := WithMagicSet(prog, nil, map[string][]int{"Path": boundCols})
 		if len(errs) > 0 {
-			t.Fatalf("PlanWithMagicSet failed: %v", errs[0])
+			t.Fatalf("WithMagicSet failed: %v", errs[0])
 		}
 	})
 }

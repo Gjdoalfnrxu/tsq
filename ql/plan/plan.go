@@ -47,10 +47,10 @@ type PlannedQuery struct {
 	JoinOrder []JoinStep
 }
 
-// PlanWithMagicSet applies the magic-set transformation to the program using
+// WithMagicSet applies the magic-set transformation to the program using
 // the given query bindings, then plans the resulting program. queryBindings
 // maps predicate names to bound argument positions.
-func PlanWithMagicSet(prog *datalog.Program, sizeHints map[string]int, queryBindings map[string][]int) (*ExecutionPlan, []error) {
+func WithMagicSet(prog *datalog.Program, sizeHints map[string]int, queryBindings map[string][]int) (*ExecutionPlan, []error) {
 	transformed := MagicSetTransform(prog, queryBindings)
 	return Plan(transformed, sizeHints)
 }

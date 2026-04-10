@@ -585,7 +585,7 @@ func TestMagicSetPreservesResults(t *testing.T) {
 	}
 
 	// Evaluate with magic-set (bind Path column 0).
-	ep2, errs2 := plan.PlanWithMagicSet(prog, nil, map[string][]int{"Path": {0}})
+	ep2, errs2 := plan.WithMagicSet(prog, nil, map[string][]int{"Path": {0}})
 	if len(errs2) > 0 {
 		t.Fatalf("magic-set plan error: %v", errs2)
 	}

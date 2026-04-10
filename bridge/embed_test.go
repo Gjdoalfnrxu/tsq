@@ -74,13 +74,13 @@ func TestLoadBridgeContentsAreUTF8(t *testing.T) {
 	}
 }
 
-// TestBridgeImportLoaderKnownPaths verifies the import loader recognises bridge paths.
-func TestBridgeImportLoaderKnownPaths(t *testing.T) {
+// TestImportLoaderKnownPaths verifies the import loader recognises bridge paths.
+func TestImportLoaderKnownPaths(t *testing.T) {
 	files := LoadBridge()
 	stubParse := func(src, file string) interface{} {
 		return src // return something non-nil so we can verify the loader calls parseFn
 	}
-	loader := BridgeImportLoader(files, stubParse)
+	loader := ImportLoader(files, stubParse)
 
 	knownPaths := []string{
 		"tsq::base",
@@ -97,19 +97,19 @@ func TestBridgeImportLoaderKnownPaths(t *testing.T) {
 	for _, path := range knownPaths {
 		result, ok := loader(path)
 		if !ok {
-			t.Errorf("BridgeImportLoader did not recognise path %q", path)
+			t.Errorf("ImportLoader did not recognise path %q", path)
 		}
 		if result == nil {
-			t.Errorf("BridgeImportLoader returned nil for known path %q", path)
+			t.Errorf("ImportLoader returned nil for known path %q", path)
 		}
 	}
 }
 
-// TestBridgeImportLoaderUnknownPaths verifies the import loader rejects unknown paths.
-func TestBridgeImportLoaderUnknownPaths(t *testing.T) {
+// TestImportLoaderUnknownPaths verifies the import loader rejects unknown paths.
+func TestImportLoaderUnknownPaths(t *testing.T) {
 	files := LoadBridge()
 	stubParse := func(src, file string) interface{} { return src }
-	loader := BridgeImportLoader(files, stubParse)
+	loader := ImportLoader(files, stubParse)
 
 	unknownPaths := []string{
 		"javascript",
@@ -119,7 +119,7 @@ func TestBridgeImportLoaderUnknownPaths(t *testing.T) {
 	for _, path := range unknownPaths {
 		_, ok := loader(path)
 		if ok {
-			t.Errorf("BridgeImportLoader should not recognise path %q", path)
+			t.Errorf("ImportLoader should not recognise path %q", path)
 		}
 	}
 }

@@ -19,8 +19,8 @@ type ResultSet struct {
 	Rows    [][]Value
 }
 
-// EvalOption configures the evaluator.
-type EvalOption func(*evalConfig)
+// Option configures the evaluator.
+type Option func(*evalConfig)
 
 type evalConfig struct {
 	maxIterations int
@@ -30,19 +30,19 @@ type evalConfig struct {
 // WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
 // If the limit is reached, a warning is logged and evaluation proceeds with
 // the results computed so far. A value of 0 means no limit.
-func WithMaxIterations(n int) EvalOption {
+func WithMaxIterations(n int) Option {
 	return func(c *evalConfig) { c.maxIterations = n }
 }
 
 // WithParallel enables parallel evaluation of independent rules within
 // a stratum's fixpoint iteration. Rules with different head predicates
 // are evaluated concurrently.
-func WithParallel() EvalOption {
+func WithParallel() Option {
 	return func(c *evalConfig) { c.parallel = true }
 }
 
 // Evaluate executes an ExecutionPlan over base facts and returns results.
-func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[string]*Relation, opts ...EvalOption) (*ResultSet, error) {
+func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[string]*Relation, opts ...Option) (*ResultSet, error) {
 	cfg := evalConfig{maxIterations: DefaultMaxIterations}
 	for _, o := range opts {
 		o(&cfg)
