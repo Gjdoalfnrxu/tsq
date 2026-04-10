@@ -47,11 +47,12 @@ type Comparison struct {
 
 // Aggregate is an aggregation sub-goal.
 type Aggregate struct {
-	Func     string // "count", "min", "max", "sum", "avg"
-	Var      string // the aggregated variable
-	TypeName string // the declared type of the var
-	Body     []Literal
-	Expr     Term // what is aggregated (for min/max/sum/avg)
+	Func      string // "count", "min", "max", "sum", "avg"
+	Var       string // the aggregated variable
+	TypeName  string // the declared type of the var
+	Body      []Literal
+	Expr      Term // what is aggregated (for min/max/sum/avg)
+	ResultVar Var  // the fresh variable that holds the aggregate result
 }
 
 // Term is a Datalog term (variable, constant, or wildcard).
@@ -145,10 +146,14 @@ func aggregateString(a *Aggregate) string {
 		parts[i] = literalString(lit)
 	}
 	body := strings.Join(parts, ", ")
-	if a.Expr != nil {
-		return fmt.Sprintf("%s(%s %s | %s | %s)", a.Func, a.TypeName, a.Var, body, termString(a.Expr))
+	result := ""
+	if a.ResultVar.Name != "" {
+		result = a.ResultVar.Name + " = "
 	}
-	return fmt.Sprintf("%s(%s %s | %s)", a.Func, a.TypeName, a.Var, body)
+	if a.Expr != nil {
+		return fmt.Sprintf("%s%s(%s %s | %s | %s)", result, a.Func, a.TypeName, a.Var, body, termString(a.Expr))
+	}
+	return fmt.Sprintf("%s%s(%s %s | %s)", result, a.Func, a.TypeName, a.Var, body)
 }
 
 func termString(t Term) string {

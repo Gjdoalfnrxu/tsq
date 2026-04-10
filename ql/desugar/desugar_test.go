@@ -464,6 +464,72 @@ class Bar {
 	if !bodyHasAgg(r.Body, "count") {
 		t.Errorf("Bar_countFoos body should have count aggregate, got: %v", r.Body)
 	}
+
+	// The aggregate's ResultVar must be set so the fresh variable is bound.
+	var agg *datalog.Aggregate
+	for _, lit := range r.Body {
+		if lit.Agg != nil && lit.Agg.Func == "count" {
+			agg = lit.Agg
+			break
+		}
+	}
+	if agg == nil {
+		t.Fatal("could not find count aggregate literal")
+	}
+	if agg.ResultVar.Name == "" {
+		t.Errorf("Aggregate.ResultVar should be set (non-empty), got empty")
+	}
+
+	// Program.String() should include the result var name.
+	str := prog.String()
+	if !strings.Contains(str, agg.ResultVar.Name) {
+		t.Errorf("Program.String() should contain ResultVar %q, got: %s", agg.ResultVar.Name, str)
+	}
+}
+
+// TestDesugarOverrideThreeLevel verifies that a 3-level override chain (A ← B ← C,
+// all defining the same method) emits C's body under A_method.
+func TestDesugarOverrideThreeLevel(t *testing.T) {
+	src := `
+class A { A() { any() } int getX() { result = 1 } }
+class B extends A { B() { any() } int getX() { result = 2 } }
+class C extends B { C() { any() } int getX() { result = 3 } }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// Collect all rules for A_getX.
+	var aRules []*datalog.Rule
+	for i := range prog.Rules {
+		if prog.Rules[i].Head.Predicate == "A_getX" {
+			aRules = append(aRules, &prog.Rules[i])
+		}
+	}
+	// Expect 3 rules: one for A itself, one for B, one for C.
+	if len(aRules) < 3 {
+		t.Fatalf("expected at least 3 rules for A_getX (A, B, C), got %d", len(aRules))
+	}
+
+	// One rule must have C(this) positively — that is C's body.
+	hasCRule := false
+	for _, r := range aRules {
+		if bodyContainsPred(r.Body, "C") {
+			hasCRule = true
+		}
+	}
+	if !hasCRule {
+		t.Error("expected one A_getX rule to have C(this) positively (C's override body)")
+	}
+
+	// The base A rule must exclude both B and C.
+	for _, r := range aRules {
+		if bodyContainsPred(r.Body, "A") && !bodyContainsPred(r.Body, "B") && !bodyContainsPred(r.Body, "C") {
+			// This is the A base rule — it should exclude B and C.
+			if !bodyContainsNegPred(r.Body, "B") || !bodyContainsNegPred(r.Body, "C") {
+				t.Errorf("A base rule should exclude both B and C: %v", r.Body)
+			}
+		}
+	}
 }
 
 // 16. instanceof: x instanceof Foo → Foo(x).

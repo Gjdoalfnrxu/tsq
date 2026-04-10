@@ -13,9 +13,9 @@ import (
 // Errors are non-fatal; the returned program is always non-nil.
 func Desugar(mod *resolve.ResolvedModule) (*datalog.Program, []error) {
 	d := &desugarer{
-		mod:      mod,
-		ann:      mod.Annotations,
-		env:      mod.Env,
+		mod:        mod,
+		ann:        mod.Annotations,
+		env:        mod.Env,
 		subClasses: make(map[string][]string),
 	}
 	d.buildSubclassMap()
@@ -32,10 +32,10 @@ func (g *freshVarGen) next() datalog.Var {
 
 // desugarer holds all state for a single desugaring run.
 type desugarer struct {
-	mod        *resolve.ResolvedModule
-	ann        *resolve.Annotations
-	env        *resolve.Environment
-	errors     []error
+	mod    *resolve.ResolvedModule
+	ann    *resolve.Annotations
+	env    *resolve.Environment
+	errors []error
 	// subClasses maps class name → names of classes that directly extend it.
 	subClasses map[string][]string
 }
@@ -131,27 +131,27 @@ func (d *desugarer) superTypeConstraints(cd *ast.ClassDecl, _ *freshVarGen) []da
 
 // desugarMethod emits rules for a method, handling override dispatch.
 //
-// For single inheritance, if a subclass also defines the same method,
-// the base class rule gets a "not SubClass(this)" exclusion.
+// For a chain A ← B ← C where all define the method, we collect ALL transitive
+// overriding subclasses and emit one dispatch rule per overrider under the base
+// class predicate name.  Each rule excludes its own direct subclass overriders.
 func (d *desugarer) desugarMethod(cd *ast.ClassDecl, md *ast.MemberDecl) []datalog.Rule {
 	mangledName := mangle(cd.Name, md.Name)
 
-	// Collect all subclasses (direct) that override this method.
-	overridingSubClasses := d.directSubClassesWithMethod(cd.Name, md.Name)
+	// Collect ALL transitive subclasses that override this method.
+	allOverriders := d.allSubClassesWithMethod(cd.Name, md.Name)
 
-	// Base rule: this class's own implementation.
-	baseRule := d.buildMethodRule(cd, md, mangledName, overridingSubClasses)
+	// The base class rule excludes every transitive overrider.
+	baseRule := d.buildMethodRule(cd, md, mangledName, allOverriders)
 	rules := []datalog.Rule{baseRule}
 
-	// Override rules: for each overriding subclass, emit a rule on the
-	// *mangled name of the base class* (so callers of Foo_getX get all dispatch).
-	// We also emit a rule for the subclass's own mangled name.
-	for _, subName := range overridingSubClasses {
+	// For each overriding subclass, emit a rule under the base predicate name.
+	// Each such rule only excludes that subclass's own direct overriding sub-subclasses,
+	// so the dispatch is precise at each level.
+	for _, subName := range allOverriders {
 		subCD, ok := d.env.Classes[subName]
 		if !ok {
 			continue
 		}
-		// Find the overriding member in the subclass.
 		var overrideMD *ast.MemberDecl
 		for i := range subCD.Members {
 			if subCD.Members[i].Name == md.Name {
@@ -162,9 +162,7 @@ func (d *desugarer) desugarMethod(cd *ast.ClassDecl, md *ast.MemberDecl) []datal
 		if overrideMD == nil {
 			continue
 		}
-
-		// Emit: BaseName_method(this, result) :- SubClass(this), [sub body].
-		// Also further exclude sub-subclasses that override.
+		// Exclude only the direct overriding subclasses of this subclass.
 		subOverriders := d.directSubClassesWithMethod(subName, md.Name)
 		overrideRule := d.buildMethodRule(subCD, overrideMD, mangledName, subOverriders)
 		rules = append(rules, overrideRule)
@@ -238,6 +236,36 @@ func (d *desugarer) directSubClassesWithMethod(className, methodName string) []s
 		}
 	}
 	return result
+}
+
+// allSubClassesWithMethod returns all transitive subclasses of className
+// that directly declare a member named methodName.
+func (d *desugarer) allSubClassesWithMethod(className, methodName string) []string {
+	var result []string
+	visited := make(map[string]bool)
+	d.collectSubClassesWithMethod(className, methodName, &result, visited)
+	return result
+}
+
+func (d *desugarer) collectSubClassesWithMethod(className, methodName string, out *[]string, visited map[string]bool) {
+	for _, subName := range d.subClasses[className] {
+		if visited[subName] {
+			continue
+		}
+		visited[subName] = true
+		subCD, ok := d.env.Classes[subName]
+		if !ok {
+			continue
+		}
+		for i := range subCD.Members {
+			if subCD.Members[i].Name == methodName {
+				*out = append(*out, subName)
+				break
+			}
+		}
+		// Always recurse to capture deeper chains.
+		d.collectSubClassesWithMethod(subName, methodName, out, visited)
+	}
 }
 
 // mangle produces the Datalog predicate name for a class method.
@@ -325,30 +353,25 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 		return append(left, right...)
 
 	case *ast.Disjunction:
-		// Datalog doesn't natively support disjunction in rule bodies.
-		// We represent it as a best-effort by emitting both sides.
-		// (A full implementation would split into two rules at the call site.)
-		// For now, emit left side (document limitation).
+		// Datalog doesn't natively support disjunction in rule bodies without rule
+		// splitting.  Emit an error rather than silently evaluating only the left branch.
+		d.errorf("disjunction (or) is not yet supported in v1 — only the left branch will be evaluated")
 		left := d.desugarFormula(n.Left, gen)
-		// TODO: full disjunction requires rule splitting; only left branch emitted.
 		_ = n.Right
 		return left
 
 	case *ast.Negation:
 		inner := d.desugarFormula(n.Formula, gen)
-		// Wrap each inner literal in negation.
-		// If there are multiple literals, wrap in a helper — for simplicity,
-		// we negate the first atom or comparison we find.
 		if len(inner) == 1 {
 			lit := inner[0]
 			lit.Positive = !lit.Positive
 			return []datalog.Literal{lit}
 		}
-		// Multiple literals: negate the entire conjunction by negating each.
-		for i := range inner {
-			inner[i].Positive = !inner[i].Positive
-		}
-		return inner
+		// Multiple literals: negating a conjunction requires De Morgan / rule splitting,
+		// which is not supported in v1.  Emit an error rather than silently producing
+		// wrong results (not A, not B instead of the correct not A or not B).
+		d.errorf("negation of conjunction not yet supported — only single-literal negation is supported in v1")
+		return nil
 
 	case *ast.Comparison:
 		left, leftLits := d.desugarExpr(n.Left, gen)
@@ -413,7 +436,7 @@ func (d *desugarer) desugarPredicateCall(pc *ast.PredicateCall, gen *freshVarGen
 			args = append(args, t)
 		}
 
-		predName := d.resolveMethodCallPred(pc.Recv, pc.Name)
+		predName := d.resolvePredicateCallRecvPred(pc)
 		if predName == "" {
 			predName = pc.Name
 		}
@@ -470,12 +493,15 @@ func (d *desugarer) desugarExists(n *ast.Exists, gen *freshVarGen) []datalog.Lit
 // Desugared as: not(guard and not(body))
 // In Datalog literals: not Guard OR (Guard AND Body) — we use double negation.
 // Representation: for each guard literal G, emit:
-//   not G_v  OR  (G_v AND Body_v)
+//
+//	not G_v  OR  (G_v AND Body_v)
+//
 // Simplified: we emit the guard literals negated, then the body using double-neg.
 //
 // Full double-negation in stratified Datalog:
-//   forall v: G(v) => B(v)
-//   ≡ not exists v: G(v) and not B(v)
+//
+//	forall v: G(v) => B(v)
+//	≡ not exists v: G(v) and not B(v)
 //
 // We cannot express "not exists" directly in a rule body without a helper predicate.
 // We emit it as nested negation literals (relying on the planner to stratify).
@@ -633,15 +659,91 @@ func (d *desugarer) desugarMethodCallExpr(mc *ast.MethodCall, gen *freshVarGen) 
 
 // resolveMethodCallPred determines the mangled Datalog predicate name for a method call.
 // It uses the resolver annotations to find the defining class.
+// recv must be the *ast.MethodCall node itself (for expression-position calls) — the
+// resolver writes ExprResolutions keyed on the MethodCall node.
+// For PredicateCall receivers (formula-position method calls), pass nil for recv and
+// use resolvePredicateCallRecvPred instead.
 func (d *desugarer) resolveMethodCallPred(recv ast.Expr, methodName string) string {
 	if d.ann != nil {
 		if res, ok := d.ann.ExprResolutions[recv]; ok && res != nil && res.DeclClass != nil {
 			return mangle(res.DeclClass.Name, methodName)
 		}
 	}
-	// Fallback: try to infer from variable type in the expression itself.
-	// For MethodCall receivers, the resolution is keyed on the mc node, not recv.
 	return methodName
+}
+
+// resolveReceiverType infers the class name of an expression by consulting
+// VarBindings (for Variables) and ExprResolutions (for MethodCall/FieldAccess).
+func (d *desugarer) resolveReceiverType(recv ast.Expr) string {
+	if d.ann == nil {
+		return ""
+	}
+	switch n := recv.(type) {
+	case *ast.Variable:
+		// VarBindings records the ParamDecl, whose Type gives the class name.
+		if vb, ok := d.ann.VarBindings[n]; ok && vb.Param != nil {
+			return vb.Param.Type.String()
+		}
+		// Special case: "this" is not in VarBindings but we can infer from ExprResolutions
+		// if there is any resolution that mentions the class. As a fallback, return "".
+		return ""
+	case *ast.MethodCall:
+		if res, ok := d.ann.ExprResolutions[n]; ok && res != nil && res.DeclMember != nil && res.DeclMember.ReturnType != nil {
+			return res.DeclMember.ReturnType.String()
+		}
+		return ""
+	case *ast.Cast:
+		return n.Type.String()
+	}
+	return ""
+}
+
+// resolvePredicateCallRecvPred determines the mangled predicate name for a
+// formula-position method call (pc.Recv != nil). The resolver does not annotate
+// PredicateCall nodes in ExprResolutions, so we infer from the receiver type.
+func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
+	recvType := d.resolveReceiverType(pc.Recv)
+	if recvType == "" {
+		return pc.Name
+	}
+	// Walk the class hierarchy to find the defining class (handles inheritance).
+	if cd, ok := d.env.Classes[recvType]; ok {
+		defClass := d.memberDefiningClass(cd, pc.Name)
+		if defClass != nil {
+			return mangle(defClass.Name, pc.Name)
+		}
+	}
+	return mangle(recvType, pc.Name)
+}
+
+// memberDefiningClass walks the supertype chain from cd to find the class
+// that directly declares a member named name.
+func (d *desugarer) memberDefiningClass(cd *ast.ClassDecl, name string) *ast.ClassDecl {
+	if cd == nil {
+		return nil
+	}
+	visited := make(map[string]bool)
+	return d.memberDefiningClassRec(cd, name, visited)
+}
+
+func (d *desugarer) memberDefiningClassRec(cd *ast.ClassDecl, name string, visited map[string]bool) *ast.ClassDecl {
+	if cd == nil || visited[cd.Name] {
+		return nil
+	}
+	visited[cd.Name] = true
+	for i := range cd.Members {
+		if cd.Members[i].Name == name {
+			return cd
+		}
+	}
+	for _, st := range cd.SuperTypes {
+		if superCD, ok := d.env.Classes[st.String()]; ok {
+			if found := d.memberDefiningClassRec(superCD, name, visited); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
 }
 
 // resolveFieldAccessPred determines the predicate name for a field access.
@@ -700,28 +802,18 @@ func (d *desugarer) desugarAggregateExpr(a *ast.Aggregate, gen *freshVarGen) (da
 	// A fresh variable holds the aggregate result.
 	fresh := gen.next()
 	agg := &datalog.Aggregate{
-		Func:     a.Op,
-		Var:      aggVar,
-		TypeName: aggType,
-		Body:     bodyLits,
-		Expr:     aggExpr,
+		Func:      a.Op,
+		Var:       aggVar,
+		TypeName:  aggType,
+		Body:      bodyLits,
+		Expr:      aggExpr,
+		ResultVar: fresh,
 	}
 
 	lit := datalog.Literal{
 		Positive: true,
 		Agg:      agg,
 	}
-
-	// Bind fresh var to the aggregate result via an equality comparison.
-	bindLit := datalog.Literal{
-		Positive: true,
-		Cmp: &datalog.Comparison{
-			Op:    "=",
-			Left:  fresh,
-			Right: datalog.Var{Name: fmt.Sprintf("agg_result_%s", a.Op)},
-		},
-	}
-	_ = bindLit
 
 	return fresh, []datalog.Literal{lit}
 }
