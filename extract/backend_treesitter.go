@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/typescript/tsx"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
@@ -45,8 +46,10 @@ var kindMap = map[string]string{
 	"block":                                 "Block",
 	"variable_declaration":                  "VariableDeclaration",
 	"lexical_declaration":                   "LexicalDeclaration",
-	"function_expression":                   "FunctionExpression",
-	"method_definition":                     "MethodDefinition",
+	"function_expression":                      "FunctionExpression",
+	"generator_function":                       "GeneratorFunction",
+	"generator_function_declaration":           "GeneratorFunctionDeclaration",
+	"method_definition":                        "MethodDefinition",
 	"class_declaration":                     "ClassDeclaration",
 	"class_body":                            "ClassBody",
 	"property_identifier":                   "PropertyIdentifier",
@@ -129,19 +132,22 @@ type tsconfig struct {
 }
 
 // TreeSitterBackend implements ExtractorBackend using the smacker/go-tree-sitter
-// bindings with the TypeScript grammar.
+// bindings with the TypeScript grammar. .tsx files are parsed with the TSX
+// grammar so that JSX syntax is handled correctly.
 type TreeSitterBackend struct {
-	parser  *sitter.Parser
-	files   []string
-	rootDir string
+	parser    *sitter.Parser // TypeScript grammar parser
+	tsxParser *sitter.Parser // TSX grammar parser (for .tsx files)
+	files     []string
+	rootDir   string
 }
 
 // Open initialises the backend. It resolves source files by walking rootDir
 // and collecting .ts/.tsx files, optionally filtered by a tsconfig.json.
 func (b *TreeSitterBackend) Open(ctx context.Context, cfg ProjectConfig) error {
-	lang := typescript.GetLanguage()
 	b.parser = sitter.NewParser()
-	b.parser.SetLanguage(lang)
+	b.parser.SetLanguage(typescript.GetLanguage())
+	b.tsxParser = sitter.NewParser()
+	b.tsxParser.SetLanguage(tsx.GetLanguage())
 	b.rootDir = cfg.RootDir
 
 	var files []string
@@ -312,7 +318,13 @@ func (b *TreeSitterBackend) walkFile(ctx context.Context, path string, v ASTVisi
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	tree, err := b.parser.ParseCtx(ctx, nil, content)
+	// Use the TSX grammar for .tsx files to correctly handle JSX syntax.
+	parser := b.parser
+	if strings.EqualFold(filepath.Ext(path), ".tsx") && b.tsxParser != nil {
+		parser = b.tsxParser
+	}
+
+	tree, err := parser.ParseCtx(ctx, nil, content)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -377,11 +389,15 @@ func (b *TreeSitterBackend) CrossFileRefs(_ context.Context, _ SymbolRef) ([]Nod
 	return nil, ErrUnsupported
 }
 
-// Close releases the tree-sitter parser.
+// Close releases the tree-sitter parsers.
 func (b *TreeSitterBackend) Close() error {
 	if b.parser != nil {
 		b.parser.Close()
 		b.parser = nil
+	}
+	if b.tsxParser != nil {
+		b.tsxParser.Close()
+		b.tsxParser = nil
 	}
 	return nil
 }

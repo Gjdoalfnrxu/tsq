@@ -96,12 +96,13 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 	sa.nodeScope[startByte] = blockScope
 
 	switch kind {
-	case "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDefinition":
+	case "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDefinition",
+		"GeneratorFunction", "GeneratorFunctionDeclaration":
 		// Functions create a new function scope (and also a block scope).
 		newFnScope := newScope(blockScope)
 		// Hoist the function name into the *enclosing* function scope (not block scope)
 		// for function declarations.
-		if kind == "FunctionDeclaration" {
+		if kind == "FunctionDeclaration" || kind == "GeneratorFunctionDeclaration" {
 			name := sa.childFieldText(n, "name")
 			if name != "" {
 				fnScope.declare(name, &Declaration{
