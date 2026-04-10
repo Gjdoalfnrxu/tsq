@@ -80,9 +80,7 @@ func (tw *TypeAwareWalker) Leave(node ASTNode) error {
 	kind := node.Kind()
 
 	// Pop function stack
-	switch kind {
-	case "FunctionDeclaration", "ArrowFunction", "FunctionExpression", "MethodDefinition",
-		"GeneratorFunction", "GeneratorFunctionDeclaration":
+	if IsFunctionKind(kind) {
 		if len(tw.fnStack) > 0 {
 			tw.fnStack = tw.fnStack[:len(tw.fnStack)-1]
 		}
@@ -113,14 +111,14 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 	kind := node.Kind()
 	id := tw.fw.nid(node)
 
+	if IsFunctionKind(kind) {
+		tw.pushFunction(node, id)
+	}
 	switch kind {
 	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression":
 		tw.emitClassDecl(node, id)
 	case "InterfaceDeclaration":
 		tw.emitInterfaceDecl(node, id)
-	case "FunctionDeclaration", "ArrowFunction", "FunctionExpression", "MethodDefinition",
-		"GeneratorFunction", "GeneratorFunctionDeclaration":
-		tw.pushFunction(node, id)
 	case "NewExpression":
 		tw.emitNewExpr(node, id)
 	case "CallExpression":

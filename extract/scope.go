@@ -99,7 +99,7 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 
 	switch kind {
 	case "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDefinition",
-		"GeneratorFunction", "GeneratorFunctionDeclaration":
+		"GeneratorFunction", "GeneratorFunctionDeclaration": // kept in sync via FunctionKinds
 		// Functions create a new function scope (and also a block scope).
 		newFnScope := newScope(blockScope)
 		// Hoist the function name into the *enclosing* function scope (not block scope)
@@ -135,7 +135,7 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 	case "Block":
 		// A new block scope
 		newBlock := newScope(blockScope)
-		sa.iterChildrenWith(n, newBlock, fnScope)
+		sa.iterChildren(n, newBlock, fnScope)
 
 	case "ImportDeclaration":
 		// import bindings go into the file/function scope (module level)
@@ -161,17 +161,6 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 
 // iterChildren calls buildScope on all children with the same scopes.
 func (sa *ScopeAnalyzer) iterChildren(n ASTNode, blockScope, fnScope *Scope) {
-	count := n.ChildCount()
-	for i := 0; i < count; i++ {
-		child := n.Child(i)
-		if child != nil {
-			sa.buildScope(child, blockScope, fnScope)
-		}
-	}
-}
-
-// iterChildrenWith calls buildScope on all children with the provided scopes.
-func (sa *ScopeAnalyzer) iterChildrenWith(n ASTNode, blockScope, fnScope *Scope) {
 	count := n.ChildCount()
 	for i := 0; i < count; i++ {
 		child := n.Child(i)

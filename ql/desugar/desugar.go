@@ -759,33 +759,9 @@ func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
 }
 
 // memberDefiningClass walks the supertype chain from cd to find the class
-// that directly declares a member named name.
+// that directly declares a member named name. Delegates to ast.MemberDefiningClass.
 func (d *desugarer) memberDefiningClass(cd *ast.ClassDecl, name string) *ast.ClassDecl {
-	if cd == nil {
-		return nil
-	}
-	visited := make(map[string]bool)
-	return d.memberDefiningClassRec(cd, name, visited)
-}
-
-func (d *desugarer) memberDefiningClassRec(cd *ast.ClassDecl, name string, visited map[string]bool) *ast.ClassDecl {
-	if cd == nil || visited[cd.Name] {
-		return nil
-	}
-	visited[cd.Name] = true
-	for i := range cd.Members {
-		if cd.Members[i].Name == name {
-			return cd
-		}
-	}
-	for _, st := range cd.SuperTypes {
-		if superCD, ok := d.env.Classes[st.String()]; ok {
-			if found := d.memberDefiningClassRec(superCD, name, visited); found != nil {
-				return found
-			}
-		}
-	}
-	return nil
+	return ast.MemberDefiningClass(cd, name, d.env.Classes)
 }
 
 // resolveFieldAccessPred determines the predicate name for a field access.
