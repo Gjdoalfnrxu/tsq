@@ -3,7 +3,6 @@ package testutil
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -43,5 +42,5 @@ func Contains(t *testing.T, s, substr string) {
 // Failf fails the test with a formatted message.
 func Failf(t *testing.T, format string, args ...interface{}) {
 	t.Helper()
-	t.Fatal(fmt.Sprintf(format, args...))
+	t.Fatalf(format, args...)
 }
