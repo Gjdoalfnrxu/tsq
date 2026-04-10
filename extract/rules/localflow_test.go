@@ -278,7 +278,8 @@ func TestAllSystemRulesCount(t *testing.T) {
 	cg := CallGraphRules()
 	lf := LocalFlowRules()
 	sm := SummaryRules()
-	expected := len(cg) + len(lf) + len(sm)
+	co := CompositionRules()
+	expected := len(cg) + len(lf) + len(sm) + len(co)
 	if len(all) != expected {
 		t.Errorf("expected %d rules, got %d", expected, len(all))
 	}

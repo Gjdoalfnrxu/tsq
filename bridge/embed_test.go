@@ -20,6 +20,7 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"tsq_callgraph.qll",
 		"tsq_dataflow.qll",
 		"tsq_summaries.qll",
+		"tsq_composition.qll",
 		"tsq_taint.qll",
 	}
 	files := LoadBridge()

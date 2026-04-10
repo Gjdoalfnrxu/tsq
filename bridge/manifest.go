@@ -106,6 +106,9 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ParamToSink", Relation: "ParamToSink", File: "tsq_summaries.qll"},
 			{Name: "SourceToReturn", Relation: "SourceToReturn", File: "tsq_summaries.qll"},
 			{Name: "CallReturnToReturn", Relation: "CallReturnToReturn", File: "tsq_summaries.qll"},
+			// v2 Phase C3: inter-procedural composition
+			{Name: "InterFlow", Relation: "InterFlow", File: "tsq_composition.qll"},
+			{Name: "FlowStar", Relation: "FlowStar", File: "tsq_composition.qll"},
 			// v2 Phase D placeholders: taint analysis base relations
 			{Name: "TaintSink", Relation: "TaintSink", File: "tsq_taint.qll"},
 			{Name: "TaintSource", Relation: "TaintSource", File: "tsq_taint.qll"},

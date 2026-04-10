@@ -294,6 +294,16 @@ func init() {
 		{Name: "callId", Type: TypeEntityRef},
 	}})
 
+	// v2 Phase C3: inter-procedural composition (computed by system Datalog rules)
+	RegisterRelation(RelationDef{Name: "InterFlow", Version: 2, Columns: []ColumnDef{
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "FlowStar", Version: 2, Columns: []ColumnDef{
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
+	}})
+
 	// v2 Phase D placeholders: taint analysis base relations (empty until Phase D)
 	RegisterRelation(RelationDef{Name: "TaintSink", Version: 2, Columns: []ColumnDef{
 		{Name: "sinkExpr", Type: TypeEntityRef},
