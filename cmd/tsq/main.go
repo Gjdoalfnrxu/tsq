@@ -3,11 +3,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -32,7 +34,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "usage: tsq <command> [flags]")
 		fmt.Fprintln(stderr, "commands: extract, query, check, version")
-		return 1
+		return 2
 	}
 
 	// Parse global flags that appear before the subcommand.
@@ -40,7 +42,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var timeout time.Duration
 
 	// Find the subcommand: skip global flags.
-	subcmdIdx := 0
+	subcmdIdx := -1
 	for i, arg := range args {
 		if arg == "--verbose" || arg == "-verbose" {
 			verbose = true
@@ -62,6 +64,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		subcmdIdx = i
 		break
+	}
+
+	if subcmdIdx < 0 {
+		fmt.Fprintln(stderr, "usage: tsq <command> [flags]")
+		fmt.Fprintln(stderr, "commands: extract, query, check, version")
+		return 2
 	}
 
 	subcmd := args[subcmdIdx]
@@ -103,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintf(stderr, "error: unknown command %q\n", subcmd)
 		fmt.Fprintln(stderr, "commands: extract, query, check, version")
-		return 1
+		return 2
 	}
 }
 
@@ -114,6 +122,9 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	outputFile := fs.String("output", "tsq.db", "output fact database file")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 
@@ -122,27 +133,48 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	database := db.NewDB()
 	walker := extract.NewFactWalker(database)
 	backend := &extract.TreeSitterBackend{}
+	defer func() {
+		if err := backend.Close(); err != nil {
+			fmt.Fprintf(stderr, "warning: close backend: %v\n", err)
+		}
+	}()
 
 	cfg := extract.ProjectConfig{RootDir: *dir}
 	if err := walker.Run(ctx, backend, cfg); err != nil {
 		fmt.Fprintf(stderr, "error: extraction failed: %v\n", err)
 		return 1
 	}
-	if err := backend.Close(); err != nil {
-		fmt.Fprintf(stderr, "warning: close backend: %v\n", err)
-	}
 
-	f, err := os.Create(*outputFile)
+	// Write to a temp file first, rename on success to avoid partial output.
+	outDir := filepath.Dir(*outputFile)
+	tmpFile, err := os.CreateTemp(outDir, ".tsq-*.db.tmp")
 	if err != nil {
-		fmt.Fprintf(stderr, "error: create output file: %v\n", err)
+		fmt.Fprintf(stderr, "error: create temp file: %v\n", err)
 		return 1
 	}
-	defer f.Close()
+	tmpPath := tmpFile.Name()
+	success := false
+	defer func() {
+		if !success {
+			os.Remove(tmpPath)
+		}
+	}()
 
-	if err := database.Encode(f); err != nil {
+	if err := database.Encode(tmpFile); err != nil {
+		tmpFile.Close()
 		fmt.Fprintf(stderr, "error: write database: %v\n", err)
 		return 1
 	}
+	if err := tmpFile.Close(); err != nil {
+		fmt.Fprintf(stderr, "error: close temp file: %v\n", err)
+		return 1
+	}
+
+	if err := os.Rename(tmpPath, *outputFile); err != nil {
+		fmt.Fprintf(stderr, "error: rename output file: %v\n", err)
+		return 1
+	}
+	success = true
 
 	fmt.Fprintf(stderr, "wrote %s\n", *outputFile)
 	return 0
@@ -155,13 +187,16 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	format := fs.String("format", "json", "output format: sarif, json, csv")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(stderr, "error: query requires a QUERY_FILE argument")
 		fmt.Fprintln(stderr, "usage: tsq query [--db FILE] [--format sarif|json|csv] QUERY_FILE")
-		return 1
+		return 2
 	}
 	queryFile := fs.Arg(0)
 
@@ -210,13 +245,16 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(stderr, "error: check requires a QUERY_FILE argument")
 		fmt.Fprintln(stderr, "usage: tsq check QUERY_FILE")
-		return 1
+		return 2
 	}
 	queryFile := fs.Arg(0)
 
