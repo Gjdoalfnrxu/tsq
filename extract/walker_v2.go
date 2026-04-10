@@ -298,6 +298,14 @@ func (tw *TypeAwareWalker) pushFunction(node ASTNode, id uint32) {
 		}
 	}
 
+	// Emit ReturnSym: synthetic symbol for the function's return value.
+	{
+		retSymID := ReturnSymID(tw.fw.filePath, node.StartLine(), node.StartCol())
+		tw.fw.emit("ReturnSym", id, retSymID)
+		// Also emit the return symbol into SymInFunction so dataflow rules can scope it.
+		tw.fw.emit("SymInFunction", retSymID, id)
+	}
+
 	// MethodDecl: if inside a class or interface
 	if kind == "MethodDefinition" && len(tw.classOrIfaceStack) > 0 {
 		containerID := tw.classOrIfaceStack[len(tw.classOrIfaceStack)-1]
