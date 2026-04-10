@@ -47,12 +47,13 @@ type Comparison struct {
 
 // Aggregate is an aggregation sub-goal.
 type Aggregate struct {
-	Func      string // "count", "min", "max", "sum", "avg"
+	Func      string // "count", "min", "max", "sum", "avg", "concat", "strictcount", "strictsum", "rank"
 	Var       string // the aggregated variable
 	TypeName  string // the declared type of the var
 	Body      []Literal
-	Expr      Term // what is aggregated (for min/max/sum/avg)
-	ResultVar Var  // the fresh variable that holds the aggregate result
+	Expr      Term   // what is aggregated (for min/max/sum/avg)
+	ResultVar Var    // the fresh variable that holds the aggregate result
+	Separator string // separator for concat aggregate
 }
 
 // Term is a Datalog term (variable, constant, or wildcard).

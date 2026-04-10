@@ -134,6 +134,9 @@ func (p *Parser) Parse() (*ast.Module, error) {
 	}
 
 	for !p.at(TokEOF) && !p.at(TokError) {
+		// Parse any leading annotations.
+		anns := p.parseAnnotations()
+
 		switch p.current.Type {
 		case TokKwImport:
 			imp, err := p.parseImport()
@@ -165,6 +168,7 @@ func (p *Parser) Parse() (*ast.Module, error) {
 			if err != nil {
 				return nil, err
 			}
+			pred.Annotations = anns
 			mod.Predicates = append(mod.Predicates, *pred)
 		case TokKwFrom:
 			sel, err := p.parseSelectClause()
@@ -185,6 +189,7 @@ func (p *Parser) Parse() (*ast.Module, error) {
 			if err != nil {
 				return nil, err
 			}
+			pred.Annotations = anns
 			mod.Predicates = append(mod.Predicates, *pred)
 		default:
 			return nil, p.errorf("unexpected token %q at top level", p.current.Lit)
@@ -322,6 +327,7 @@ func (p *Parser) parseModule() (*ast.ModuleDecl, error) {
 	}
 
 	for !p.at(TokRBrace) && !p.at(TokEOF) {
+		anns := p.parseAnnotations()
 		switch p.current.Type {
 		case TokKwAbstract:
 			cls, err := p.parseAbstractClass()
@@ -340,6 +346,7 @@ func (p *Parser) parseModule() (*ast.ModuleDecl, error) {
 			if err != nil {
 				return nil, err
 			}
+			pred.Annotations = anns
 			m.Predicates = append(m.Predicates, *pred)
 		case TokKwModule:
 			nested, err := p.parseModule()
@@ -352,6 +359,7 @@ func (p *Parser) parseModule() (*ast.ModuleDecl, error) {
 			if err != nil {
 				return nil, err
 			}
+			pred.Annotations = anns
 			m.Predicates = append(m.Predicates, *pred)
 		default:
 			return nil, p.errorf("unexpected token %q in module body", p.current.Lit)
@@ -368,10 +376,14 @@ func (p *Parser) parseModule() (*ast.ModuleDecl, error) {
 }
 
 func (p *Parser) parseClassMember(className string) (*ast.MemberDecl, bool, error) {
+	// Parse annotations before the member.
+	anns := p.parseAnnotations()
+
 	startLine := p.current.Line
 	startCol := p.current.Col
 	member := &ast.MemberDecl{
-		Span: ast.Span{File: p.file, StartLine: startLine, StartCol: startCol},
+		Span:        ast.Span{File: p.file, StartLine: startLine, StartCol: startCol},
+		Annotations: anns,
 	}
 
 	// Check for override modifier
@@ -794,6 +806,8 @@ func (p *Parser) parseComparisonOrAtom() (ast.Formula, error) {
 		return p.parseExists()
 	case TokKwForall:
 		return p.parseForall()
+	case TokKwForex:
+		return p.parseForex()
 	case TokKwNone:
 		return p.parseNone()
 	case TokKwAny:
@@ -952,6 +966,47 @@ func (p *Parser) parseForall() (ast.Formula, error) {
 	}
 
 	return &ast.Forall{
+		BaseFormula: ast.BaseFormula{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},
+		Decls:       decls,
+		Guard:       guard,
+		Body:        body,
+	}, nil
+}
+
+func (p *Parser) parseForex() (ast.Formula, error) {
+	tok := p.advance() // forex
+	if _, err := p.expect(TokLParen); err != nil {
+		return nil, err
+	}
+
+	decls, err := p.parseVarDeclList()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TokPipe); err != nil {
+		return nil, err
+	}
+
+	guard, err := p.parseFormula()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TokPipe); err != nil {
+		return nil, err
+	}
+
+	body, err := p.parseFormula()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TokRParen); err != nil {
+		return nil, err
+	}
+
+	return &ast.Forex{
 		BaseFormula: ast.BaseFormula{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},
 		Decls:       decls,
 		Guard:       guard,
@@ -1179,8 +1234,16 @@ func (p *Parser) parsePrimary() (ast.Expr, error) {
 			Name:     "result",
 		}, nil
 
-	case TokKwCount, TokKwMin, TokKwMax, TokKwSum, TokKwAvg:
+	case TokKwCount, TokKwMin, TokKwMax, TokKwSum, TokKwAvg,
+		TokKwConcat, TokKwStrictcount, TokKwStrictsum, TokKwRank:
 		return p.parseAggregate()
+
+	case TokKwSuper:
+		tok := p.advance()
+		return &ast.Variable{
+			BaseExpr: ast.BaseExpr{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},
+			Name:     "super",
+		}, nil
 
 	case TokIdent:
 		tok := p.advance()
@@ -1221,11 +1284,23 @@ func (p *Parser) parsePrimary() (ast.Expr, error) {
 }
 
 func (p *Parser) parseAggregate() (ast.Expr, error) {
-	tok := p.advance() // count/min/max/sum/avg
+	tok := p.advance() // count/min/max/sum/avg/concat/strictcount/strictsum/rank
 	opName := tok.Lit
 
 	if _, err := p.expect(TokLParen); err != nil {
 		return nil, err
+	}
+
+	// For concat, the first argument is a string separator: concat(string sep | ...)
+	var separator string
+	if opName == "concat" {
+		if p.at(TokString) {
+			sepTok := p.advance()
+			separator = sepTok.Lit
+			if _, err := p.expect(TokPipe); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	decls, err := p.parseVarDeclList()
@@ -1264,12 +1339,13 @@ func (p *Parser) parseAggregate() (ast.Expr, error) {
 	}
 
 	return &ast.Aggregate{
-		BaseExpr: ast.BaseExpr{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},
-		Op:       opName,
-		Decls:    decls,
-		Guard:    guard,
-		Body:     body,
-		Expr:     aggExpr,
+		BaseExpr:  ast.BaseExpr{Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col}},
+		Op:        opName,
+		Decls:     decls,
+		Guard:     guard,
+		Body:      body,
+		Expr:      aggExpr,
+		Separator: separator,
 	}, nil
 }
 
@@ -1390,4 +1466,49 @@ func (p *Parser) parseSelectExprs() ([]ast.Expr, []string, error) {
 		p.advance()
 	}
 	return exprs, labels, nil
+}
+
+// parseAnnotations parses zero or more annotations before a predicate/member declaration.
+// Recognized forms:
+//   - `private` → Annotation{Name: "private"}
+//   - `deprecated` → Annotation{Name: "deprecated"}
+//   - `pragma[inline]` → Annotation{Name: "pragma", Args: ["inline"]}
+//   - `bindingset[x, y]` → Annotation{Name: "bindingset", Args: ["x", "y"]}
+//   - `language[monotonicAggregates]` → Annotation{Name: "language", Args: ["monotonicAggregates"]}
+func (p *Parser) parseAnnotations() []ast.Annotation {
+	var anns []ast.Annotation
+	for {
+		switch p.current.Type {
+		case TokKwPrivate:
+			p.advance()
+			anns = append(anns, ast.Annotation{Name: "private"})
+		case TokKwDeprecated:
+			p.advance()
+			anns = append(anns, ast.Annotation{Name: "deprecated"})
+		case TokKwPragma, TokKwBindingset, TokKwLanguage:
+			name := p.current.Lit
+			p.advance()
+			var args []string
+			if p.at(TokLBrack) {
+				p.advance()
+				for !p.at(TokRBrack) && !p.at(TokEOF) {
+					arg, err := p.expect(TokIdent)
+					if err != nil {
+						break
+					}
+					args = append(args, arg.Lit)
+					if !p.at(TokComma) {
+						break
+					}
+					p.advance()
+				}
+				if p.at(TokRBrack) {
+					p.advance()
+				}
+			}
+			anns = append(anns, ast.Annotation{Name: name, Args: args})
+		default:
+			return anns
+		}
+	}
 }

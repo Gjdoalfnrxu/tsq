@@ -606,6 +606,9 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 		disj := &ast.Disjunction{Left: thenBranch, Right: elseBranch}
 		return d.desugarFormula(disj, gen)
 
+	case *ast.Forex:
+		return d.desugarForex(n, gen)
+
 	case *ast.ClosureCall:
 		return d.desugarClosureCall(n, gen)
 
@@ -756,6 +759,26 @@ func (d *desugarer) desugarForall(n *ast.Forall, gen *freshVarGen) []datalog.Lit
 	return lits
 }
 
+// desugarForex: forex(decls | guard | body)
+// Desugared as: forall(decls | guard | body) and exists(decls | guard)
+func (d *desugarer) desugarForex(n *ast.Forex, gen *freshVarGen) []datalog.Literal {
+	// Desugar as conjunction of forall and exists.
+	forallNode := &ast.Forall{
+		Decls: n.Decls,
+		Guard: n.Guard,
+		Body:  n.Body,
+	}
+	existsNode := &ast.Exists{
+		Decls: n.Decls,
+		Guard: n.Guard,
+		Body:  n.Guard, // exists(decls | guard) — body is the guard itself
+	}
+
+	forallLits := d.desugarForall(forallNode, gen)
+	existsLits := d.desugarExists(existsNode, gen)
+	return append(forallLits, existsLits...)
+}
+
 // ---- Expression desugaring ----
 
 // desugarExpr lowers an ast.Expr to a (Term, []Literal) pair.
@@ -869,7 +892,12 @@ func (d *desugarer) desugarMethodCallExpr(mc *ast.MethodCall, gen *freshVarGen) 
 	}
 
 	// Determine the predicate name.
-	predName := d.resolveMethodCallPred(mc, mc.Method)
+	var predName string
+	if v, ok := mc.Recv.(*ast.Variable); ok && v.Name == "super" {
+		predName = d.resolveSuperMethod(mc.Method)
+	} else {
+		predName = d.resolveMethodCallPred(mc, mc.Method)
+	}
 
 	// Desugar args.
 	args := []datalog.Term{recv}
@@ -936,6 +964,10 @@ func (d *desugarer) resolveReceiverType(recv ast.Expr) string {
 // formula-position method call (pc.Recv != nil). The resolver does not annotate
 // PredicateCall nodes in ExprResolutions, so we infer from the receiver type.
 func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
+	// Handle super: resolve against parent class instead of current class.
+	if v, ok := pc.Recv.(*ast.Variable); ok && v.Name == "super" {
+		return d.resolveSuperMethod(pc.Name)
+	}
 	recvType := d.resolveReceiverType(pc.Recv)
 	if recvType == "" {
 		return pc.Name
@@ -948,6 +980,27 @@ func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
 		}
 	}
 	return mangle(recvType, pc.Name)
+}
+
+// resolveSuperMethod resolves a super.method() call by finding the parent class
+// that defines the method. It searches the first (leftmost) supertype chain.
+func (d *desugarer) resolveSuperMethod(methodName string) string {
+	// Find the current class context from annotations.
+	// We need to find which class we're in. Walk all classes to find the one
+	// that has a member calling super.
+	// Heuristic: look through all classes for one that defines methodName and
+	// has a supertype that also defines it.
+	for _, cd := range d.env.Classes {
+		for _, st := range cd.SuperTypes {
+			if parentCD, ok := d.env.Classes[st.String()]; ok {
+				defClass := d.memberDefiningClass(parentCD, methodName)
+				if defClass != nil {
+					return mangle(defClass.Name, methodName)
+				}
+			}
+		}
+	}
+	return methodName
 }
 
 // memberDefiningClass walks the supertype chain from cd to find the class
@@ -1018,6 +1071,7 @@ func (d *desugarer) desugarAggregateExpr(a *ast.Aggregate, gen *freshVarGen) (da
 		Body:      bodyLits,
 		Expr:      aggExpr,
 		ResultVar: fresh,
+		Separator: a.Separator,
 	}
 
 	lit := datalog.Literal{

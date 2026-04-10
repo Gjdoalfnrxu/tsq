@@ -1070,3 +1070,294 @@ func TestClosureCallInConjunction(t *testing.T) {
 		t.Fatalf("expected ClosureCall on left, got %T", conj.Left)
 	}
 }
+
+// --- Phase 1h: Additional aggregates ---
+
+func TestParseConcat(t *testing.T) {
+	mod := mustParse(t, `
+		from string s
+		where s = concat(", " | string v | v = "a" | v)
+		select s
+	`)
+	if mod.Select == nil {
+		t.Fatal("expected select clause")
+	}
+}
+
+func TestParseConcatNoSep(t *testing.T) {
+	mod := mustParse(t, `
+		from string s
+		where s = concat(string v | v = "a" | v)
+		select s
+	`)
+	if mod.Select == nil {
+		t.Fatal("expected select clause")
+	}
+}
+
+func TestParseStrictcount(t *testing.T) {
+	mod := mustParse(t, `
+		predicate foo(int n) {
+			n = strictcount(int v | v = 1)
+		}
+	`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	cmp, ok := body.(*ast.Comparison)
+	if !ok {
+		t.Fatalf("expected Comparison, got %T", body)
+	}
+	agg, ok := cmp.Right.(*ast.Aggregate)
+	if !ok {
+		t.Fatalf("expected Aggregate, got %T", cmp.Right)
+	}
+	if agg.Op != "strictcount" {
+		t.Errorf("expected op 'strictcount', got %q", agg.Op)
+	}
+}
+
+func TestParseStrictsum(t *testing.T) {
+	mod := mustParse(t, `
+		predicate foo(int n) {
+			n = strictsum(int v | v = 1 | v)
+		}
+	`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	cmp, ok := body.(*ast.Comparison)
+	if !ok {
+		t.Fatalf("expected Comparison, got %T", body)
+	}
+	agg, ok := cmp.Right.(*ast.Aggregate)
+	if !ok {
+		t.Fatalf("expected Aggregate, got %T", cmp.Right)
+	}
+	if agg.Op != "strictsum" {
+		t.Errorf("expected op 'strictsum', got %q", agg.Op)
+	}
+}
+
+func TestParseRank(t *testing.T) {
+	mod := mustParse(t, `
+		predicate foo(int n) {
+			n = rank(int v | v = 1 | v)
+		}
+	`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	cmp, ok := body.(*ast.Comparison)
+	if !ok {
+		t.Fatalf("expected Comparison, got %T", body)
+	}
+	agg, ok := cmp.Right.(*ast.Aggregate)
+	if !ok {
+		t.Fatalf("expected Aggregate, got %T", cmp.Right)
+	}
+	if agg.Op != "rank" {
+		t.Errorf("expected op 'rank', got %q", agg.Op)
+	}
+}
+
+// --- Phase 1i: forex ---
+
+func TestParseForex(t *testing.T) {
+	mod := mustParse(t, `
+		predicate allPositive() {
+			forex(int x | x > 0 | x < 100)
+		}
+	`)
+	pred := mod.Predicates[0]
+	body := *pred.Body
+	fx, ok := body.(*ast.Forex)
+	if !ok {
+		t.Fatalf("expected Forex, got %T", body)
+	}
+	if len(fx.Decls) != 1 {
+		t.Errorf("expected 1 decl, got %d", len(fx.Decls))
+	}
+	if fx.Decls[0].Name != "x" {
+		t.Errorf("expected decl name 'x', got %q", fx.Decls[0].Name)
+	}
+}
+
+// --- Phase 1j: super ---
+
+func TestParseSuperMethodCall(t *testing.T) {
+	mod := mustParse(t, `
+		class A extends Base {
+			override int getValue() {
+				result = super.getValue()
+			}
+		}
+	`)
+	cls := mod.Classes[0]
+	if len(cls.Members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(cls.Members))
+	}
+	body := *cls.Members[0].Body
+	cmp, ok := body.(*ast.Comparison)
+	if !ok {
+		t.Fatalf("expected Comparison, got %T", body)
+	}
+	mc, ok := cmp.Right.(*ast.MethodCall)
+	if !ok {
+		t.Fatalf("expected MethodCall, got %T", cmp.Right)
+	}
+	recv, ok := mc.Recv.(*ast.Variable)
+	if !ok {
+		t.Fatalf("expected Variable recv, got %T", mc.Recv)
+	}
+	if recv.Name != "super" {
+		t.Errorf("expected recv name 'super', got %q", recv.Name)
+	}
+	if mc.Method != "getValue" {
+		t.Errorf("expected method 'getValue', got %q", mc.Method)
+	}
+}
+
+// --- Phase 1k: Multiple inheritance (parser already supports comma-separated extends) ---
+
+func TestParseMultipleInheritance(t *testing.T) {
+	mod := mustParse(t, `
+		class C extends A, B {
+			C() { this instanceof A }
+		}
+	`)
+	cls := mod.Classes[0]
+	if len(cls.SuperTypes) != 2 {
+		t.Fatalf("expected 2 supertypes, got %d", len(cls.SuperTypes))
+	}
+	if cls.SuperTypes[0].String() != "A" || cls.SuperTypes[1].String() != "B" {
+		t.Errorf("expected supertypes [A, B], got [%s, %s]", cls.SuperTypes[0], cls.SuperTypes[1])
+	}
+}
+
+// --- Phase 1l: Annotations ---
+
+func TestParsePrivateAnnotation(t *testing.T) {
+	mod := mustParse(t, `
+		private predicate helper(int x) { x = 1 }
+	`)
+	pred := mod.Predicates[0]
+	if len(pred.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation, got %d", len(pred.Annotations))
+	}
+	if pred.Annotations[0].Name != "private" {
+		t.Errorf("expected annotation 'private', got %q", pred.Annotations[0].Name)
+	}
+}
+
+func TestParseDeprecatedAnnotation(t *testing.T) {
+	mod := mustParse(t, `
+		deprecated predicate old(int x) { x = 1 }
+	`)
+	pred := mod.Predicates[0]
+	if len(pred.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation, got %d", len(pred.Annotations))
+	}
+	if pred.Annotations[0].Name != "deprecated" {
+		t.Errorf("expected annotation 'deprecated', got %q", pred.Annotations[0].Name)
+	}
+}
+
+func TestParsePragmaAnnotation(t *testing.T) {
+	mod := mustParse(t, `
+		pragma[inline]
+		predicate helper(int x) { x = 1 }
+	`)
+	pred := mod.Predicates[0]
+	if len(pred.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation, got %d", len(pred.Annotations))
+	}
+	ann := pred.Annotations[0]
+	if ann.Name != "pragma" {
+		t.Errorf("expected annotation 'pragma', got %q", ann.Name)
+	}
+	if len(ann.Args) != 1 || ann.Args[0] != "inline" {
+		t.Errorf("expected args [inline], got %v", ann.Args)
+	}
+}
+
+func TestParseBindingsetAnnotation(t *testing.T) {
+	mod := mustParse(t, `
+		bindingset[x, y]
+		predicate helper(int x, int y) { x = y }
+	`)
+	pred := mod.Predicates[0]
+	if len(pred.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation, got %d", len(pred.Annotations))
+	}
+	ann := pred.Annotations[0]
+	if ann.Name != "bindingset" {
+		t.Errorf("expected annotation 'bindingset', got %q", ann.Name)
+	}
+	if len(ann.Args) != 2 || ann.Args[0] != "x" || ann.Args[1] != "y" {
+		t.Errorf("expected args [x, y], got %v", ann.Args)
+	}
+}
+
+func TestParseLanguageAnnotation(t *testing.T) {
+	mod := mustParse(t, `
+		language[monotonicAggregates]
+		predicate helper(int x) { x = 1 }
+	`)
+	pred := mod.Predicates[0]
+	if len(pred.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation, got %d", len(pred.Annotations))
+	}
+	ann := pred.Annotations[0]
+	if ann.Name != "language" {
+		t.Errorf("expected annotation 'language', got %q", ann.Name)
+	}
+	if len(ann.Args) != 1 || ann.Args[0] != "monotonicAggregates" {
+		t.Errorf("expected args [monotonicAggregates], got %v", ann.Args)
+	}
+}
+
+func TestParseMultipleAnnotations(t *testing.T) {
+	mod := mustParse(t, `
+		private deprecated
+		predicate helper(int x) { x = 1 }
+	`)
+	pred := mod.Predicates[0]
+	if len(pred.Annotations) != 2 {
+		t.Fatalf("expected 2 annotations, got %d", len(pred.Annotations))
+	}
+	if pred.Annotations[0].Name != "private" {
+		t.Errorf("expected first annotation 'private', got %q", pred.Annotations[0].Name)
+	}
+	if pred.Annotations[1].Name != "deprecated" {
+		t.Errorf("expected second annotation 'deprecated', got %q", pred.Annotations[1].Name)
+	}
+}
+
+func TestParseMemberAnnotation(t *testing.T) {
+	mod := mustParse(t, `
+		class Foo extends Bar {
+			private predicate helper() { none() }
+		}
+	`)
+	cls := mod.Classes[0]
+	if len(cls.Members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(cls.Members))
+	}
+	member := cls.Members[0]
+	if len(member.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation on member, got %d", len(member.Annotations))
+	}
+	if member.Annotations[0].Name != "private" {
+		t.Errorf("expected annotation 'private', got %q", member.Annotations[0].Name)
+	}
+}
+
+func TestLexerBrackets(t *testing.T) {
+	l := parse.NewLexer("[ ]", "test.ql")
+	tok := l.Next()
+	if tok.Type != parse.TokLBrack {
+		t.Errorf("expected TokLBrack, got %d", tok.Type)
+	}
+	tok = l.Next()
+	if tok.Type != parse.TokRBrack {
+		t.Errorf("expected TokRBrack, got %d", tok.Type)
+	}
+}

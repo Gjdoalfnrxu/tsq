@@ -72,44 +72,66 @@ const (
 	TokKwIf
 	TokKwThen
 	TokKwElse
+	TokKwConcat
+	TokKwStrictcount
+	TokKwStrictsum
+	TokKwRank
+	TokKwForex
+	TokKwSuper
+	TokKwDeprecated
+	TokKwPragma
+	TokKwBindingset
+	TokKwLanguage
+	TokLBrack // [
+	TokRBrack // ]
 
 	TokEOF
 	TokError // malformed input
 )
 
 var keywords = map[string]TokenType{
-	"import":     TokKwImport,
-	"as":         TokKwAs,
-	"class":      TokKwClass,
-	"extends":    TokKwExtends,
-	"predicate":  TokKwPredicate,
-	"from":       TokKwFrom,
-	"where":      TokKwWhere,
-	"select":     TokKwSelect,
-	"exists":     TokKwExists,
-	"forall":     TokKwForall,
-	"not":        TokKwNot,
-	"and":        TokKwAnd,
-	"or":         TokKwOr,
-	"instanceof": TokKwInstanceof,
-	"result":     TokKwResult,
-	"this":       TokKwThis,
-	"none":       TokKwNone,
-	"any":        TokKwAny,
-	"true":       TokKwTrue,
-	"false":      TokKwFalse,
-	"override":   TokKwOverride,
-	"abstract":   TokKwAbstract,
-	"module":     TokKwModule,
-	"private":    TokKwPrivate,
-	"count":      TokKwCount,
-	"min":        TokKwMin,
-	"max":        TokKwMax,
-	"sum":        TokKwSum,
-	"avg":        TokKwAvg,
-	"if":         TokKwIf,
-	"then":       TokKwThen,
-	"else":       TokKwElse,
+	"import":      TokKwImport,
+	"as":          TokKwAs,
+	"class":       TokKwClass,
+	"extends":     TokKwExtends,
+	"predicate":   TokKwPredicate,
+	"from":        TokKwFrom,
+	"where":       TokKwWhere,
+	"select":      TokKwSelect,
+	"exists":      TokKwExists,
+	"forall":      TokKwForall,
+	"not":         TokKwNot,
+	"and":         TokKwAnd,
+	"or":          TokKwOr,
+	"instanceof":  TokKwInstanceof,
+	"result":      TokKwResult,
+	"this":        TokKwThis,
+	"none":        TokKwNone,
+	"any":         TokKwAny,
+	"true":        TokKwTrue,
+	"false":       TokKwFalse,
+	"override":    TokKwOverride,
+	"abstract":    TokKwAbstract,
+	"module":      TokKwModule,
+	"private":     TokKwPrivate,
+	"count":       TokKwCount,
+	"min":         TokKwMin,
+	"max":         TokKwMax,
+	"sum":         TokKwSum,
+	"avg":         TokKwAvg,
+	"if":          TokKwIf,
+	"then":        TokKwThen,
+	"else":        TokKwElse,
+	"concat":      TokKwConcat,
+	"strictcount": TokKwStrictcount,
+	"strictsum":   TokKwStrictsum,
+	"rank":        TokKwRank,
+	"forex":       TokKwForex,
+	"super":       TokKwSuper,
+	"deprecated":  TokKwDeprecated,
+	"pragma":      TokKwPragma,
+	"bindingset":  TokKwBindingset,
+	"language":    TokKwLanguage,
 }
 
 // Token is a single QL token.
@@ -299,6 +321,10 @@ func (l *Lexer) Next() Token {
 		return Token{Type: TokPipe, Lit: "|", Line: startLine, Col: startCol}
 	case '@':
 		return Token{Type: TokAt, Lit: "@", Line: startLine, Col: startCol}
+	case '[':
+		return Token{Type: TokLBrack, Lit: "[", Line: startLine, Col: startCol}
+	case ']':
+		return Token{Type: TokRBrack, Lit: "]", Line: startLine, Col: startCol}
 	case '+':
 		return Token{Type: TokPlus, Lit: "+", Line: startLine, Col: startCol}
 	case '-':
