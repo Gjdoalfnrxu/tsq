@@ -122,10 +122,10 @@ func v2Manifest() *CapabilityManifest {
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
+			// v2 Phase 2c: CodeQL-compatible TaintTracking module
+			{Name: "TaintTracking::Configuration", Relation: "Symbol", File: "compat_tainttracking.qll"},
 		},
-		Unavailable: []UnavailableClass{
-			{Name: "TaintTracking", Reason: "IPA-dependent; requires data flow framework", VersionTarget: "v3"},
-		},
+		Unavailable: []UnavailableClass{},
 	}
 }
 

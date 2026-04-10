@@ -96,10 +96,10 @@ func TestBridgeRelationArities(t *testing.T) {
 	}
 }
 
-// TestBridgeNoTaintTrackingClasses ensures we fail-closed: no TaintTracking
-// classes in the bridge (DataFlow is now allowed via compat_dataflow.qll).
-func TestBridgeNoTaintTrackingClasses(t *testing.T) {
-	forbidden := []string{"TaintTracking", "TaintStep"}
+// TestBridgeNoTaintStepClass ensures we fail-closed: no TaintStep
+// classes in the bridge (TaintTracking is now allowed via compat_tainttracking.qll).
+func TestBridgeNoTaintStepClass(t *testing.T) {
+	forbidden := []string{"TaintStep"}
 	files := LoadBridge()
 	for name, data := range files {
 		src := string(data)
