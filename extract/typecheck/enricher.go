@@ -18,7 +18,6 @@ type Enricher struct {
 	client  *Client
 	project string // project handle from tsgo (cached)
 
-	mu          sync.Mutex
 	projectOnce sync.Once
 	projectErr  error
 	rootDir     string

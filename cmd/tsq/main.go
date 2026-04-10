@@ -255,15 +255,22 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir string
 		// Populate ResolvedType and SymbolType/ExprType relations
 		for _, fact := range facts {
 			typeID := extract.TypeEntityID(fact.TypeHandle)
-			database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay)
+			if err := database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay); err != nil {
+				fmt.Fprintf(stderr, "warning: add ResolvedType: %v\n", err)
+				continue
+			}
 
 			// Map position back to a node ID for ExprType
 			nodeID := extract.PositionNodeID(filePath, fact.Line, fact.Col)
-			database.Relation("ExprType").AddTuple(database, nodeID, typeID)
+			if err := database.Relation("ExprType").AddTuple(database, nodeID, typeID); err != nil {
+				fmt.Fprintf(stderr, "warning: add ExprType: %v\n", err)
+			}
 
 			// If we can resolve a symbol at this position, populate SymbolType
 			symID := extract.SymID(filePath, "", fact.Line, fact.Col)
-			database.Relation("SymbolType").AddTuple(database, symID, typeID)
+			if err := database.Relation("SymbolType").AddTuple(database, symID, typeID); err != nil {
+				fmt.Fprintf(stderr, "warning: add SymbolType: %v\n", err)
+			}
 		}
 	}
 
@@ -292,13 +299,7 @@ func collectEnrichmentPositions(database *db.DB, filePath string) []typecheck.Po
 			continue
 		}
 		switch kind {
-		case "VariableDeclarator", "RequiredParameter", "OptionalParameter",
-			"FormalParameters", "Identifier":
-			// Only collect Identifier nodes that are inside declarations
-			// For simplicity, collect VariableDeclarator and parameter kinds
-			if kind == "Identifier" {
-				continue
-			}
+		case "VariableDeclarator", "RequiredParameter", "OptionalParameter":
 			line, err := nodeRel.GetInt(i, 3) // col 3 = startLine
 			if err != nil {
 				continue
