@@ -1,4 +1,4 @@
-.PHONY: build test lint extract query
+.PHONY: build test lint extract query setup
 
 build:
 	go build -o bin/tsq ./cmd/tsq
@@ -14,3 +14,7 @@ extract:
 
 query:
 	go run ./cmd/tsq query $(ARGS)
+
+setup:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
