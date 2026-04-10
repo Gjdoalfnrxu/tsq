@@ -19,6 +19,8 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"tsq_symbols.qll",
 		"tsq_callgraph.qll",
 		"tsq_dataflow.qll",
+		"tsq_summaries.qll",
+		"tsq_taint.qll",
 	}
 	files := LoadBridge()
 	if len(files) != len(expected) {
@@ -106,7 +108,6 @@ func TestBridgeImportLoaderUnknownPaths(t *testing.T) {
 	loader := BridgeImportLoader(files, stubParse)
 
 	unknownPaths := []string{
-		"tsq::taint",
 		"javascript",
 		"DataFlow::PathGraph",
 		"",

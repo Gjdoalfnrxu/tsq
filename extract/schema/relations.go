@@ -264,6 +264,46 @@ func init() {
 		{Name: "dstSym", Type: TypeEntityRef},
 	}})
 
+	// v2 Phase C2: function-level summaries (computed by system Datalog rules)
+	RegisterRelation(RelationDef{Name: "ParamToReturn", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "paramIdx", Type: TypeInt32},
+	}})
+	RegisterRelation(RelationDef{Name: "ParamToCallArg", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "paramIdx", Type: TypeInt32},
+		{Name: "calleeSym", Type: TypeEntityRef},
+		{Name: "argIdx", Type: TypeInt32},
+	}})
+	RegisterRelation(RelationDef{Name: "ParamToFieldWrite", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "paramIdx", Type: TypeInt32},
+		{Name: "fieldName", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "ParamToSink", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "paramIdx", Type: TypeInt32},
+		{Name: "sinkKind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "SourceToReturn", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "sourceKind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "CallReturnToReturn", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "callId", Type: TypeEntityRef},
+	}})
+
+	// v2 Phase D placeholders: taint analysis base relations (empty until Phase D)
+	RegisterRelation(RelationDef{Name: "TaintSink", Version: 2, Columns: []ColumnDef{
+		{Name: "sinkExpr", Type: TypeEntityRef},
+		{Name: "sinkKind", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "TaintSource", Version: 2, Columns: []ColumnDef{
+		{Name: "srcExpr", Type: TypeEntityRef},
+		{Name: "sourceKind", Type: TypeString},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},

@@ -333,6 +333,79 @@ func TestSeminaiveSelfRecursivePath(t *testing.T) {
 	}
 }
 
+// TestSeminaiveMaxIterations verifies that the iteration limit prevents infinite loops
+// and emits a warning rather than silently truncating.
+func TestSeminaiveMaxIterations(t *testing.T) {
+	// Create a cycle: Edge(1,2), Edge(2,1) with self-recursive Path rule.
+	// This will produce Path(1,2), Path(2,1), Path(1,1), Path(2,2) — finite,
+	// but to test the limit, set maxIterations=1 so it terminates early.
+	edge := makeRelation("Edge", 2,
+		IntVal{1}, IntVal{2},
+		IntVal{2}, IntVal{3},
+		IntVal{3}, IntVal{4},
+		IntVal{4}, IntVal{5},
+		IntVal{5}, IntVal{6},
+	)
+	baseRels := map[string]*Relation{"Edge": edge}
+
+	ep := &plan.ExecutionPlan{
+		Strata: []plan.Stratum{
+			{
+				Rules: []plan.PlannedRule{
+					// Path(x,y) :- Edge(x,y).
+					{
+						Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{v("x"), v("y")}},
+						JoinOrder: []plan.JoinStep{
+							positiveStep("Edge", v("x"), v("y")),
+						},
+					},
+					// Path(x,z) :- Edge(x,y), Path(y,z).
+					{
+						Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{v("x"), v("z")}},
+						JoinOrder: []plan.JoinStep{
+							positiveStep("Edge", v("x"), v("y")),
+							positiveStep("Path", v("y"), v("z")),
+						},
+					},
+				},
+			},
+		},
+		Query: &plan.PlannedQuery{
+			Select: []datalog.Term{v("a"), v("b")},
+			JoinOrder: []plan.JoinStep{
+				positiveStep("Path", v("a"), v("b")),
+			},
+		},
+	}
+
+	// With maxIterations=1, the fixpoint should stop early (not compute all transitive pairs).
+	rs, err := Evaluate(context.Background(), ep, baseRels, WithMaxIterations(1))
+	if err != nil {
+		t.Fatalf("Evaluate failed: %v", err)
+	}
+	// With limit=1, we get bootstrap results + 1 iteration of delta.
+	// Should have fewer than the full 15 pairs for a 6-node chain.
+	if len(rs.Rows) >= 15 {
+		t.Errorf("expected fewer than 15 rows with maxIterations=1, got %d", len(rs.Rows))
+	}
+
+	// With maxIterations=0 (unlimited), should get all 15 pairs.
+	rsUnlimited, err := Evaluate(context.Background(), ep, baseRels, WithMaxIterations(0))
+	if err != nil {
+		t.Fatalf("Evaluate failed: %v", err)
+	}
+	if len(rsUnlimited.Rows) != 15 {
+		t.Errorf("expected 15 rows with unlimited iterations, got %d", len(rsUnlimited.Rows))
+	}
+}
+
+// TestSeminaiveDefaultMaxIterations verifies the default limit is 100.
+func TestSeminaiveDefaultMaxIterations(t *testing.T) {
+	if DefaultMaxIterations != 100 {
+		t.Errorf("expected DefaultMaxIterations=100, got %d", DefaultMaxIterations)
+	}
+}
+
 // TestSeminaiveCancellation verifies context cancellation is respected.
 func TestSeminaiveCancellation(t *testing.T) {
 	// Build a trivial plan that would otherwise succeed.

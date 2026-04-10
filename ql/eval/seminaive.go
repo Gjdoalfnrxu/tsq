@@ -3,9 +3,15 @@ package eval
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
+
+// DefaultMaxIterations is the default maximum number of fixpoint iterations
+// per stratum. If exceeded, a warning is logged but evaluation continues
+// with the results computed so far.
+const DefaultMaxIterations = 100
 
 // ResultSet holds the query results.
 type ResultSet struct {
@@ -13,8 +19,27 @@ type ResultSet struct {
 	Rows    [][]Value
 }
 
+// EvalOption configures the evaluator.
+type EvalOption func(*evalConfig)
+
+type evalConfig struct {
+	maxIterations int
+}
+
+// WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
+// If the limit is reached, a warning is logged and evaluation proceeds with
+// the results computed so far. A value of 0 means no limit.
+func WithMaxIterations(n int) EvalOption {
+	return func(c *evalConfig) { c.maxIterations = n }
+}
+
 // Evaluate executes an ExecutionPlan over base facts and returns results.
-func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[string]*Relation) (*ResultSet, error) {
+func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[string]*Relation, opts ...EvalOption) (*ResultSet, error) {
+	cfg := evalConfig{maxIterations: DefaultMaxIterations}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	// allRels starts with base facts; derived relations are added as we go.
 	allRels := make(map[string]*Relation, len(baseRels))
 	for k, v := range baseRels {
@@ -54,10 +79,18 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		}
 
 		// Semi-naive fixpoint.
+		iteration := 0
 		for {
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("cancelled in fixpoint stratum %d: %w", si, err)
 			}
+
+			// Check iteration limit.
+			if cfg.maxIterations > 0 && iteration >= cfg.maxIterations {
+				log.Printf("WARNING: stratum %d reached max iteration limit (%d); results may be incomplete", si, cfg.maxIterations)
+				break
+			}
+			iteration++
 
 			// Check if any delta is non-empty.
 			anyDelta := false

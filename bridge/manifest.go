@@ -99,6 +99,16 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ReturnSym", Relation: "ReturnSym", File: "tsq_functions.qll"},
 			{Name: "LocalFlow", Relation: "LocalFlow", File: "tsq_dataflow.qll"},
 			{Name: "LocalFlowStar", Relation: "LocalFlowStar", File: "tsq_dataflow.qll"},
+			// v2 Phase C2: function-level summaries
+			{Name: "ParamToReturn", Relation: "ParamToReturn", File: "tsq_summaries.qll"},
+			{Name: "ParamToCallArg", Relation: "ParamToCallArg", File: "tsq_summaries.qll"},
+			{Name: "ParamToFieldWrite", Relation: "ParamToFieldWrite", File: "tsq_summaries.qll"},
+			{Name: "ParamToSink", Relation: "ParamToSink", File: "tsq_summaries.qll"},
+			{Name: "SourceToReturn", Relation: "SourceToReturn", File: "tsq_summaries.qll"},
+			{Name: "CallReturnToReturn", Relation: "CallReturnToReturn", File: "tsq_summaries.qll"},
+			// v2 Phase D placeholders: taint analysis base relations
+			{Name: "TaintSink", Relation: "TaintSink", File: "tsq_taint.qll"},
+			{Name: "TaintSource", Relation: "TaintSource", File: "tsq_taint.qll"},
 		},
 		Unavailable: []UnavailableClass{
 			{Name: "DataFlow", Reason: "IPA-dependent; requires inter-procedural analysis engine", VersionTarget: "v3"},
