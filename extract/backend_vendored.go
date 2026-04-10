@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// DefaultRPCTimeout is the default timeout for individual RPC calls to the tsgo subprocess.
+const DefaultRPCTimeout = 30 * time.Second
 
 // VendoredBackend implements ExtractorBackend using a combination of tree-sitter
 // for AST walking and the tsgo CLI (typescript-go) for type checking and symbol
@@ -35,12 +40,14 @@ type VendoredBackend struct {
 	rootDir    string
 
 	// tsgo subprocess state
-	tsgoPath string    // path to tsgo binary, empty if not found
-	tsgoCmd  *exec.Cmd // running tsgo --api process
-	tsgoIn   io.WriteCloser
-	tsgoOut  *json.Decoder
-	tsgoMu   sync.Mutex // serialises tsgo RPC calls
-	reqID    atomic.Int64
+	tsgoPath   string    // path to tsgo binary, empty if not found
+	tsgoCmd    *exec.Cmd // running tsgo --api process
+	tsgoIn     io.WriteCloser
+	tsgoOut    *json.Decoder
+	tsgoMu     sync.Mutex         // serialises tsgo RPC calls
+	tsgoStderr bytes.Buffer       // captured stderr from tsgo subprocess
+	tsgoCancel context.CancelFunc // cancels the subprocess context
+	reqID      atomic.Int64
 
 	// tsgoAvailable is true if tsgo was found and started successfully.
 	tsgoAvailable bool
@@ -219,11 +226,12 @@ func (b *VendoredBackend) Close() error {
 		if b.tsgoIn != nil {
 			b.tsgoIn.Close()
 		}
-		if err := b.tsgoCmd.Process.Kill(); err != nil {
-			errs = append(errs, fmt.Errorf("kill tsgo: %w", err))
+		if b.tsgoCancel != nil {
+			b.tsgoCancel()
 		}
 		_ = b.tsgoCmd.Wait()
 		b.tsgoCmd = nil
+		b.tsgoCancel = nil
 		b.tsgoAvailable = false
 	}
 
@@ -246,9 +254,13 @@ func (b *VendoredBackend) TsgoAvailable() bool {
 }
 
 // startTsgo launches the tsgo --api subprocess.
-func (b *VendoredBackend) startTsgo(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, b.tsgoPath, "--api", "--async", "--cwd", b.rootDir)
-	cmd.Stderr = os.Stderr
+// The subprocess uses its own background context so it is not bound to the
+// caller's context lifetime. Use Close() to shut down the subprocess.
+func (b *VendoredBackend) startTsgo(_ context.Context) error {
+	subCtx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(subCtx, b.tsgoPath, "--api", "--async", "--cwd", b.rootDir)
+	b.tsgoCancel = cancel
+	cmd.Stderr = &b.tsgoStderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -275,7 +287,8 @@ func (b *VendoredBackend) startTsgo(ctx context.Context) error {
 }
 
 // rpc sends a JSON-RPC request and waits for the response.
-// Caller must hold tsgoMu.
+// Caller must hold tsgoMu. The call is bounded by DefaultRPCTimeout and
+// respects the caller's context cancellation.
 func (b *VendoredBackend) rpc(ctx context.Context, method string, params interface{}) (*jsonRPCResponse, error) {
 	if !b.tsgoAvailable {
 		return nil, ErrUnsupported
@@ -303,17 +316,42 @@ func (b *VendoredBackend) rpc(ctx context.Context, method string, params interfa
 		return nil, fmt.Errorf("write body: %w", err)
 	}
 
-	// Read response. Context cancellation is handled by the command context.
-	var resp jsonRPCResponse
-	if err := b.tsgoOut.Decode(&resp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
+	// Apply a timeout to bound the read so we don't block forever if tsgo hangs.
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+	defer rpcCancel()
 
-	if resp.Error != nil {
-		return nil, fmt.Errorf("tsgo error %d: %s", resp.Error.Code, resp.Error.Message)
+	// Read response in a goroutine so we can select on context cancellation.
+	type decodeResult struct {
+		resp jsonRPCResponse
+		err  error
 	}
+	ch := make(chan decodeResult, 1)
+	go func() {
+		var resp jsonRPCResponse
+		err := b.tsgoOut.Decode(&resp)
+		ch <- decodeResult{resp: resp, err: err}
+	}()
 
-	return &resp, nil
+	select {
+	case <-rpcCtx.Done():
+		return nil, fmt.Errorf("rpc %s (id=%d): %w", method, id, rpcCtx.Err())
+	case result := <-ch:
+		if result.err != nil {
+			return nil, fmt.Errorf("decode response: %w", result.err)
+		}
+		resp := &result.resp
+
+		// Validate response ID matches the request.
+		if resp.ID != id {
+			return nil, fmt.Errorf("rpc response id mismatch: got %d, want %d", resp.ID, id)
+		}
+
+		if resp.Error != nil {
+			return nil, fmt.Errorf("tsgo error %d: %s", resp.Error.Code, resp.Error.Message)
+		}
+
+		return resp, nil
+	}
 }
 
 // findTsgo searches for the tsgo binary in PATH and common locations.
@@ -332,7 +370,9 @@ func findTsgo() string {
 	}
 
 	// Also check npx-style paths.
-	if npmRoot, err := exec.Command("npm", "root", "-g").Output(); err == nil {
+	npmCtx, npmCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer npmCancel()
+	if npmRoot, err := exec.CommandContext(npmCtx, "npm", "root", "-g").Output(); err == nil {
 		root := strings.TrimSpace(string(npmRoot))
 		candidates = append(candidates, filepath.Join(root, ".bin", "tsgo"))
 	}

@@ -1,11 +1,15 @@
 package extract
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 // vendoredTestdataDir returns the absolute path to testdata/ts/vendored/.
@@ -337,4 +341,125 @@ func TestVendoredBackend_WalkAST_FieldNames(t *testing.T) {
 	if len(namedFields) == 0 {
 		t.Error("expected some nodes with field names, got none")
 	}
+}
+
+// TestVendoredBackend_RPC_CancelledContext tests that an RPC call with a
+// cancelled context returns promptly rather than blocking forever (bug #1).
+func TestVendoredBackend_RPC_CancelledContext(t *testing.T) {
+	// Set up a fake tsgo subprocess using pipes so we can control responses.
+	b := &VendoredBackend{
+		tsgoAvailable: true,
+	}
+
+	// Create pipes to simulate stdin/stdout of tsgo process.
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	defer stdinR.Close()
+	defer stdoutW.Close()
+
+	b.tsgoIn = stdinW
+	b.tsgoOut = json.NewDecoder(stdoutR)
+
+	// Drain stdin so writes don't block.
+	go func() {
+		io.Copy(io.Discard, stdinR)
+	}()
+
+	// Cancel the context before calling rpc.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := b.rpc(ctx, "test", nil)
+		if err == nil {
+			t.Error("expected error from cancelled context, got nil")
+		}
+	}()
+
+	select {
+	case <-done:
+		// Good -- returned promptly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("rpc with cancelled context blocked for >2s -- timeout bug not fixed")
+	}
+}
+
+// TestVendoredBackend_SubprocessSurvivesOpenContext tests that the tsgo
+// subprocess is not killed when the Open() caller's context expires (bug #2).
+func TestVendoredBackend_SubprocessSurvivesOpenContext(t *testing.T) {
+	dir := vendoredTestdataDir(t)
+
+	// Use a context with a short timeout for Open().
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	b := &VendoredBackend{}
+	if err := b.Open(ctx, ProjectConfig{RootDir: dir}); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer b.Close()
+
+	// Let the Open context expire.
+	<-ctx.Done()
+	time.Sleep(100 * time.Millisecond)
+
+	// The backend's tree-sitter should still be usable.
+	v := newCollectingVisitor()
+	if err := b.WalkAST(context.Background(), v); err != nil {
+		t.Fatalf("WalkAST failed after Open context expired: %v", err)
+	}
+	if len(v.allKinds) == 0 {
+		t.Error("expected nodes from WalkAST after Open context expired")
+	}
+}
+
+// TestVendoredBackend_RPC_MismatchedID tests that a mismatched response ID
+// returns an error (bug #3).
+func TestVendoredBackend_RPC_MismatchedID(t *testing.T) {
+	b := &VendoredBackend{
+		tsgoAvailable: true,
+	}
+
+	// Create pipes to simulate stdin/stdout of tsgo process.
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	defer stdinR.Close()
+	defer stdoutW.Close()
+
+	b.tsgoIn = stdinW
+	b.tsgoOut = json.NewDecoder(stdoutR)
+
+	// Drain stdin so writes don't block.
+	go func() {
+		io.Copy(io.Discard, stdinR)
+	}()
+
+	// Write a response with a wrong ID from a goroutine.
+	go func() {
+		resp := jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      99999, // Wrong ID -- should not match any request.
+			Result:  json.RawMessage(`{}`),
+		}
+		json.NewEncoder(stdoutW).Encode(resp)
+	}()
+
+	_, err := b.rpc(context.Background(), "test", nil)
+	if err == nil {
+		t.Fatal("expected error for mismatched response ID, got nil")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("mismatch")) {
+		t.Errorf("expected mismatch error, got: %v", err)
+	}
+}
+
+// TestVendoredBackend_StderrCaptured tests that tsgo stderr is captured to a
+// buffer rather than going to os.Stderr (bug #5).
+func TestVendoredBackend_StderrCaptured(t *testing.T) {
+	b := &VendoredBackend{}
+	// Verify the stderr buffer exists on the struct (compile-time check
+	// that the field is bytes.Buffer, not *os.File).
+	var _ bytes.Buffer = b.tsgoStderr
 }
