@@ -67,16 +67,6 @@ func getInt(t *testing.T, r *db.Relation, tuple, col int) int32 {
 	return v
 }
 
-// getString gets a string column value at (tuple, col).
-func getString(t *testing.T, database *db.DB, r *db.Relation, tuple, col int) string {
-	t.Helper()
-	s, err := r.GetString(database, tuple, col)
-	if err != nil {
-		t.Fatalf("GetString(%d,%d): %v", tuple, col, err)
-	}
-	return s
-}
-
 // hasString returns true if any tuple in the relation has s in the given column.
 func hasString(t *testing.T, database *db.DB, r *db.Relation, col int, s string) bool {
 	t.Helper()

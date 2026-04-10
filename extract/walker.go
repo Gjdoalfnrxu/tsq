@@ -419,7 +419,7 @@ func (fw *FactWalker) emitCall(node ASTNode, id uint32) {
 	// CallCalleeSym — resolve if callee is a simple Identifier
 	if calleeNode != nil && calleeNode.Kind() == "Identifier" {
 		if decl, ok := fw.scope.Resolve(calleeNode.Text(), calleeNode); ok {
-			symID := SymID(decl.FilePath, decl.Name, 0, decl.StartByte)
+			symID := SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 			fw.emit("CallCalleeSym", id, symID)
 		}
 	}
@@ -462,7 +462,7 @@ func (fw *FactWalker) emitAssign(node ASTNode, id uint32) {
 	var lhsSymID uint32
 	if leftNode != nil && leftNode.Kind() == "Identifier" {
 		if decl, ok := fw.scope.Resolve(leftNode.Text(), leftNode); ok {
-			lhsSymID = SymID(decl.FilePath, decl.Name, 0, decl.StartByte)
+			lhsSymID = SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 		}
 	}
 
@@ -482,7 +482,7 @@ func (fw *FactWalker) emitExprMayRef(node ASTNode, id uint32) {
 		return
 	}
 	if decl, ok := fw.scope.Resolve(name, node); ok {
-		symID := SymID(decl.FilePath, decl.Name, 0, decl.StartByte)
+		symID := SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 		fw.emit("ExprMayRef", id, symID)
 	}
 }
@@ -499,7 +499,7 @@ func (fw *FactWalker) emitFieldRead(node ASTNode, id uint32) {
 	var baseSymID uint32
 	if objNode.Kind() == "Identifier" {
 		if decl, ok := fw.scope.Resolve(objNode.Text(), objNode); ok {
-			baseSymID = SymID(decl.FilePath, decl.Name, 0, decl.StartByte)
+			baseSymID = SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 		}
 	}
 
@@ -516,7 +516,7 @@ func (fw *FactWalker) emitFieldWrite(memberNode ASTNode, assignID uint32, rhsID 
 	var baseSymID uint32
 	if objNode.Kind() == "Identifier" {
 		if decl, ok := fw.scope.Resolve(objNode.Text(), objNode); ok {
-			baseSymID = SymID(decl.FilePath, decl.Name, 0, decl.StartByte)
+			baseSymID = SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 		}
 	}
 
@@ -818,7 +818,7 @@ func (fw *FactWalker) emitJsxElement(node ASTNode, id uint32) {
 	var tagSymID uint32
 	if tagNode != nil && tagNode.Kind() == "Identifier" {
 		if decl, ok := fw.scope.Resolve(tagNode.Text(), tagNode); ok {
-			tagSymID = SymID(decl.FilePath, decl.Name, 0, decl.StartByte)
+			tagSymID = SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 		}
 	}
 
