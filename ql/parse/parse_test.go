@@ -839,3 +839,127 @@ func TestAtTypeWithOtherKeywords(t *testing.T) {
 		})
 	}
 }
+
+// --- Phase 1a: Module declarations ---
+
+func TestModuleDeclaration(t *testing.T) {
+	src := `module DataFlow {
+		class Node extends @node {
+			Node() { any() }
+		}
+		predicate isSource(Node n) { any() }
+	}`
+	mod := mustParse(t, src)
+	if len(mod.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(mod.Modules))
+	}
+	m := mod.Modules[0]
+	if m.Name != "DataFlow" {
+		t.Errorf("expected module name 'DataFlow', got %q", m.Name)
+	}
+	if len(m.Classes) != 1 {
+		t.Fatalf("expected 1 class in module, got %d", len(m.Classes))
+	}
+	if m.Classes[0].Name != "Node" {
+		t.Errorf("expected class name 'Node', got %q", m.Classes[0].Name)
+	}
+	if len(m.Predicates) != 1 {
+		t.Fatalf("expected 1 predicate in module, got %d", len(m.Predicates))
+	}
+	if m.Predicates[0].Name != "isSource" {
+		t.Errorf("expected predicate name 'isSource', got %q", m.Predicates[0].Name)
+	}
+}
+
+func TestNestedModuleDeclaration(t *testing.T) {
+	src := `module Outer {
+		module Inner {
+			class Foo extends @foo { Foo() { any() } }
+		}
+	}`
+	mod := mustParse(t, src)
+	if len(mod.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(mod.Modules))
+	}
+	outer := mod.Modules[0]
+	if len(outer.Modules) != 1 {
+		t.Fatalf("expected 1 nested module, got %d", len(outer.Modules))
+	}
+	inner := outer.Modules[0]
+	if inner.Name != "Inner" {
+		t.Errorf("expected nested module name 'Inner', got %q", inner.Name)
+	}
+	if len(inner.Classes) != 1 {
+		t.Fatalf("expected 1 class in nested module, got %d", len(inner.Classes))
+	}
+}
+
+func TestQualifiedAccessInQuery(t *testing.T) {
+	src := `module DataFlow {
+		class Node extends @node { Node() { any() } }
+	}
+	from DataFlow::Node n
+	select n`
+	mod := mustParse(t, src)
+	if mod.Select == nil {
+		t.Fatal("expected select clause")
+	}
+	if len(mod.Select.Decls) != 1 {
+		t.Fatalf("expected 1 decl, got %d", len(mod.Select.Decls))
+	}
+	if mod.Select.Decls[0].Type.String() != "DataFlow::Node" {
+		t.Errorf("expected type DataFlow::Node, got %q", mod.Select.Decls[0].Type.String())
+	}
+}
+
+// --- Phase 1d: Abstract classes ---
+
+func TestAbstractClass(t *testing.T) {
+	src := `abstract class Foo extends Bar { Foo() { any() } }`
+	mod := mustParse(t, src)
+	if len(mod.Classes) != 1 {
+		t.Fatalf("expected 1 class, got %d", len(mod.Classes))
+	}
+	cls := mod.Classes[0]
+	if !cls.IsAbstract {
+		t.Error("expected IsAbstract=true")
+	}
+	if cls.Name != "Foo" {
+		t.Errorf("expected name 'Foo', got %q", cls.Name)
+	}
+}
+
+func TestAbstractClassInModule(t *testing.T) {
+	src := `module M {
+		abstract class Base extends @base { Base() { any() } }
+		class Concrete extends Base { Concrete() { any() } }
+	}`
+	mod := mustParse(t, src)
+	if len(mod.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(mod.Modules))
+	}
+	m := mod.Modules[0]
+	if len(m.Classes) != 2 {
+		t.Fatalf("expected 2 classes in module, got %d", len(m.Classes))
+	}
+	if !m.Classes[0].IsAbstract {
+		t.Error("expected first class to be abstract")
+	}
+	if m.Classes[1].IsAbstract {
+		t.Error("expected second class to NOT be abstract")
+	}
+}
+
+// --- Lexer: module and private keywords ---
+
+func TestLexerModulePrivateKeywords(t *testing.T) {
+	l := parse.NewLexer("module private", "test.ql")
+	tok := l.Next()
+	if tok.Type != parse.TokKwModule {
+		t.Errorf("expected TokKwModule, got %d (lit=%q)", tok.Type, tok.Lit)
+	}
+	tok = l.Next()
+	if tok.Type != parse.TokKwPrivate {
+		t.Errorf("expected TokKwPrivate, got %d (lit=%q)", tok.Type, tok.Lit)
+	}
+}

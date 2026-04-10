@@ -62,6 +62,8 @@ const (
 	TokKwFalse
 	TokKwOverride
 	TokKwAbstract
+	TokKwModule
+	TokKwPrivate
 	TokKwCount
 	TokKwMin
 	TokKwMax
@@ -95,6 +97,8 @@ var keywords = map[string]TokenType{
 	"false":      TokKwFalse,
 	"override":   TokKwOverride,
 	"abstract":   TokKwAbstract,
+	"module":     TokKwModule,
+	"private":    TokKwPrivate,
 	"count":      TokKwCount,
 	"min":        TokKwMin,
 	"max":        TokKwMax,

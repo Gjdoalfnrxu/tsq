@@ -108,12 +108,25 @@ func (p *Parser) Parse() (*ast.Module, error) {
 				return nil, err
 			}
 			mod.Imports = append(mod.Imports, *imp)
+		case TokKwAbstract:
+			// abstract class ...
+			cls, err := p.parseAbstractClass()
+			if err != nil {
+				return nil, err
+			}
+			mod.Classes = append(mod.Classes, *cls)
 		case TokKwClass:
 			cls, err := p.parseClass()
 			if err != nil {
 				return nil, err
 			}
 			mod.Classes = append(mod.Classes, *cls)
+		case TokKwModule:
+			m, err := p.parseModule()
+			if err != nil {
+				return nil, err
+			}
+			mod.Modules = append(mod.Modules, *m)
 		case TokKwPredicate:
 			pred, err := p.parsePredicate()
 			if err != nil {
@@ -242,6 +255,83 @@ func (p *Parser) parseClass() (*ast.ClassDecl, error) {
 	cls.Span.EndLine = end.Line
 	cls.Span.EndCol = end.Col
 	return cls, nil
+}
+
+// parseAbstractClass parses: abstract class Name extends ... { ... }
+func (p *Parser) parseAbstractClass() (*ast.ClassDecl, error) {
+	p.advance() // consume 'abstract'
+	if !p.at(TokKwClass) {
+		return nil, p.errorf("expected 'class' after 'abstract', got %q", p.current.Lit)
+	}
+	cls, err := p.parseClass()
+	if err != nil {
+		return nil, err
+	}
+	cls.IsAbstract = true
+	return cls, nil
+}
+
+// parseModule parses: module Name { <classes, predicates, nested modules> }
+func (p *Parser) parseModule() (*ast.ModuleDecl, error) {
+	tok, _ := p.expect(TokKwModule)
+	m := &ast.ModuleDecl{
+		Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col},
+	}
+
+	name, err := p.expect(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	m.Name = name.Lit
+
+	if _, err := p.expect(TokLBrace); err != nil {
+		return nil, err
+	}
+
+	for !p.at(TokRBrace) && !p.at(TokEOF) {
+		switch p.current.Type {
+		case TokKwAbstract:
+			cls, err := p.parseAbstractClass()
+			if err != nil {
+				return nil, err
+			}
+			m.Classes = append(m.Classes, *cls)
+		case TokKwClass:
+			cls, err := p.parseClass()
+			if err != nil {
+				return nil, err
+			}
+			m.Classes = append(m.Classes, *cls)
+		case TokKwPredicate:
+			pred, err := p.parsePredicate()
+			if err != nil {
+				return nil, err
+			}
+			m.Predicates = append(m.Predicates, *pred)
+		case TokKwModule:
+			nested, err := p.parseModule()
+			if err != nil {
+				return nil, err
+			}
+			m.Modules = append(m.Modules, *nested)
+		case TokIdent:
+			pred, err := p.parseTypedPredicate()
+			if err != nil {
+				return nil, err
+			}
+			m.Predicates = append(m.Predicates, *pred)
+		default:
+			return nil, p.errorf("unexpected token %q in module body", p.current.Lit)
+		}
+	}
+
+	end, err := p.expect(TokRBrace)
+	if err != nil {
+		return nil, err
+	}
+	m.Span.EndLine = end.Line
+	m.Span.EndCol = end.Col
+	return m, nil
 }
 
 func (p *Parser) parseClassMember(className string) (*ast.MemberDecl, bool, error) {

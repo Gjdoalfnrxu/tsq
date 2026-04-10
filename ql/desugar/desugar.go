@@ -38,10 +38,20 @@ type desugarer struct {
 	errors []error
 	// subClasses maps class name → names of classes that directly extend it.
 	subClasses map[string][]string
+	// syntheticRules accumulates rules generated for disjunction/negation.
+	syntheticRules []datalog.Rule
+	// synthCounter generates unique names for synthetic predicates.
+	synthCounter int
 }
 
 func (d *desugarer) errorf(format string, args ...interface{}) {
 	d.errors = append(d.errors, fmt.Errorf(format, args...))
+}
+
+// freshSynthName generates a unique synthetic predicate name with the given prefix.
+func (d *desugarer) freshSynthName(prefix string) string {
+	d.synthCounter++
+	return fmt.Sprintf("%s_%d", prefix, d.synthCounter)
 }
 
 // buildSubclassMap builds the direct subclass relationship from the AST.
@@ -67,6 +77,28 @@ func (d *desugarer) buildSubclassMap() {
 			stName := st.String()
 			d.subClasses[stName] = append(d.subClasses[stName], cd.Name)
 		}
+	}
+	// Include module-scoped classes in the subclass map.
+	for i := range d.mod.AST.Modules {
+		d.buildSubclassMapForModule(&d.mod.AST.Modules[i], "")
+	}
+}
+
+func (d *desugarer) buildSubclassMapForModule(md *ast.ModuleDecl, prefix string) {
+	qualPrefix := md.Name
+	if prefix != "" {
+		qualPrefix = prefix + "::" + md.Name
+	}
+	for i := range md.Classes {
+		cd := &md.Classes[i]
+		qualName := qualPrefix + "::" + cd.Name
+		for _, st := range cd.SuperTypes {
+			stName := st.String()
+			d.subClasses[stName] = append(d.subClasses[stName], qualName)
+		}
+	}
+	for i := range md.Modules {
+		d.buildSubclassMapForModule(&md.Modules[i], qualPrefix)
 	}
 }
 
@@ -108,13 +140,56 @@ func (d *desugarer) run() (*datalog.Program, []error) {
 		prog.Rules = append(prog.Rules, rules...)
 	}
 
+	// Desugar module declarations.
+	for i := range d.mod.AST.Modules {
+		rules := d.desugarModuleDecl(&d.mod.AST.Modules[i], "")
+		prog.Rules = append(prog.Rules, rules...)
+	}
+
 	// Desugar select clause.
 	if d.mod.AST.Select != nil {
 		q := d.desugarSelect(d.mod.AST.Select)
 		prog.Query = q
 	}
 
+	// Append synthetic rules generated during desugaring (disjunction/negation).
+	prog.Rules = append(prog.Rules, d.syntheticRules...)
+
 	return prog, d.errors
+}
+
+// desugarModuleDecl desugars all classes and predicates inside a module declaration.
+func (d *desugarer) desugarModuleDecl(md *ast.ModuleDecl, prefix string) []datalog.Rule {
+	var rules []datalog.Rule
+	qualPrefix := md.Name
+	if prefix != "" {
+		qualPrefix = prefix + "::" + md.Name
+	}
+
+	for i := range md.Classes {
+		cd := &md.Classes[i]
+		// Temporarily set the class name to the qualified name for desugaring.
+		origName := cd.Name
+		cd.Name = qualPrefix + "::" + origName
+		classRules := d.desugarClass(cd)
+		cd.Name = origName
+		rules = append(rules, classRules...)
+	}
+
+	for i := range md.Predicates {
+		pd := &md.Predicates[i]
+		origName := pd.Name
+		pd.Name = qualPrefix + "::" + origName
+		predRules := d.desugarTopLevelPredicate(pd)
+		pd.Name = origName
+		rules = append(rules, predRules...)
+	}
+
+	for i := range md.Modules {
+		rules = append(rules, d.desugarModuleDecl(&md.Modules[i], qualPrefix)...)
+	}
+
+	return rules
 }
 
 // ---- Class desugaring ----
@@ -123,8 +198,41 @@ func (d *desugarer) run() (*datalog.Program, []error) {
 func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
 	var rules []datalog.Rule
 
-	// Characteristic predicate: Foo(this) :- SuperTypes(this)..., body.
-	{
+	if cd.IsAbstract {
+		// Abstract class: emit one rule per concrete subclass.
+		// AbstractClass(this) :- ConcreteSubclass(this) for each subclass.
+		subclasses := d.allConcreteSubclasses(cd.Name)
+		for _, subName := range subclasses {
+			rule := datalog.Rule{
+				Head: datalog.Atom{
+					Predicate: cd.Name,
+					Args:      []datalog.Term{datalog.Var{Name: "this"}},
+				},
+				Body: []datalog.Literal{{
+					Positive: true,
+					Atom: datalog.Atom{
+						Predicate: subName,
+						Args:      []datalog.Term{datalog.Var{Name: "this"}},
+					},
+				}},
+			}
+			rules = append(rules, rule)
+		}
+		// If no subclasses, emit a rule with no body (empty extent).
+		if len(subclasses) == 0 {
+			rules = append(rules, datalog.Rule{
+				Head: datalog.Atom{
+					Predicate: cd.Name,
+					Args:      []datalog.Term{datalog.Var{Name: "this"}},
+				},
+				Body: []datalog.Literal{{
+					Positive: false,
+					Atom:     datalog.Atom{Predicate: "_none", Args: nil},
+				}},
+			})
+		}
+	} else {
+		// Characteristic predicate: Foo(this) :- SuperTypes(this)..., body.
 		gen := &freshVarGen{}
 		body := d.superTypeConstraints(cd, gen)
 		if cd.CharPred != nil {
@@ -395,12 +503,31 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 		return append(left, right...)
 
 	case *ast.Disjunction:
-		// Datalog doesn't natively support disjunction in rule bodies without rule
-		// splitting.  Emit an error rather than silently evaluating only the left branch.
-		d.errorf("disjunction (or) is not yet supported in v1 — only the left branch will be evaluated")
-		left := d.desugarFormula(n.Left, gen)
-		_ = n.Right
-		return left
+		// Rule splitting: create a synthetic predicate with both branches as separate rules.
+		leftLits := d.desugarFormula(n.Left, gen)
+		rightLits := d.desugarFormula(n.Right, gen)
+
+		// Collect all variables from both branches to use as head args.
+		freeVars := collectVarsFromLiterals(append(leftLits, rightLits...))
+
+		synthName := d.freshSynthName("_disj")
+		args := make([]datalog.Term, len(freeVars))
+		for i, v := range freeVars {
+			args[i] = datalog.Var{Name: v}
+		}
+
+		// Create two rules: one for left branch, one for right branch.
+		head := datalog.Atom{Predicate: synthName, Args: args}
+		d.syntheticRules = append(d.syntheticRules,
+			datalog.Rule{Head: head, Body: leftLits},
+			datalog.Rule{Head: head, Body: rightLits},
+		)
+
+		// Return a call to the synthetic predicate.
+		return []datalog.Literal{{
+			Positive: true,
+			Atom:     datalog.Atom{Predicate: synthName, Args: args},
+		}}
 
 	case *ast.Negation:
 		inner := d.desugarFormula(n.Formula, gen)
@@ -409,11 +536,25 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 			lit.Positive = !lit.Positive
 			return []datalog.Literal{lit}
 		}
-		// Multiple literals: negating a conjunction requires De Morgan / rule splitting,
-		// which is not supported in v1.  Emit an error rather than silently producing
-		// wrong results (not A, not B instead of the correct not A or not B).
-		d.errorf("negation of conjunction not yet supported — only single-literal negation is supported in v1")
-		return nil
+		// Multiple literals: create a helper predicate and negate it.
+		freeVars := collectVarsFromLiterals(inner)
+
+		synthName := d.freshSynthName("_neg")
+		args := make([]datalog.Term, len(freeVars))
+		for i, v := range freeVars {
+			args[i] = datalog.Var{Name: v}
+		}
+
+		head := datalog.Atom{Predicate: synthName, Args: args}
+		d.syntheticRules = append(d.syntheticRules,
+			datalog.Rule{Head: head, Body: inner},
+		)
+
+		// Return negated call to the helper.
+		return []datalog.Literal{{
+			Positive: false,
+			Atom:     datalog.Atom{Predicate: synthName, Args: args},
+		}}
 
 	case *ast.Comparison:
 		left, leftLits := d.desugarExpr(n.Left, gen)
@@ -837,6 +978,64 @@ func (d *desugarer) desugarAggregateExpr(a *ast.Aggregate, gen *freshVarGen) (da
 }
 
 // ---- Helpers ----
+
+// collectVarsFromLiterals collects all unique Var names from a slice of literals.
+func collectVarsFromLiterals(lits []datalog.Literal) []string {
+	seen := make(map[string]bool)
+	var vars []string
+	for _, lit := range lits {
+		collectVarsFromAtom(lit.Atom, seen, &vars)
+		if lit.Cmp != nil {
+			collectVarFromTerm(lit.Cmp.Left, seen, &vars)
+			collectVarFromTerm(lit.Cmp.Right, seen, &vars)
+		}
+		if lit.Agg != nil {
+			for _, innerLit := range lit.Agg.Body {
+				collectVarsFromAtom(innerLit.Atom, seen, &vars)
+			}
+		}
+	}
+	return vars
+}
+
+func collectVarsFromAtom(a datalog.Atom, seen map[string]bool, vars *[]string) {
+	for _, arg := range a.Args {
+		collectVarFromTerm(arg, seen, vars)
+	}
+}
+
+func collectVarFromTerm(t datalog.Term, seen map[string]bool, vars *[]string) {
+	if v, ok := t.(datalog.Var); ok && v.Name != "" {
+		if !seen[v.Name] {
+			seen[v.Name] = true
+			*vars = append(*vars, v.Name)
+		}
+	}
+}
+
+// allConcreteSubclasses returns all transitive subclass names that are not abstract.
+func (d *desugarer) allConcreteSubclasses(className string) []string {
+	var result []string
+	visited := make(map[string]bool)
+	d.collectConcreteSubclasses(className, &result, visited)
+	return result
+}
+
+func (d *desugarer) collectConcreteSubclasses(className string, out *[]string, visited map[string]bool) {
+	for _, subName := range d.subClasses[className] {
+		if visited[subName] {
+			continue
+		}
+		visited[subName] = true
+		// Check if subclass is abstract.
+		if cd, ok := d.env.Classes[subName]; ok && cd.IsAbstract {
+			// Recurse into abstract subclass to find its concrete subclasses.
+			d.collectConcreteSubclasses(subName, out, visited)
+		} else {
+			*out = append(*out, subName)
+		}
+	}
+}
 
 // isPrimitive returns true for built-in scalar types that don't have class predicates.
 func isPrimitive(typeName string) bool {
