@@ -3,6 +3,7 @@ package eval
 import (
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // Value is a typed Datalog value.
@@ -116,6 +117,7 @@ type Relation struct {
 	tuples  []Tuple
 	set     map[string]struct{} // deduplication
 	indexes map[string]*HashIndex
+	mu      sync.RWMutex // protects indexes map for concurrent Index() calls
 }
 
 // NewRelation creates an empty relation.
@@ -129,7 +131,7 @@ func NewRelation(name string, arity int) *Relation {
 }
 
 // Add adds a tuple to the relation. Returns true if the tuple was new (actually added).
-// Invalidates all indexes.
+// Not safe for concurrent use — callers must serialize writes.
 func (r *Relation) Add(t Tuple) bool {
 	k := tupleKey(t)
 	if _, exists := r.set[k]; exists {
@@ -138,10 +140,12 @@ func (r *Relation) Add(t Tuple) bool {
 	r.set[k] = struct{}{}
 	r.tuples = append(r.tuples, t)
 	// Update all existing indexes incrementally.
+	r.mu.Lock()
 	for _, idx := range r.indexes {
 		colKey := partialKey(t, idx.cols)
 		idx.index[colKey] = append(idx.index[colKey], len(r.tuples)-1)
 	}
+	r.mu.Unlock()
 	return true
 }
 
@@ -163,6 +167,8 @@ func (r *Relation) Len() int {
 
 // Index returns (building lazily) a HashIndex over the given columns.
 // cols is sorted canonically so Index([0,2]) and Index([2,0]) share one index.
+// This method is safe for concurrent reads (multiple goroutines can call Index
+// simultaneously).
 func (r *Relation) Index(cols []int) *HashIndex {
 	// Canonicalise col order for the map key and index build.
 	sorted := make([]int, len(cols))
@@ -173,9 +179,24 @@ func (r *Relation) Index(cols []int) *HashIndex {
 		}
 	}
 	key := sortedColKey(sorted)
+
+	// Fast path: check if index already exists (read lock).
+	r.mu.RLock()
+	if hi, ok := r.indexes[key]; ok {
+		r.mu.RUnlock()
+		return hi
+	}
+	r.mu.RUnlock()
+
+	// Slow path: build the index (write lock).
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check after acquiring write lock.
 	if hi, ok := r.indexes[key]; ok {
 		return hi
 	}
+
 	hi := &HashIndex{
 		cols:  sorted,
 		index: make(map[string][]int, len(r.tuples)),

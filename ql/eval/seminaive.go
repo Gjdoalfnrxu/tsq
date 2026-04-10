@@ -24,6 +24,8 @@ type EvalOption func(*evalConfig)
 
 type evalConfig struct {
 	maxIterations int
+	magicSet      bool
+	parallel      bool
 }
 
 // WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
@@ -31,6 +33,20 @@ type evalConfig struct {
 // the results computed so far. A value of 0 means no limit.
 func WithMaxIterations(n int) EvalOption {
 	return func(c *evalConfig) { c.maxIterations = n }
+}
+
+// WithMagicSet enables magic-set transformation, which prunes irrelevant
+// tuples based on the query's bound arguments. The transformation rewrites
+// the program before evaluation; the semi-naive engine runs unchanged.
+func WithMagicSet() EvalOption {
+	return func(c *evalConfig) { c.magicSet = true }
+}
+
+// WithParallel enables parallel evaluation of independent rules within
+// a stratum's fixpoint iteration. Rules with different head predicates
+// are evaluated concurrently.
+func WithParallel() EvalOption {
+	return func(c *evalConfig) { c.parallel = true }
 }
 
 // Evaluate executes an ExecutionPlan over base facts and returns results.
@@ -60,20 +76,25 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		}
 
 		// Bootstrap: evaluate each rule once using full relations as source.
-		deltaRels := make(map[string]*Relation)
-		for _, rule := range stratum.Rules {
-			headName := rule.Head.Predicate
-			headRel := allRels[headName]
+		var deltaRels map[string]*Relation
+		if cfg.parallel {
+			deltaRels = parallelBootstrap(stratum.Rules, allRels)
+		} else {
+			deltaRels = make(map[string]*Relation)
+			for _, rule := range stratum.Rules {
+				headName := rule.Head.Predicate
+				headRel := allRels[headName]
 
-			newTuples := Rule(rule, allRels)
-			for _, t := range newTuples {
-				if headRel.Add(t) {
-					dr, ok := deltaRels[headName]
-					if !ok {
-						dr = NewRelation(headName, headRel.Arity)
-						deltaRels[headName] = dr
+				newTuples := Rule(rule, allRels)
+				for _, t := range newTuples {
+					if headRel.Add(t) {
+						dr, ok := deltaRels[headName]
+						if !ok {
+							dr = NewRelation(headName, headRel.Arity)
+							deltaRels[headName] = dr
+						}
+						dr.Add(t)
 					}
-					dr.Add(t)
 				}
 			}
 		}
@@ -104,24 +125,28 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				break
 			}
 
-			nextDelta := make(map[string]*Relation)
-			for _, rule := range stratum.Rules {
-				headName := rule.Head.Predicate
-				headRel := allRels[headName]
+			if cfg.parallel {
+				deltaRels = parallelDelta(stratum.Rules, allRels, deltaRels)
+			} else {
+				nextDelta := make(map[string]*Relation)
+				for _, rule := range stratum.Rules {
+					headName := rule.Head.Predicate
+					headRel := allRels[headName]
 
-				newTuples := RuleDelta(rule, allRels, deltaRels)
-				for _, t := range newTuples {
-					if headRel.Add(t) {
-						dr, ok := nextDelta[headName]
-						if !ok {
-							dr = NewRelation(headName, headRel.Arity)
-							nextDelta[headName] = dr
+					newTuples := RuleDelta(rule, allRels, deltaRels)
+					for _, t := range newTuples {
+						if headRel.Add(t) {
+							dr, ok := nextDelta[headName]
+							if !ok {
+								dr = NewRelation(headName, headRel.Arity)
+								nextDelta[headName] = dr
+							}
+							dr.Add(t)
 						}
-						dr.Add(t)
 					}
 				}
+				deltaRels = nextDelta
 			}
-			deltaRels = nextDelta
 		}
 
 		// Evaluate aggregates after fixpoint.
@@ -161,6 +186,7 @@ func evalQuery(q *plan.PlannedQuery, allRels map[string]*Relation) *ResultSet {
 		}
 	}
 
+	seen := make(map[string]struct{})
 	for _, b := range bindings {
 		row := make([]Value, len(q.Select))
 		valid := true
@@ -173,7 +199,11 @@ func evalQuery(q *plan.PlannedQuery, allRels map[string]*Relation) *ResultSet {
 			row[i] = v
 		}
 		if valid {
-			rs.Rows = append(rs.Rows, row)
+			key := tupleKey(Tuple(row))
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+				rs.Rows = append(rs.Rows, row)
+			}
 		}
 	}
 	return rs
