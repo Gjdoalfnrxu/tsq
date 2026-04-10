@@ -468,15 +468,6 @@ func (sa *ScopeAnalyzer) childByField(n ASTNode, field string) ASTNode {
 	return nil
 }
 
-// childFieldText returns the text of the first child with the given field name.
-func (sa *ScopeAnalyzer) childFieldText(n ASTNode, field string) string {
-	child := sa.childByField(n, field)
-	if child == nil {
-		return ""
-	}
-	return child.Text()
-}
-
 // firstChildByKind returns the first direct child with the given normalised kind.
 func (sa *ScopeAnalyzer) firstChildByKind(n ASTNode, kind string) ASTNode {
 	count := n.ChildCount()
