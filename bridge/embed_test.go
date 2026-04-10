@@ -17,6 +17,7 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"tsq_errors.qll",
 		"tsq_types.qll",
 		"tsq_symbols.qll",
+		"tsq_callgraph.qll",
 	}
 	files := LoadBridge()
 	if len(files) != len(expected) {

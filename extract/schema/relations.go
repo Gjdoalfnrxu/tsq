@@ -223,6 +223,29 @@ func init() {
 		{Name: "fnId", Type: TypeEntityRef},
 	}})
 
+	// v2 Phase B: call graph derived relations (computed by system Datalog rules)
+	RegisterRelation(RelationDef{Name: "CallTarget", Version: 2, Columns: []ColumnDef{
+		{Name: "call", Type: TypeEntityRef},
+		{Name: "fn", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "CallTargetRTA", Version: 2, Columns: []ColumnDef{
+		{Name: "call", Type: TypeEntityRef},
+		{Name: "fn", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "Instantiated", Version: 2, Columns: []ColumnDef{
+		{Name: "classId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "MethodDeclDirect", Version: 2, Columns: []ColumnDef{
+		{Name: "classId", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "fn", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "MethodDeclInherited", Version: 2, Columns: []ColumnDef{
+		{Name: "childId", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "fn", Type: TypeEntityRef},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},
