@@ -5,7 +5,7 @@ set -euo pipefail
 # This hook never blocks — it fixes what it can and re-stages modified files.
 
 echo "pre-commit: running gofmt..."
-gofmt -w ./...
+find . -name '*.go' -not -path './.git/*' -not -path './vendor/*' -exec gofmt -w {} +
 
 echo "pre-commit: running golangci-lint --fix..."
 golangci-lint run --fix ./... || true

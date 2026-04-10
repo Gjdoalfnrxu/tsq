@@ -240,10 +240,24 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 
 			// Extend binding with free variables.
 			nb := b.clone()
+			consistent := true
 			for _, fv := range freeVars {
 				if fv.col < len(t) {
-					nb[fv.name] = t[fv.col]
+					if existing, ok := nb[fv.name]; ok {
+						// Variable already bound (from earlier column in same atom).
+						// Must be equal for the binding to be consistent.
+						eq, err := Compare("=", existing, t[fv.col])
+						if err != nil || !eq {
+							consistent = false
+							break
+						}
+					} else {
+						nb[fv.name] = t[fv.col]
+					}
 				}
+			}
+			if !consistent {
+				continue
 			}
 			out = append(out, nb)
 		}
