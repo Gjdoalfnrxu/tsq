@@ -1,2 +1,843 @@
 // Package desugar lowers QL OOP constructs to flat Datalog rules.
 package desugar
+
+import (
+	"fmt"
+
+	"github.com/Gjdoalfnrxu/tsq/ql/ast"
+	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
+	"github.com/Gjdoalfnrxu/tsq/ql/resolve"
+)
+
+// Desugar lowers a resolved QL module to a Datalog program.
+// Errors are non-fatal; the returned program is always non-nil.
+func Desugar(mod *resolve.ResolvedModule) (*datalog.Program, []error) {
+	d := &desugarer{
+		mod:        mod,
+		ann:        mod.Annotations,
+		env:        mod.Env,
+		subClasses: make(map[string][]string),
+	}
+	d.buildSubclassMap()
+	return d.run()
+}
+
+// freshVarGen generates unique variable names within a rule/query scope.
+type freshVarGen struct{ n int }
+
+func (g *freshVarGen) next() datalog.Var {
+	g.n++
+	return datalog.Var{Name: fmt.Sprintf("_v%d", g.n)}
+}
+
+// desugarer holds all state for a single desugaring run.
+type desugarer struct {
+	mod    *resolve.ResolvedModule
+	ann    *resolve.Annotations
+	env    *resolve.Environment
+	errors []error
+	// subClasses maps class name → names of classes that directly extend it.
+	subClasses map[string][]string
+}
+
+func (d *desugarer) errorf(format string, args ...interface{}) {
+	d.errors = append(d.errors, fmt.Errorf(format, args...))
+}
+
+// buildSubclassMap builds the direct subclass relationship from the AST.
+func (d *desugarer) buildSubclassMap() {
+	for i := range d.mod.AST.Classes {
+		cd := &d.mod.AST.Classes[i]
+		for _, st := range cd.SuperTypes {
+			stName := st.String()
+			d.subClasses[stName] = append(d.subClasses[stName], cd.Name)
+		}
+	}
+}
+
+// run performs the full desugaring pass.
+func (d *desugarer) run() (*datalog.Program, []error) {
+	prog := &datalog.Program{}
+
+	// Desugar each class.
+	for i := range d.mod.AST.Classes {
+		cd := &d.mod.AST.Classes[i]
+		rules := d.desugarClass(cd)
+		prog.Rules = append(prog.Rules, rules...)
+	}
+
+	// Desugar top-level predicates.
+	for i := range d.mod.AST.Predicates {
+		pd := &d.mod.AST.Predicates[i]
+		rules := d.desugarTopLevelPredicate(pd)
+		prog.Rules = append(prog.Rules, rules...)
+	}
+
+	// Desugar select clause.
+	if d.mod.AST.Select != nil {
+		q := d.desugarSelect(d.mod.AST.Select)
+		prog.Query = q
+	}
+
+	return prog, d.errors
+}
+
+// ---- Class desugaring ----
+
+// desugarClass emits the characteristic predicate rule and all method rules.
+func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
+	var rules []datalog.Rule
+
+	// Characteristic predicate: Foo(this) :- SuperTypes(this)..., body.
+	{
+		gen := &freshVarGen{}
+		body := d.superTypeConstraints(cd, gen)
+		if cd.CharPred != nil {
+			body = append(body, d.desugarFormula(*cd.CharPred, gen)...)
+		}
+		rule := datalog.Rule{
+			Head: datalog.Atom{
+				Predicate: cd.Name,
+				Args:      []datalog.Term{datalog.Var{Name: "this"}},
+			},
+			Body: body,
+		}
+		rules = append(rules, rule)
+	}
+
+	// Methods.
+	for i := range cd.Members {
+		md := &cd.Members[i]
+		rules = append(rules, d.desugarMethod(cd, md)...)
+	}
+
+	return rules
+}
+
+// superTypeConstraints returns Literal{Foo(this)} for each supertype.
+func (d *desugarer) superTypeConstraints(cd *ast.ClassDecl, _ *freshVarGen) []datalog.Literal {
+	var lits []datalog.Literal
+	for _, st := range cd.SuperTypes {
+		lits = append(lits, datalog.Literal{
+			Positive: true,
+			Atom: datalog.Atom{
+				Predicate: st.String(),
+				Args:      []datalog.Term{datalog.Var{Name: "this"}},
+			},
+		})
+	}
+	return lits
+}
+
+// desugarMethod emits rules for a method, handling override dispatch.
+//
+// For a chain A ← B ← C where all define the method, we collect ALL transitive
+// overriding subclasses and emit one dispatch rule per overrider under the base
+// class predicate name.  Each rule excludes its own direct subclass overriders.
+func (d *desugarer) desugarMethod(cd *ast.ClassDecl, md *ast.MemberDecl) []datalog.Rule {
+	mangledName := mangle(cd.Name, md.Name)
+
+	// Collect ALL transitive subclasses that override this method.
+	allOverriders := d.allSubClassesWithMethod(cd.Name, md.Name)
+
+	// The base class rule excludes every transitive overrider.
+	baseRule := d.buildMethodRule(cd, md, mangledName, allOverriders)
+	rules := []datalog.Rule{baseRule}
+
+	// For each overriding subclass, emit a rule under the base predicate name.
+	// Each such rule only excludes that subclass's own direct overriding sub-subclasses,
+	// so the dispatch is precise at each level.
+	for _, subName := range allOverriders {
+		subCD, ok := d.env.Classes[subName]
+		if !ok {
+			continue
+		}
+		var overrideMD *ast.MemberDecl
+		for i := range subCD.Members {
+			if subCD.Members[i].Name == md.Name {
+				overrideMD = &subCD.Members[i]
+				break
+			}
+		}
+		if overrideMD == nil {
+			continue
+		}
+		// Exclude only the direct overriding subclasses of this subclass.
+		subOverriders := d.directSubClassesWithMethod(subName, md.Name)
+		overrideRule := d.buildMethodRule(subCD, overrideMD, mangledName, subOverriders)
+		rules = append(rules, overrideRule)
+	}
+
+	return rules
+}
+
+// buildMethodRule constructs one Datalog rule for a method.
+// excludeSubs is the set of direct subclasses that override this method;
+// they are added as "not SubClass(this)" constraints to the body.
+func (d *desugarer) buildMethodRule(cd *ast.ClassDecl, md *ast.MemberDecl, headPred string, excludeSubs []string) datalog.Rule {
+	gen := &freshVarGen{}
+
+	// Head args: (this [, params...] [, result])
+	headArgs := []datalog.Term{datalog.Var{Name: "this"}}
+	for _, param := range md.Params {
+		headArgs = append(headArgs, datalog.Var{Name: param.Name})
+	}
+	isPredicate := md.ReturnType == nil
+	if !isPredicate {
+		headArgs = append(headArgs, datalog.Var{Name: "result"})
+	}
+
+	head := datalog.Atom{
+		Predicate: headPred,
+		Args:      headArgs,
+	}
+
+	// Body: class constraint, subclass exclusions, formula.
+	body := []datalog.Literal{
+		{Positive: true, Atom: datalog.Atom{
+			Predicate: cd.Name,
+			Args:      []datalog.Term{datalog.Var{Name: "this"}},
+		}},
+	}
+
+	// Exclude overriding subclasses.
+	for _, subName := range excludeSubs {
+		body = append(body, datalog.Literal{
+			Positive: false,
+			Atom: datalog.Atom{
+				Predicate: subName,
+				Args:      []datalog.Term{datalog.Var{Name: "this"}},
+			},
+		})
+	}
+
+	if md.Body != nil {
+		body = append(body, d.desugarFormula(*md.Body, gen)...)
+	}
+
+	return datalog.Rule{Head: head, Body: body}
+}
+
+// directSubClassesWithMethod returns names of classes that:
+// (a) directly extend className, AND
+// (b) directly declare a method named methodName.
+func (d *desugarer) directSubClassesWithMethod(className, methodName string) []string {
+	var result []string
+	for _, subName := range d.subClasses[className] {
+		subCD, ok := d.env.Classes[subName]
+		if !ok {
+			continue
+		}
+		for i := range subCD.Members {
+			if subCD.Members[i].Name == methodName {
+				result = append(result, subName)
+				break
+			}
+		}
+	}
+	return result
+}
+
+// allSubClassesWithMethod returns all transitive subclasses of className
+// that directly declare a member named methodName.
+func (d *desugarer) allSubClassesWithMethod(className, methodName string) []string {
+	var result []string
+	visited := make(map[string]bool)
+	d.collectSubClassesWithMethod(className, methodName, &result, visited)
+	return result
+}
+
+func (d *desugarer) collectSubClassesWithMethod(className, methodName string, out *[]string, visited map[string]bool) {
+	for _, subName := range d.subClasses[className] {
+		if visited[subName] {
+			continue
+		}
+		visited[subName] = true
+		subCD, ok := d.env.Classes[subName]
+		if !ok {
+			continue
+		}
+		for i := range subCD.Members {
+			if subCD.Members[i].Name == methodName {
+				*out = append(*out, subName)
+				break
+			}
+		}
+		// Always recurse to capture deeper chains.
+		d.collectSubClassesWithMethod(subName, methodName, out, visited)
+	}
+}
+
+// mangle produces the Datalog predicate name for a class method.
+func mangle(className, methodName string) string {
+	return className + "_" + methodName
+}
+
+// ---- Top-level predicate desugaring ----
+
+func (d *desugarer) desugarTopLevelPredicate(pd *ast.PredicateDecl) []datalog.Rule {
+	gen := &freshVarGen{}
+
+	// Head args: params, then result if function.
+	headArgs := make([]datalog.Term, 0, len(pd.Params)+1)
+	for _, param := range pd.Params {
+		headArgs = append(headArgs, datalog.Var{Name: param.Name})
+	}
+	if pd.ReturnType != nil {
+		headArgs = append(headArgs, datalog.Var{Name: "result"})
+	}
+
+	head := datalog.Atom{
+		Predicate: pd.Name,
+		Args:      headArgs,
+	}
+
+	var body []datalog.Literal
+	if pd.Body != nil {
+		body = d.desugarFormula(*pd.Body, gen)
+	}
+
+	return []datalog.Rule{{Head: head, Body: body}}
+}
+
+// ---- Select clause desugaring ----
+
+func (d *desugarer) desugarSelect(sel *ast.SelectClause) *datalog.Query {
+	gen := &freshVarGen{}
+	var body []datalog.Literal
+
+	// Type constraints for each from declaration.
+	for _, vd := range sel.Decls {
+		typeName := vd.Type.String()
+		if !isPrimitive(typeName) {
+			body = append(body, datalog.Literal{
+				Positive: true,
+				Atom: datalog.Atom{
+					Predicate: typeName,
+					Args:      []datalog.Term{datalog.Var{Name: vd.Name}},
+				},
+			})
+		}
+	}
+
+	// Where clause.
+	if sel.Where != nil {
+		body = append(body, d.desugarFormula(*sel.Where, gen)...)
+	}
+
+	// Select expressions.
+	var selectTerms []datalog.Term
+	for _, e := range sel.Select {
+		t, extraLits := d.desugarExpr(e, gen)
+		body = append(body, extraLits...)
+		selectTerms = append(selectTerms, t)
+	}
+
+	return &datalog.Query{
+		Select: selectTerms,
+		Body:   body,
+	}
+}
+
+// ---- Formula desugaring ----
+
+// desugarFormula recursively lowers an ast.Formula to a slice of Datalog literals.
+func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Literal {
+	if f == nil {
+		return nil
+	}
+	switch n := f.(type) {
+	case *ast.Conjunction:
+		left := d.desugarFormula(n.Left, gen)
+		right := d.desugarFormula(n.Right, gen)
+		return append(left, right...)
+
+	case *ast.Disjunction:
+		// Datalog doesn't natively support disjunction in rule bodies without rule
+		// splitting.  Emit an error rather than silently evaluating only the left branch.
+		d.errorf("disjunction (or) is not yet supported in v1 — only the left branch will be evaluated")
+		left := d.desugarFormula(n.Left, gen)
+		_ = n.Right
+		return left
+
+	case *ast.Negation:
+		inner := d.desugarFormula(n.Formula, gen)
+		if len(inner) == 1 {
+			lit := inner[0]
+			lit.Positive = !lit.Positive
+			return []datalog.Literal{lit}
+		}
+		// Multiple literals: negating a conjunction requires De Morgan / rule splitting,
+		// which is not supported in v1.  Emit an error rather than silently producing
+		// wrong results (not A, not B instead of the correct not A or not B).
+		d.errorf("negation of conjunction not yet supported — only single-literal negation is supported in v1")
+		return nil
+
+	case *ast.Comparison:
+		left, leftLits := d.desugarExpr(n.Left, gen)
+		right, rightLits := d.desugarExpr(n.Right, gen)
+		lits := append(leftLits, rightLits...)
+		lits = append(lits, datalog.Literal{
+			Positive: true,
+			Cmp: &datalog.Comparison{
+				Op:    n.Op,
+				Left:  left,
+				Right: right,
+			},
+		})
+		return lits
+
+	case *ast.PredicateCall:
+		return d.desugarPredicateCall(n, gen)
+
+	case *ast.InstanceOf:
+		term, extraLits := d.desugarExpr(n.Expr, gen)
+		lits := append(extraLits, datalog.Literal{
+			Positive: true,
+			Atom: datalog.Atom{
+				Predicate: n.Type.String(),
+				Args:      []datalog.Term{term},
+			},
+		})
+		return lits
+
+	case *ast.Exists:
+		return d.desugarExists(n, gen)
+
+	case *ast.Forall:
+		return d.desugarForall(n, gen)
+
+	case *ast.None:
+		// none() — always false; represent as a self-contradicting literal.
+		// Emit: not _none() where _none is never defined → always fails.
+		return []datalog.Literal{
+			{Positive: false, Atom: datalog.Atom{Predicate: "_none", Args: nil}},
+		}
+
+	case *ast.Any:
+		// any() — always true; no constraints.
+		return nil
+
+	default:
+		d.errorf("unknown formula type %T", f)
+		return nil
+	}
+}
+
+// desugarPredicateCall handles a PredicateCall used as a formula.
+func (d *desugarer) desugarPredicateCall(pc *ast.PredicateCall, gen *freshVarGen) []datalog.Literal {
+	if pc.Recv != nil {
+		// Method call as formula (predicate call on receiver — no result).
+		recvTerm, extraLits := d.desugarExpr(pc.Recv, gen)
+		args := []datalog.Term{recvTerm}
+		for _, arg := range pc.Args {
+			t, lits := d.desugarExpr(arg, gen)
+			extraLits = append(extraLits, lits...)
+			args = append(args, t)
+		}
+
+		predName := d.resolvePredicateCallRecvPred(pc)
+		if predName == "" {
+			predName = pc.Name
+		}
+		lit := datalog.Literal{
+			Positive: true,
+			Atom:     datalog.Atom{Predicate: predName, Args: args},
+		}
+		return append(extraLits, lit)
+	}
+
+	// Bare predicate call.
+	var allLits []datalog.Literal
+	args := make([]datalog.Term, 0, len(pc.Args))
+	for _, arg := range pc.Args {
+		t, lits := d.desugarExpr(arg, gen)
+		allLits = append(allLits, lits...)
+		args = append(args, t)
+	}
+	allLits = append(allLits, datalog.Literal{
+		Positive: true,
+		Atom:     datalog.Atom{Predicate: pc.Name, Args: args},
+	})
+	return allLits
+}
+
+// desugarExists: exists(decls | [guard |] body)
+// Introduces fresh variables for the declared vars and inlines body.
+// The declared variables scoped to the exists become literals in the outer conjunction.
+func (d *desugarer) desugarExists(n *ast.Exists, gen *freshVarGen) []datalog.Literal {
+	var lits []datalog.Literal
+
+	// Type constraints for each declared variable.
+	for _, vd := range n.Decls {
+		typeName := vd.Type.String()
+		if !isPrimitive(typeName) {
+			lits = append(lits, datalog.Literal{
+				Positive: true,
+				Atom: datalog.Atom{
+					Predicate: typeName,
+					Args:      []datalog.Term{datalog.Var{Name: vd.Name}},
+				},
+			})
+		}
+	}
+
+	if n.Guard != nil {
+		lits = append(lits, d.desugarFormula(n.Guard, gen)...)
+	}
+	lits = append(lits, d.desugarFormula(n.Body, gen)...)
+	return lits
+}
+
+// desugarForall: forall(decls | guard | body)
+// Desugared as: not(guard and not(body))
+// In Datalog literals: not Guard OR (Guard AND Body) — we use double negation.
+// Representation: for each guard literal G, emit:
+//
+//	not G_v  OR  (G_v AND Body_v)
+//
+// Simplified: we emit the guard literals negated, then the body using double-neg.
+//
+// Full double-negation in stratified Datalog:
+//
+//	forall v: G(v) => B(v)
+//	≡ not exists v: G(v) and not B(v)
+//
+// We cannot express "not exists" directly in a rule body without a helper predicate.
+// We emit it as nested negation literals (relying on the planner to stratify).
+func (d *desugarer) desugarForall(n *ast.Forall, gen *freshVarGen) []datalog.Literal {
+	// Desugar guard and body independently.
+	guardLits := d.desugarFormula(n.Guard, gen)
+	bodyLits := d.desugarFormula(n.Body, gen)
+
+	// Double negation pattern:
+	// We want: not(exists v: guard(v) and not(body(v)))
+	// Represented as: for each guard literal, negate it (not guard),
+	// and for each body literal, negate-of-negate (body):
+	// not(G) and body  — outer "not exists" is approximated as:
+	//   each guard lit negated (the "there is no v violating") combined
+	//   with body positively asserted.
+	//
+	// Faithful representation: emit guard negated as negated literals.
+	// This is a stratified-Datalog approximation.
+	var lits []datalog.Literal
+
+	// Type constraints for declared vars.
+	for _, vd := range n.Decls {
+		typeName := vd.Type.String()
+		if !isPrimitive(typeName) {
+			// In forall, the type constraint for the universally quantified var
+			// appears inside the "not exists" scope — negate it.
+			// Pattern: not (TypeName(v) and GuardLits(v) and not BodyLits(v))
+			// We emit: not TypeName(v), GuardLits(v)..., not BodyLits(v)...
+			// This is the double-negation approximation.
+			_ = typeName // used below in guard lits
+		}
+	}
+
+	// Outer negation of the guard (approximation of "not exists v: guard and not body").
+	for _, gl := range guardLits {
+		neg := gl
+		neg.Positive = !neg.Positive
+		lits = append(lits, neg)
+	}
+	// Body positively (the "not not body" = body part).
+	lits = append(lits, bodyLits...)
+
+	return lits
+}
+
+// ---- Expression desugaring ----
+
+// desugarExpr lowers an ast.Expr to a (Term, []Literal) pair.
+// The literals are side-effects (fresh variable bindings, method call atoms).
+func (d *desugarer) desugarExpr(e ast.Expr, gen *freshVarGen) (datalog.Term, []datalog.Literal) {
+	if e == nil {
+		return datalog.Wildcard{}, nil
+	}
+	switch n := e.(type) {
+	case *ast.Variable:
+		return datalog.Var{Name: n.Name}, nil
+
+	case *ast.IntLiteral:
+		return datalog.IntConst{Value: n.Value}, nil
+
+	case *ast.StringLiteral:
+		return datalog.StringConst{Value: n.Value}, nil
+
+	case *ast.BoolLiteral:
+		if n.Value {
+			return datalog.IntConst{Value: 1}, nil
+		}
+		return datalog.IntConst{Value: 0}, nil
+
+	case *ast.MethodCall:
+		return d.desugarMethodCallExpr(n, gen)
+
+	case *ast.Cast:
+		inner, lits := d.desugarExpr(n.Expr, gen)
+		// Add type constraint atom.
+		lits = append(lits, datalog.Literal{
+			Positive: true,
+			Atom: datalog.Atom{
+				Predicate: n.Type.String(),
+				Args:      []datalog.Term{inner},
+			},
+		})
+		return inner, lits
+
+	case *ast.Aggregate:
+		return d.desugarAggregateExpr(n, gen)
+
+	case *ast.BinaryExpr:
+		// Arithmetic — represent as a fresh variable holding the result.
+		// (Full arithmetic requires special handling in the planner.)
+		left, leftLits := d.desugarExpr(n.Left, gen)
+		right, rightLits := d.desugarExpr(n.Right, gen)
+		allLits := append(leftLits, rightLits...)
+		// Emit an arithmetic constraint as a comparison-like literal.
+		// We use a fresh var and a pseudo-predicate for the planner.
+		fresh := gen.next()
+		allLits = append(allLits, datalog.Literal{
+			Positive: true,
+			Cmp: &datalog.Comparison{
+				Op:    "=",
+				Left:  fresh,
+				Right: datalog.Var{Name: fmt.Sprintf("arith(%s%s%s)", termStr(left), n.Op, termStr(right))},
+			},
+		})
+		_ = right
+		return fresh, allLits
+
+	case *ast.FieldAccess:
+		// Field access: treated as a method call with no args.
+		recv, lits := d.desugarExpr(n.Recv, gen)
+		predName := d.resolveFieldAccessPred(n)
+		fresh := gen.next()
+		lits = append(lits, datalog.Literal{
+			Positive: true,
+			Atom: datalog.Atom{
+				Predicate: predName,
+				Args:      []datalog.Term{recv, fresh},
+			},
+		})
+		return fresh, lits
+
+	default:
+		d.errorf("unknown expr type %T", e)
+		return datalog.Wildcard{}, nil
+	}
+}
+
+// desugarMethodCallExpr lowers expr.method(args...) used as an expression.
+// Returns a fresh variable bound to the method's result.
+func (d *desugarer) desugarMethodCallExpr(mc *ast.MethodCall, gen *freshVarGen) (datalog.Term, []datalog.Literal) {
+	recv, lits := d.desugarExpr(mc.Recv, gen)
+
+	// Determine the predicate name.
+	predName := d.resolveMethodCallPred(mc, mc.Method)
+
+	// Desugar args.
+	args := []datalog.Term{recv}
+	for _, arg := range mc.Args {
+		t, argLits := d.desugarExpr(arg, gen)
+		lits = append(lits, argLits...)
+		args = append(args, t)
+	}
+
+	// Fresh variable for the result.
+	fresh := gen.next()
+	args = append(args, fresh)
+
+	lits = append(lits, datalog.Literal{
+		Positive: true,
+		Atom:     datalog.Atom{Predicate: predName, Args: args},
+	})
+
+	return fresh, lits
+}
+
+// resolveMethodCallPred determines the mangled Datalog predicate name for a method call.
+// It uses the resolver annotations to find the defining class.
+// recv must be the *ast.MethodCall node itself (for expression-position calls) — the
+// resolver writes ExprResolutions keyed on the MethodCall node.
+// For PredicateCall receivers (formula-position method calls), pass nil for recv and
+// use resolvePredicateCallRecvPred instead.
+func (d *desugarer) resolveMethodCallPred(recv ast.Expr, methodName string) string {
+	if d.ann != nil {
+		if res, ok := d.ann.ExprResolutions[recv]; ok && res != nil && res.DeclClass != nil {
+			return mangle(res.DeclClass.Name, methodName)
+		}
+	}
+	return methodName
+}
+
+// resolveReceiverType infers the class name of an expression by consulting
+// VarBindings (for Variables) and ExprResolutions (for MethodCall/FieldAccess).
+func (d *desugarer) resolveReceiverType(recv ast.Expr) string {
+	if d.ann == nil {
+		return ""
+	}
+	switch n := recv.(type) {
+	case *ast.Variable:
+		// VarBindings records the ParamDecl, whose Type gives the class name.
+		if vb, ok := d.ann.VarBindings[n]; ok && vb.Param != nil {
+			return vb.Param.Type.String()
+		}
+		// Special case: "this" is not in VarBindings but we can infer from ExprResolutions
+		// if there is any resolution that mentions the class. As a fallback, return "".
+		return ""
+	case *ast.MethodCall:
+		if res, ok := d.ann.ExprResolutions[n]; ok && res != nil && res.DeclMember != nil && res.DeclMember.ReturnType != nil {
+			return res.DeclMember.ReturnType.String()
+		}
+		return ""
+	case *ast.Cast:
+		return n.Type.String()
+	}
+	return ""
+}
+
+// resolvePredicateCallRecvPred determines the mangled predicate name for a
+// formula-position method call (pc.Recv != nil). The resolver does not annotate
+// PredicateCall nodes in ExprResolutions, so we infer from the receiver type.
+func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
+	recvType := d.resolveReceiverType(pc.Recv)
+	if recvType == "" {
+		return pc.Name
+	}
+	// Walk the class hierarchy to find the defining class (handles inheritance).
+	if cd, ok := d.env.Classes[recvType]; ok {
+		defClass := d.memberDefiningClass(cd, pc.Name)
+		if defClass != nil {
+			return mangle(defClass.Name, pc.Name)
+		}
+	}
+	return mangle(recvType, pc.Name)
+}
+
+// memberDefiningClass walks the supertype chain from cd to find the class
+// that directly declares a member named name.
+func (d *desugarer) memberDefiningClass(cd *ast.ClassDecl, name string) *ast.ClassDecl {
+	if cd == nil {
+		return nil
+	}
+	visited := make(map[string]bool)
+	return d.memberDefiningClassRec(cd, name, visited)
+}
+
+func (d *desugarer) memberDefiningClassRec(cd *ast.ClassDecl, name string, visited map[string]bool) *ast.ClassDecl {
+	if cd == nil || visited[cd.Name] {
+		return nil
+	}
+	visited[cd.Name] = true
+	for i := range cd.Members {
+		if cd.Members[i].Name == name {
+			return cd
+		}
+	}
+	for _, st := range cd.SuperTypes {
+		if superCD, ok := d.env.Classes[st.String()]; ok {
+			if found := d.memberDefiningClassRec(superCD, name, visited); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// resolveFieldAccessPred determines the predicate name for a field access.
+func (d *desugarer) resolveFieldAccessPred(fa *ast.FieldAccess) string {
+	if d.ann != nil {
+		if res, ok := d.ann.ExprResolutions[fa]; ok && res != nil && res.DeclClass != nil {
+			return mangle(res.DeclClass.Name, fa.Field)
+		}
+	}
+	return fa.Field
+}
+
+// desugarAggregateExpr lowers an ast.Aggregate expression.
+func (d *desugarer) desugarAggregateExpr(a *ast.Aggregate, gen *freshVarGen) (datalog.Term, []datalog.Literal) {
+	// Build body literals from the aggregate's guard and body.
+	var bodyLits []datalog.Literal
+
+	// Type constraints for declared vars.
+	for _, vd := range a.Decls {
+		typeName := vd.Type.String()
+		if !isPrimitive(typeName) {
+			bodyLits = append(bodyLits, datalog.Literal{
+				Positive: true,
+				Atom: datalog.Atom{
+					Predicate: typeName,
+					Args:      []datalog.Term{datalog.Var{Name: vd.Name}},
+				},
+			})
+		}
+	}
+
+	innerGen := &freshVarGen{}
+	if a.Guard != nil {
+		bodyLits = append(bodyLits, d.desugarFormula(a.Guard, innerGen)...)
+	}
+	if a.Body != nil {
+		bodyLits = append(bodyLits, d.desugarFormula(a.Body, innerGen)...)
+	}
+
+	// Determine aggregated variable name and type.
+	aggVar := ""
+	aggType := ""
+	if len(a.Decls) > 0 {
+		aggVar = a.Decls[0].Name
+		aggType = a.Decls[0].Type.String()
+	}
+
+	// Aggregated expression (for min/max/sum/avg).
+	var aggExpr datalog.Term
+	if a.Expr != nil {
+		var exprLits []datalog.Literal
+		aggExpr, exprLits = d.desugarExpr(a.Expr, innerGen)
+		bodyLits = append(bodyLits, exprLits...)
+	}
+
+	// A fresh variable holds the aggregate result.
+	fresh := gen.next()
+	agg := &datalog.Aggregate{
+		Func:      a.Op,
+		Var:       aggVar,
+		TypeName:  aggType,
+		Body:      bodyLits,
+		Expr:      aggExpr,
+		ResultVar: fresh,
+	}
+
+	lit := datalog.Literal{
+		Positive: true,
+		Agg:      agg,
+	}
+
+	return fresh, []datalog.Literal{lit}
+}
+
+// ---- Helpers ----
+
+// isPrimitive returns true for built-in scalar types that don't have class predicates.
+func isPrimitive(typeName string) bool {
+	switch typeName {
+	case "int", "float", "string", "boolean", "date":
+		return true
+	}
+	return false
+}
+
+func termStr(t datalog.Term) string {
+	switch v := t.(type) {
+	case datalog.Var:
+		return v.Name
+	case datalog.IntConst:
+		return fmt.Sprintf("%d", v.Value)
+	case datalog.StringConst:
+		return fmt.Sprintf("%q", v.Value)
+	default:
+		return "_"
+	}
+}
