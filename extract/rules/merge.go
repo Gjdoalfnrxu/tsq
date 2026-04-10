@@ -4,6 +4,14 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 )
 
+// AllSystemRules returns all system Datalog rules: call graph + local flow.
+func AllSystemRules() []datalog.Rule {
+	var all []datalog.Rule
+	all = append(all, CallGraphRules()...)
+	all = append(all, LocalFlowRules()...)
+	return all
+}
+
 // MergeSystemRules returns a new Program that contains both the user-written
 // rules (from prog) and the given system rules. The original program is not
 // modified. If prog is nil, a program containing only the system rules is returned.

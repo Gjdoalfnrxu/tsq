@@ -223,6 +223,12 @@ func init() {
 		{Name: "fnId", Type: TypeEntityRef},
 	}})
 
+	// v2 Phase C1: Return value symbol (synthetic per-function return symbol)
+	RegisterRelation(RelationDef{Name: "ReturnSym", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "sym", Type: TypeEntityRef},
+	}})
+
 	// v2 Phase B: call graph derived relations (computed by system Datalog rules)
 	RegisterRelation(RelationDef{Name: "CallTarget", Version: 2, Columns: []ColumnDef{
 		{Name: "call", Type: TypeEntityRef},
@@ -244,6 +250,18 @@ func init() {
 		{Name: "childId", Type: TypeEntityRef},
 		{Name: "name", Type: TypeString},
 		{Name: "fn", Type: TypeEntityRef},
+	}})
+
+	// v2 Phase C1: intra-procedural dataflow (computed by system Datalog rules)
+	RegisterRelation(RelationDef{Name: "LocalFlow", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "LocalFlowStar", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
 	}})
 
 	// Diagnostics

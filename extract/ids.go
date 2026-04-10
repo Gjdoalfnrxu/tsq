@@ -38,6 +38,12 @@ func SymID(filePath, name string, startLine, startCol int) uint32 {
 	return uint32(h.Sum64())
 }
 
+// ReturnSymID returns a deterministic 32-bit ID for the synthetic return symbol
+// of a function. Uses FNV-1a of (filePath, "$return", fnStartLine, fnStartCol).
+func ReturnSymID(filePath string, fnStartLine, fnStartCol int) uint32 {
+	return SymID(filePath, "$return", fnStartLine, fnStartCol)
+}
+
 // FileID returns a deterministic 32-bit ID for a file path.
 func FileID(filePath string) uint32 {
 	h := fnv.New64a()

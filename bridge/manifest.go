@@ -95,6 +95,10 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "Instantiated", Relation: "Instantiated", File: "tsq_callgraph.qll"},
 			{Name: "MethodDeclDirect", Relation: "MethodDeclDirect", File: "tsq_callgraph.qll"},
 			{Name: "MethodDeclInherited", Relation: "MethodDeclInherited", File: "tsq_callgraph.qll"},
+			// v2 Phase C1: intra-procedural dataflow
+			{Name: "ReturnSym", Relation: "ReturnSym", File: "tsq_functions.qll"},
+			{Name: "LocalFlow", Relation: "LocalFlow", File: "tsq_dataflow.qll"},
+			{Name: "LocalFlowStar", Relation: "LocalFlowStar", File: "tsq_dataflow.qll"},
 		},
 		Unavailable: []UnavailableClass{
 			{Name: "DataFlow", Reason: "IPA-dependent; requires inter-procedural analysis engine", VersionTarget: "v3"},
