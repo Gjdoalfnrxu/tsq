@@ -435,6 +435,7 @@ func makeBridgeImportLoader(bridgeFiles map[string][]byte) func(path string) (*a
 		"tsq::express":     "tsq_express.qll",
 		"tsq::react":       "tsq_react.qll",
 		"tsq::node":        "tsq_node.qll",
+		"javascript":       "compat_javascript.qll",
 	}
 	return func(path string) (*ast.Module, error) {
 		filename, ok := pathToFile[path]
