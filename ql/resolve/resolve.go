@@ -3,6 +3,7 @@ package resolve
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
 )
@@ -312,6 +313,11 @@ func (r *resolver) secondPass(mod *ast.Module) {
 func (r *resolver) resolveTypeRef(tr ast.TypeRef) {
 	name := tr.String()
 	if primitiveTypes[name] {
+		return
+	}
+	// @-prefixed types are database entity types (used in bridge .qll files).
+	// They are always valid and do not need to be declared as classes.
+	if strings.HasPrefix(name, "@") {
 		return
 	}
 	if _, ok := r.env.Classes[name]; !ok {

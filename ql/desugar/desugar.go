@@ -46,6 +46,21 @@ func (d *desugarer) errorf(format string, args ...interface{}) {
 
 // buildSubclassMap builds the direct subclass relationship from the AST.
 func (d *desugarer) buildSubclassMap() {
+	// Include imported modules' classes in the subclass map.
+	if d.env != nil && d.env.Imports != nil {
+		for _, imp := range d.env.Imports {
+			if imp == nil || imp.AST == nil {
+				continue
+			}
+			for i := range imp.AST.Classes {
+				cd := &imp.AST.Classes[i]
+				for _, st := range cd.SuperTypes {
+					stName := st.String()
+					d.subClasses[stName] = append(d.subClasses[stName], cd.Name)
+				}
+			}
+		}
+	}
 	for i := range d.mod.AST.Classes {
 		cd := &d.mod.AST.Classes[i]
 		for _, st := range cd.SuperTypes {
@@ -59,7 +74,27 @@ func (d *desugarer) buildSubclassMap() {
 func (d *desugarer) run() (*datalog.Program, []error) {
 	prog := &datalog.Program{}
 
-	// Desugar each class.
+	// Desugar imported modules' classes and predicates first so their
+	// derived relations are available to the user's query.
+	if d.env != nil && d.env.Imports != nil {
+		for _, imp := range d.env.Imports {
+			if imp == nil || imp.AST == nil {
+				continue
+			}
+			for i := range imp.AST.Classes {
+				cd := &imp.AST.Classes[i]
+				rules := d.desugarClass(cd)
+				prog.Rules = append(prog.Rules, rules...)
+			}
+			for i := range imp.AST.Predicates {
+				pd := &imp.AST.Predicates[i]
+				rules := d.desugarTopLevelPredicate(pd)
+				prog.Rules = append(prog.Rules, rules...)
+			}
+		}
+	}
+
+	// Desugar each class in the main module.
 	for i := range d.mod.AST.Classes {
 		cd := &d.mod.AST.Classes[i]
 		rules := d.desugarClass(cd)
@@ -115,13 +150,20 @@ func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
 }
 
 // superTypeConstraints returns Literal{Foo(this)} for each supertype.
+// @-prefixed supertypes (database entity types) are skipped — they represent
+// raw DB types and have no corresponding derived relation to constrain against.
 func (d *desugarer) superTypeConstraints(cd *ast.ClassDecl, _ *freshVarGen) []datalog.Literal {
 	var lits []datalog.Literal
 	for _, st := range cd.SuperTypes {
+		stName := st.String()
+		// Skip @-prefixed database entity types — they have no derived relation.
+		if len(stName) > 0 && stName[0] == '@' {
+			continue
+		}
 		lits = append(lits, datalog.Literal{
 			Positive: true,
 			Atom: datalog.Atom{
-				Predicate: st.String(),
+				Predicate: stName,
 				Args:      []datalog.Term{datalog.Var{Name: "this"}},
 			},
 		})
