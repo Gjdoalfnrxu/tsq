@@ -17,6 +17,7 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/bridge"
 	"github.com/Gjdoalfnrxu/tsq/extract"
 	"github.com/Gjdoalfnrxu/tsq/extract/db"
+	"github.com/Gjdoalfnrxu/tsq/extract/typecheck"
 	"github.com/Gjdoalfnrxu/tsq/output"
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
 	"github.com/Gjdoalfnrxu/tsq/ql/desugar"
@@ -121,6 +122,7 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	dir := fs.String("dir", ".", "project root directory")
 	outputFile := fs.String("output", "tsq.db", "output fact database file")
 	backendFlag := fs.String("backend", "treesitter", "extraction backend: treesitter or vendored")
+	tsgoFlag := fs.String("tsgo", "", "tsgo binary path (empty=auto-detect, \"off\"=disabled)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -132,7 +134,7 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fmt.Fprintf(stderr, "extracting from %s (requires CGO_ENABLED=1 for tree-sitter)...\n", *dir)
 
 	database := db.NewDB()
-	walker := extract.NewFactWalker(database)
+	walker := extract.NewTypeAwareWalker(database)
 
 	var backend extract.ExtractorBackend
 	switch *backendFlag {
@@ -154,6 +156,15 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if err := walker.Run(ctx, backend, cfg); err != nil {
 		fmt.Fprintf(stderr, "error: extraction failed: %v\n", err)
 		return 1
+	}
+
+	// tsgo type enrichment phase
+	tsgoPath := resolveTsgo(*tsgoFlag)
+	if tsgoPath != "" {
+		if err := enrichWithTsgo(ctx, database, tsgoPath, *dir, stderr); err != nil {
+			fmt.Fprintf(stderr, "warning: tsgo enrichment failed: %v\n", err)
+			// Continue without type info — graceful degradation
+		}
 	}
 
 	// Write to a temp file first, rename on success to avoid partial output.
@@ -189,6 +200,121 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 
 	fmt.Fprintf(stderr, "wrote %s\n", *outputFile)
 	return 0
+}
+
+// resolveTsgo determines the tsgo binary path from the flag value.
+// Returns empty string if tsgo is disabled or not found.
+func resolveTsgo(flag string) string {
+	if flag == "off" {
+		return ""
+	}
+	if flag != "" {
+		return flag // explicit path
+	}
+	// Auto-detect
+	return typecheck.DetectTsgo()
+}
+
+// enrichWithTsgo runs tsgo type enrichment over extracted files in the database.
+// It queries tsgo for types at variable declaration and parameter positions,
+// then populates ResolvedType, SymbolType, and ExprType relations.
+func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir string, stderr io.Writer) error {
+	client, err := typecheck.NewClient(tsgoPath, rootDir)
+	if err != nil {
+		return fmt.Errorf("start tsgo: %w", err)
+	}
+
+	enricher, err := typecheck.NewEnricher(client, rootDir)
+	if err != nil {
+		client.Close()
+		return fmt.Errorf("init enricher: %w", err)
+	}
+	defer enricher.Close()
+
+	// Collect extracted file paths from the File relation
+	fileRel := database.Relation("File")
+	numFiles := fileRel.Tuples()
+	for i := 0; i < numFiles; i++ {
+		filePath, err := fileRel.GetString(database, i, 1) // col 1 = path
+		if err != nil {
+			continue
+		}
+
+		// Collect positions: variable declarations and parameters
+		positions := collectEnrichmentPositions(database, filePath)
+		if len(positions) == 0 {
+			continue
+		}
+
+		facts, err := enricher.EnrichFile(filePath, positions)
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: tsgo enrich %s: %v\n", filePath, err)
+			continue
+		}
+
+		// Populate ResolvedType and SymbolType/ExprType relations
+		for _, fact := range facts {
+			typeID := extract.TypeEntityID(fact.TypeHandle)
+			database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay)
+
+			// Map position back to a node ID for ExprType
+			nodeID := extract.PositionNodeID(filePath, fact.Line, fact.Col)
+			database.Relation("ExprType").AddTuple(database, nodeID, typeID)
+
+			// If we can resolve a symbol at this position, populate SymbolType
+			symID := extract.SymID(filePath, "", fact.Line, fact.Col)
+			database.Relation("SymbolType").AddTuple(database, symID, typeID)
+		}
+	}
+
+	fmt.Fprintf(stderr, "tsgo type enrichment complete\n")
+	return nil
+}
+
+// collectEnrichmentPositions collects positions of variable declarations and
+// function parameters from the database for a given file.
+func collectEnrichmentPositions(database *db.DB, filePath string) []typecheck.Position {
+	fileID := extract.FileID(filePath)
+	var positions []typecheck.Position
+
+	// Collect variable declaration positions from VarDecl -> Symbol -> Node
+	// We use the Node relation directly: find nodes in this file that are
+	// VariableDeclarator or Parameter kinds.
+	nodeRel := database.Relation("Node")
+	numNodes := nodeRel.Tuples()
+	for i := 0; i < numNodes; i++ {
+		nodeFile, err := nodeRel.GetInt(i, 1) // col 1 = file
+		if err != nil || uint32(nodeFile) != fileID {
+			continue
+		}
+		kind, err := nodeRel.GetString(database, i, 2) // col 2 = kind
+		if err != nil {
+			continue
+		}
+		switch kind {
+		case "VariableDeclarator", "RequiredParameter", "OptionalParameter",
+			"FormalParameters", "Identifier":
+			// Only collect Identifier nodes that are inside declarations
+			// For simplicity, collect VariableDeclarator and parameter kinds
+			if kind == "Identifier" {
+				continue
+			}
+			line, err := nodeRel.GetInt(i, 3) // col 3 = startLine
+			if err != nil {
+				continue
+			}
+			col, err := nodeRel.GetInt(i, 4) // col 4 = startCol
+			if err != nil {
+				continue
+			}
+			positions = append(positions, typecheck.Position{
+				Line: int(line),
+				Col:  int(col),
+			})
+		}
+	}
+
+	return positions
 }
 
 func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int {

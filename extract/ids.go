@@ -51,3 +51,26 @@ func FileID(filePath string) uint32 {
 	h.Write([]byte(filePath))
 	return uint32(h.Sum64())
 }
+
+// TypeEntityID returns a deterministic 32-bit ID for a tsgo type handle.
+// Used to create stable entity references for ResolvedType and ExprType relations.
+func TypeEntityID(typeHandle string) uint32 {
+	h := fnv.New64a()
+	h.Write([]byte("type:"))
+	h.Write([]byte(typeHandle))
+	return uint32(h.Sum64())
+}
+
+// PositionNodeID returns a deterministic 32-bit ID for a node at a file position.
+// This is a simplified version of NodeID used when only position info is available
+// (e.g., during tsgo enrichment where end position and kind aren't known).
+func PositionNodeID(filePath string, line, col int) uint32 {
+	h := fnv.New64a()
+	h.Write([]byte("posnode:"))
+	h.Write([]byte(filePath))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.Itoa(line)))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.Itoa(col)))
+	return uint32(h.Sum64())
+}
