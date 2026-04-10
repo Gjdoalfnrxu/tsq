@@ -925,10 +925,11 @@ func TestDesugarAbstractClassNoSubclasses(t *testing.T) {
 	rm := parseAndResolve(t, src)
 	prog := desugarOK(t, rm)
 
-	// Should still produce a rule for Lonely (empty extent).
+	// With no concrete subclasses, the abstract class has no derivation rules
+	// and its extent is naturally empty (no rules = empty relation).
 	r := findRuleExact(prog, "Lonely")
-	if r == nil {
-		t.Fatal("expected rule for abstract class Lonely even with no subclasses")
+	if r != nil {
+		t.Fatal("expected no rule for abstract class with no subclasses")
 	}
 }
 
@@ -986,5 +987,63 @@ class Bar extends Foo {
 	}
 	if !strings.Contains(str, "Bar") {
 		t.Errorf("String() should contain 'Bar': %q", str)
+	}
+}
+
+// --- Adversarial regression tests ---
+
+// Disjunction with asymmetric variables: only shared vars go in the head.
+func TestDesugarDisjunctionAsymmetricVars(t *testing.T) {
+	src := `
+predicate a(int x, int y) { any() }
+predicate b(int x) { any() }
+predicate test(int x) { a(x, _) or b(x) }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// Find the synthetic disjunction rule.
+	var synthRules []*datalog.Rule
+	for i := range prog.Rules {
+		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_disj") {
+			synthRules = append(synthRules, &prog.Rules[i])
+		}
+	}
+	if len(synthRules) != 2 {
+		t.Fatalf("expected 2 synthetic disjunction rules, got %d", len(synthRules))
+	}
+	// Head args should only contain x (the shared variable), not y or _.
+	for _, r := range synthRules {
+		for _, arg := range r.Head.Args {
+			if v, ok := arg.(datalog.Var); ok && v.Name != "x" {
+				t.Errorf("synthetic disjunction head should only have shared var x, got %q", v.Name)
+			}
+		}
+	}
+}
+
+// Abstract class in module: subclass lookup uses qualified names.
+func TestDesugarAbstractClassInModule(t *testing.T) {
+	src := `
+module M {
+	abstract class Base { Base() { any() } }
+	class Sub extends Base { Sub() { any() } }
+}
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	// M::Base should have a rule: M::Base(this) :- M::Sub(this).
+	var baseRules []*datalog.Rule
+	for i := range prog.Rules {
+		if prog.Rules[i].Head.Predicate == "M::Base" {
+			baseRules = append(baseRules, &prog.Rules[i])
+		}
+	}
+	if len(baseRules) != 1 {
+		t.Fatalf("expected 1 rule for M::Base (from M::Sub), got %d", len(baseRules))
+	}
+	if !bodyContainsPred(baseRules[0].Body, "M::Sub") {
+		t.Error("expected M::Base rule body to contain M::Sub")
 	}
 }

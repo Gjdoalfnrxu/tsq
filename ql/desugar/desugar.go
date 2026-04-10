@@ -94,7 +94,13 @@ func (d *desugarer) buildSubclassMapForModule(md *ast.ModuleDecl, prefix string)
 		qualName := qualPrefix + "::" + cd.Name
 		for _, st := range cd.SuperTypes {
 			stName := st.String()
+			// If the supertype is unqualified and exists within this same module,
+			// register under the qualified name too so abstract class lookup works.
 			d.subClasses[stName] = append(d.subClasses[stName], qualName)
+			qualSuperName := qualPrefix + "::" + stName
+			if qualSuperName != stName {
+				d.subClasses[qualSuperName] = append(d.subClasses[qualSuperName], qualName)
+			}
 		}
 	}
 	for i := range md.Modules {
@@ -218,19 +224,8 @@ func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
 			}
 			rules = append(rules, rule)
 		}
-		// If no subclasses, emit a rule with no body (empty extent).
-		if len(subclasses) == 0 {
-			rules = append(rules, datalog.Rule{
-				Head: datalog.Atom{
-					Predicate: cd.Name,
-					Args:      []datalog.Term{datalog.Var{Name: "this"}},
-				},
-				Body: []datalog.Literal{{
-					Positive: false,
-					Atom:     datalog.Atom{Predicate: "_none", Args: nil},
-				}},
-			})
-		}
+		// If no subclasses, emit no rules — the abstract class has an empty extent.
+		// No synthetic "_none" sentinel needed; an underived predicate is naturally empty.
 	} else {
 		// Characteristic predicate: Foo(this) :- SuperTypes(this)..., body.
 		gen := &freshVarGen{}
@@ -507,8 +502,11 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 		leftLits := d.desugarFormula(n.Left, gen)
 		rightLits := d.desugarFormula(n.Right, gen)
 
-		// Collect all variables from both branches to use as head args.
-		freeVars := collectVarsFromLiterals(append(leftLits, rightLits...))
+		// Use only variables that appear in BOTH branches as head args.
+		// Variables in only one branch are unsafe in the other rule's head.
+		leftVars := collectVarsFromLiterals(leftLits)
+		rightVars := collectVarsFromLiterals(rightLits)
+		freeVars := intersectVars(leftVars, rightVars)
 
 		synthName := d.freshSynthName("_disj")
 		args := make([]datalog.Term, len(freeVars))
@@ -1011,6 +1009,21 @@ func collectVarFromTerm(t datalog.Term, seen map[string]bool, vars *[]string) {
 			*vars = append(*vars, v.Name)
 		}
 	}
+}
+
+// intersectVars returns variables present in both a and b, preserving order from a.
+func intersectVars(a, b []string) []string {
+	bSet := make(map[string]bool, len(b))
+	for _, v := range b {
+		bSet[v] = true
+	}
+	var result []string
+	for _, v := range a {
+		if bSet[v] {
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 // allConcreteSubclasses returns all transitive subclass names that are not abstract.
