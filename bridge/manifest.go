@@ -89,6 +89,12 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ReturnStmt", Relation: "ReturnStmt", File: "tsq_functions.qll"},
 			{Name: "FunctionContains", Relation: "FunctionContains", File: "tsq_functions.qll"},
 			{Name: "SymInFunction", Relation: "SymInFunction", File: "tsq_symbols.qll"},
+			// v2 Phase B: call graph derived relations
+			{Name: "CallTarget", Relation: "CallTarget", File: "tsq_callgraph.qll"},
+			{Name: "CallTargetRTA", Relation: "CallTargetRTA", File: "tsq_callgraph.qll"},
+			{Name: "Instantiated", Relation: "Instantiated", File: "tsq_callgraph.qll"},
+			{Name: "MethodDeclDirect", Relation: "MethodDeclDirect", File: "tsq_callgraph.qll"},
+			{Name: "MethodDeclInherited", Relation: "MethodDeclInherited", File: "tsq_callgraph.qll"},
 		},
 		Unavailable: []UnavailableClass{
 			{Name: "DataFlow", Reason: "IPA-dependent; requires inter-procedural analysis engine", VersionTarget: "v3"},

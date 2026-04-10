@@ -34,8 +34,8 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 45 {
-		t.Fatalf("expected 45 relations in registry, got %d", len(Registry))
+	if len(Registry) != 50 {
+		t.Fatalf("expected 50 relations in registry, got %d", len(Registry))
 	}
 }
 
