@@ -22,6 +22,9 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"tsq_summaries.qll",
 		"tsq_composition.qll",
 		"tsq_taint.qll",
+		"tsq_express.qll",
+		"tsq_react.qll",
+		"tsq_node.qll",
 	}
 	files := LoadBridge()
 	if len(files) != len(expected) {
