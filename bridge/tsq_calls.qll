@@ -5,13 +5,13 @@
 
 /** A function call or method invocation. */
 class Call extends @call {
-    Call() { call(this, _, _) }
+    Call() { Call(this, _, _) }
 
     /** Gets the callee expression node. */
-    ASTNode getCalleeNode() { call(this, result, _) }
+    ASTNode getCalleeNode() { Call(this, result, _) }
 
     /** Gets the number of arguments. */
-    int getArity() { call(this, _, result) }
+    int getArity() { Call(this, _, result) }
 
     /** Gets an argument to this call. */
     CallArg getAnArgument() { result.getCall() = this }
@@ -26,18 +26,25 @@ class Call extends @call {
     string toString() { result = "call" }
 }
 
-/** An argument passed to a call. */
+/**
+ * An argument passed to a call.
+ *
+ * NOTE: `this` binds to col 0 (call), which is not a unique identifier.
+ * Multiple arguments to the same call share the same col-0 value, so they
+ * collapse into a single QL entity.  This is a known v1 limitation —
+ * resolving it requires adding a composite key or synthetic id column.
+ */
 class CallArg extends @call_arg {
-    CallArg() { call_arg(this, _, _) }
+    CallArg() { CallArg(this, _, _) }
 
     /** Gets the call this argument belongs to. */
-    Call getCall() { call_arg(result, _, _) and call_arg(this, _, _) }
+    Call getCall() { result = this }
 
     /** Gets the 0-based index of this argument. */
-    int getIndex() { call_arg(_, result, _) and call_arg(this, _, _) }
+    int getIndex() { CallArg(this, result, _) }
 
     /** Gets the argument expression node. */
-    ASTNode getArgNode() { call_arg(_, _, result) and call_arg(this, _, _) }
+    ASTNode getArgNode() { CallArg(this, _, result) }
 
     /** Holds if this argument is a spread argument. */
     predicate isSpread() {
@@ -51,13 +58,18 @@ class CallArg extends @call_arg {
     string toString() { result = "arg" }
 }
 
-/** Marks a call argument as a spread argument (...args). */
+/**
+ * Marks a call argument as a spread argument (...args).
+ *
+ * NOTE: `this` binds to col 0 (call), not a unique id.
+ * Same entity-collapse caveat as CallArg.
+ */
 class CallArgSpread extends @call_arg_spread {
-    CallArgSpread() { call_arg_spread(this, _) }
+    CallArgSpread() { CallArgSpread(this, _) }
 
     /** Gets the call. */
-    Call getCall() { call_arg_spread(result, _) and call_arg_spread(this, _) }
+    Call getCall() { result = this }
 
     /** Gets the argument index. */
-    int getIndex() { call_arg_spread(_, result) and call_arg_spread(this, _) }
+    int getIndex() { CallArgSpread(this, result) }
 }

@@ -5,16 +5,16 @@
 
 /** An import binding (import { x } from "module"). */
 class ImportBinding extends @import_binding {
-    ImportBinding() { import_binding(this, _, _) }
+    ImportBinding() { ImportBinding(this, _, _) }
 
     /** Gets the local symbol. */
     int getLocalSym() { result = this }
 
     /** Gets the module specifier string. */
-    string getModuleSpec() { import_binding(_, result, _) and import_binding(this, _, _) }
+    string getModuleSpec() { ImportBinding(this, result, _) }
 
     /** Gets the imported name (or "default" / "*"). */
-    string getImportedName() { import_binding(_, _, result) and import_binding(this, _, _) }
+    string getImportedName() { ImportBinding(this, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = this.getImportedName() + " from " + this.getModuleSpec() }
@@ -22,16 +22,16 @@ class ImportBinding extends @import_binding {
 
 /** An export binding (export { x }). */
 class ExportBinding extends @export_binding {
-    ExportBinding() { export_binding(this, _, _) }
+    ExportBinding() { ExportBinding(this, _, _) }
 
     /** Gets the exported name. */
     string getExportedName() { result = this }
 
     /** Gets the local symbol. */
-    int getLocalSym() { export_binding(_, result, _) and export_binding(this, _, _) }
+    int getLocalSym() { ExportBinding(this, result, _) }
 
     /** Gets the file containing this export. */
-    File getFile() { export_binding(_, _, result) and export_binding(this, _, _) }
+    File getFile() { ExportBinding(this, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = this.getExportedName() }

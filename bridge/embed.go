@@ -59,7 +59,6 @@ func BridgeImportLoader(bridgeFiles map[string][]byte, parseFn func(src, file st
 		if !ok {
 			return nil, false
 		}
-		_ = data // The caller's parseFn would parse string(data) if needed.
-		return nil, true
+		return parseFn(string(data), filename), true
 	}
 }

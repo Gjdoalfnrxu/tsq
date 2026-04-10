@@ -67,7 +67,10 @@ func TestLoadBridgeContentsAreUTF8(t *testing.T) {
 // TestBridgeImportLoaderKnownPaths verifies the import loader recognises bridge paths.
 func TestBridgeImportLoaderKnownPaths(t *testing.T) {
 	files := LoadBridge()
-	loader := BridgeImportLoader(files, nil)
+	stubParse := func(src, file string) interface{} {
+		return src // return something non-nil so we can verify the loader calls parseFn
+	}
+	loader := BridgeImportLoader(files, stubParse)
 
 	knownPaths := []string{
 		"tsq::base",
@@ -80,9 +83,12 @@ func TestBridgeImportLoaderKnownPaths(t *testing.T) {
 		"tsq::errors",
 	}
 	for _, path := range knownPaths {
-		_, ok := loader(path)
+		result, ok := loader(path)
 		if !ok {
 			t.Errorf("BridgeImportLoader did not recognise path %q", path)
+		}
+		if result == nil {
+			t.Errorf("BridgeImportLoader returned nil for known path %q", path)
 		}
 	}
 }
@@ -90,7 +96,8 @@ func TestBridgeImportLoaderKnownPaths(t *testing.T) {
 // TestBridgeImportLoaderUnknownPaths verifies the import loader rejects unknown paths.
 func TestBridgeImportLoaderUnknownPaths(t *testing.T) {
 	files := LoadBridge()
-	loader := BridgeImportLoader(files, nil)
+	stubParse := func(src, file string) interface{} { return src }
+	loader := BridgeImportLoader(files, stubParse)
 
 	unknownPaths := []string{
 		"tsq::dataflow",

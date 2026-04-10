@@ -40,15 +40,15 @@ func TestBridgeFilesParseBasicStructure(t *testing.T) {
 
 // TestBridgeClassesReferenceValidRelations verifies that the relation names
 // used in characteristic predicates correspond to registered schema relations
-// (lowercased, with underscores matching the snake_case convention).
+// (PascalCase matching the schema registry).
 func TestBridgeClassesReferenceValidRelations(t *testing.T) {
-	// Build a set of valid relation names in lowercase/snake_case.
+	// Build a set of valid relation names in PascalCase.
 	validRelations := make(map[string]bool)
 	for _, rel := range schema.Registry {
-		validRelations[toSnakeCase(rel.Name)] = true
+		validRelations[rel.Name] = true
 	}
 
-	// Regex to find characteristic predicate calls like: node(this, _, _, ...)
+	// Regex to find characteristic predicate calls like: Node(this, _, _, ...)
 	charPredRe := regexp.MustCompile(`(?m)^\s+\w+\(\)\s*\{\s*(\w+)\(this`)
 
 	files := LoadBridge()
@@ -67,13 +67,13 @@ func TestBridgeClassesReferenceValidRelations(t *testing.T) {
 // TestBridgeRelationArities checks that the number of underscore/variable
 // arguments in characteristic predicates matches the schema relation arity.
 func TestBridgeRelationArities(t *testing.T) {
-	// Build arity map from schema.
+	// Build arity map from schema (PascalCase keys).
 	arities := make(map[string]int)
 	for _, rel := range schema.Registry {
-		arities[toSnakeCase(rel.Name)] = rel.Arity()
+		arities[rel.Name] = rel.Arity()
 	}
 
-	// Regex to find characteristic predicate bodies: relation_name(this, _, _, ...)
+	// Regex to find characteristic predicate bodies: RelationName(this, _, _, ...)
 	charPredRe := regexp.MustCompile(`(?m)^\s+\w+\(\)\s*\{\s*(\w+)\(([^)]+)\)`)
 
 	files := LoadBridge()
@@ -109,20 +109,4 @@ func TestBridgeNoDataFlowClasses(t *testing.T) {
 			}
 		}
 	}
-}
-
-// toSnakeCase converts PascalCase to snake_case.
-func toSnakeCase(s string) string {
-	var result []byte
-	for i, c := range s {
-		if c >= 'A' && c <= 'Z' {
-			if i > 0 {
-				result = append(result, '_')
-			}
-			result = append(result, byte(c+'a'-'A'))
-		} else {
-			result = append(result, byte(c))
-		}
-	}
-	return string(result)
 }

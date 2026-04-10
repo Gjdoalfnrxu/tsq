@@ -5,13 +5,13 @@
 
 /** A JSX element (<Component ... />). */
 class JsxElement extends @jsx_element {
-    JsxElement() { jsx_element(this, _, _) }
+    JsxElement() { JsxElement(this, _, _) }
 
     /** Gets the tag expression node. */
-    ASTNode getTagNode() { jsx_element(this, result, _) }
+    ASTNode getTagNode() { JsxElement(this, result, _) }
 
     /** Gets the tag symbol. */
-    int getTagSym() { jsx_element(this, _, result) }
+    int getTagSym() { JsxElement(this, _, result) }
 
     /** Gets an attribute of this element. */
     JsxAttribute getAnAttribute() { result.getElement() = this }
@@ -20,18 +20,24 @@ class JsxElement extends @jsx_element {
     string toString() { result = "jsx_element" }
 }
 
-/** An attribute on a JSX element (<Foo bar={expr} />). */
+/**
+ * An attribute on a JSX element (<Foo bar={expr} />).
+ *
+ * NOTE: `this` binds to col 0 (element), which is not a unique identifier.
+ * Multiple attributes on the same element share the same col-0 value,
+ * causing entity collapse.  Known v1 limitation.
+ */
 class JsxAttribute extends @jsx_attribute {
-    JsxAttribute() { jsx_attribute(this, _, _) }
+    JsxAttribute() { JsxAttribute(this, _, _) }
 
     /** Gets the element this attribute belongs to. */
-    JsxElement getElement() { jsx_attribute(result, _, _) and jsx_attribute(this, _, _) }
+    JsxElement getElement() { result = this }
 
     /** Gets the attribute name. */
-    string getName() { jsx_attribute(_, result, _) and jsx_attribute(this, _, _) }
+    string getName() { JsxAttribute(this, result, _) }
 
     /** Gets the value expression node. */
-    ASTNode getValueExpr() { jsx_attribute(_, _, result) and jsx_attribute(this, _, _) }
+    ASTNode getValueExpr() { JsxAttribute(this, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = this.getName() }
