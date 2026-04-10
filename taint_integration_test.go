@@ -2,7 +2,6 @@ package integration_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,74 +41,8 @@ func extractV2Project(t *testing.T, projectDir string) *db.DB {
 	return database
 }
 
-// runQueryWithSystemRules compiles a QL query, merges system rules (taint, callgraph,
-// dataflow, frameworks, etc.) into the Datalog program, and evaluates it.
-func runQueryWithSystemRules(t *testing.T, queryFile string, factDB *db.DB) *eval.ResultSet {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	src, err := os.ReadFile(queryFile)
-	if err != nil {
-		t.Fatalf("read query file %s: %v", queryFile, err)
-	}
-
-	// Parse
-	p := parse.NewParser(string(src), queryFile)
-	mod, err := p.Parse()
-	if err != nil {
-		t.Fatalf("parse %s: %v", queryFile, err)
-	}
-
-	// Resolve
-	bridgeFiles := bridge.LoadBridge()
-	importLoader := makeBridgeImportLoader(bridgeFiles)
-	resolved, err := resolve.Resolve(mod, importLoader)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", queryFile, err)
-	}
-	if len(resolved.Errors) > 0 {
-		var msgs []string
-		for _, e := range resolved.Errors {
-			msgs = append(msgs, e.Error())
-		}
-		t.Fatalf("resolve errors in %s:\n  %s", queryFile, strings.Join(msgs, "\n  "))
-	}
-
-	// Desugar
-	prog, dsErrors := desugar.Desugar(resolved)
-	if len(dsErrors) > 0 {
-		var msgs []string
-		for _, e := range dsErrors {
-			msgs = append(msgs, e.Error())
-		}
-		t.Fatalf("desugar errors in %s:\n  %s", queryFile, strings.Join(msgs, "\n  "))
-	}
-
-	// Merge system rules (call graph + dataflow + taint + frameworks + etc.)
-	merged := rules.MergeSystemRules(prog, rules.AllSystemRules())
-
-	// Plan
-	execPlan, planErrors := plan.Plan(merged, nil)
-	if len(planErrors) > 0 {
-		var msgs []string
-		for _, e := range planErrors {
-			msgs = append(msgs, e.Error())
-		}
-		t.Fatalf("plan errors in %s:\n  %s", queryFile, strings.Join(msgs, "\n  "))
-	}
-
-	// Evaluate
-	evaluator := eval.NewEvaluator(execPlan, factDB)
-	rs, err := evaluator.Evaluate(ctx)
-	if err != nil {
-		t.Fatalf("evaluate %s: %v", queryFile, err)
-	}
-	return rs
-}
-
-// runInlineQueryWithSystemRules is like runQueryWithSystemRules but takes the query
-// source directly instead of reading from a file.
+// runInlineQueryWithSystemRules compiles an inline QL query, merges all system
+// rules (taint, callgraph, dataflow, frameworks, etc.), and evaluates it.
 func runInlineQueryWithSystemRules(t *testing.T, querySource string, factDB *db.DB) *eval.ResultSet {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
