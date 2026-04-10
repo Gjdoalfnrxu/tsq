@@ -438,6 +438,10 @@ func makeBridgeImportLoader(bridgeFiles map[string][]byte) func(path string) (*a
 		"javascript":          "compat_javascript.qll",
 		"DataFlow::PathGraph": "compat_dataflow.qll",
 		"TaintTracking":       "compat_tainttracking.qll",
+		"semmle.javascript.security.dataflow.XssQuery":              "compat_security_xss.qll",
+		"semmle.javascript.security.dataflow.CommandInjectionQuery": "compat_security_cmdi.qll",
+		"semmle.javascript.security.dataflow.SqlInjectionQuery":     "compat_security_sqli.qll",
+		"semmle.javascript.security.dataflow.PathTraversalQuery":    "compat_security_pathtraversal.qll",
 	}
 	return func(path string) (*ast.Module, error) {
 		filename, ok := pathToFile[path]
