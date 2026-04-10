@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# tsq build output
+bin/
+
+# tsq database files
+*.tsqdb

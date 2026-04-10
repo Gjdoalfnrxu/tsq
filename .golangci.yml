@@ -1,0 +1,28 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - misspell
+    - gofmt
+    - revive
+  disable:
+    - exhaustruct
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+
+issues:
+  max-same-issues: 0
+  exclude-rules:
+    - path: "_test.go"
+      linters:
+        - errcheck
+
+run:
+  timeout: 5m
+  go: "1.23"
