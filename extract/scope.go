@@ -16,6 +16,8 @@ type Declaration struct {
 	Name      string
 	FilePath  string
 	StartByte int // byte offset of the identifier token
+	StartLine int // 1-based line of the identifier token
+	StartCol  int // 0-based byte column of the identifier token
 	// isConst and isLet determine TDZ applicability
 	isTDZ bool // true for let/const — subject to temporal dead zone
 }
@@ -96,20 +98,16 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 	sa.nodeScope[startByte] = blockScope
 
 	switch kind {
-	case "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDefinition":
+	case "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDefinition",
+		"GeneratorFunction", "GeneratorFunctionDeclaration":
 		// Functions create a new function scope (and also a block scope).
 		newFnScope := newScope(blockScope)
 		// Hoist the function name into the *enclosing* function scope (not block scope)
 		// for function declarations.
-		if kind == "FunctionDeclaration" {
-			name := sa.childFieldText(n, "name")
-			if name != "" {
-				fnScope.declare(name, &Declaration{
-					Name:      name,
-					FilePath:  sa.filePath,
-					StartByte: startByte,
-					isTDZ:     false,
-				})
+		if kind == "FunctionDeclaration" || kind == "GeneratorFunctionDeclaration" {
+			nameNode := sa.childByField(n, "name")
+			if nameNode != nil && nameNode.Text() != "" {
+				fnScope.declare(nameNode.Text(), sa.makeDecl(nameNode, false))
 			}
 		}
 		// Process parameters into the new function scope
@@ -148,16 +146,8 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 		// catch (e) { } introduces e into a new scope
 		newBlock := newScope(blockScope)
 		param := sa.childByField(n, "parameter")
-		if param != nil {
-			name := sa.nodeText(param)
-			if name != "" {
-				newBlock.declare(name, &Declaration{
-					Name:      name,
-					FilePath:  sa.filePath,
-					StartByte: sa.nodeStartByte(param),
-					isTDZ:     false,
-				})
-			}
+		if param != nil && sa.nodeText(param) != "" {
+			newBlock.declare(sa.nodeText(param), sa.makeDecl(param, false))
 		}
 		body := sa.childByField(n, "body")
 		if body != nil {
@@ -236,14 +226,8 @@ func (sa *ScopeAnalyzer) declarePattern(n ASTNode, scope *Scope, isTDZ bool) {
 	kind := n.Kind()
 	switch kind {
 	case "Identifier":
-		name := n.Text()
-		if name != "" {
-			scope.declare(name, &Declaration{
-				Name:      name,
-				FilePath:  sa.filePath,
-				StartByte: sa.nodeStartByte(n),
-				isTDZ:     isTDZ,
-			})
+		if n.Text() != "" {
+			scope.declare(n.Text(), sa.makeDecl(n, isTDZ))
 		}
 	case "ObjectPattern":
 		// { a, b: c, ...rest }
@@ -256,14 +240,8 @@ func (sa *ScopeAnalyzer) declarePattern(n ASTNode, scope *Scope, isTDZ bool) {
 			childKind := child.Kind()
 			switch childKind {
 			case "ShorthandPropertyIdentifierPattern", "ShorthandPropertyIdentifier":
-				name := child.Text()
-				if name != "" {
-					scope.declare(name, &Declaration{
-						Name:      name,
-						FilePath:  sa.filePath,
-						StartByte: sa.nodeStartByte(child),
-						isTDZ:     isTDZ,
-					})
+				if child.Text() != "" {
+					scope.declare(child.Text(), sa.makeDecl(child, isTDZ))
 				}
 			case "Pair", "ObjectAssignmentPattern":
 				// { key: value } or { key: value = default }
@@ -274,16 +252,8 @@ func (sa *ScopeAnalyzer) declarePattern(n ASTNode, scope *Scope, isTDZ bool) {
 			case "RestPattern":
 				// ...rest
 				inner := sa.firstChildByKind(child, "Identifier")
-				if inner != nil {
-					name := inner.Text()
-					if name != "" {
-						scope.declare(name, &Declaration{
-							Name:      name,
-							FilePath:  sa.filePath,
-							StartByte: sa.nodeStartByte(inner),
-							isTDZ:     isTDZ,
-						})
-					}
+				if inner != nil && inner.Text() != "" {
+					scope.declare(inner.Text(), sa.makeDecl(inner, isTDZ))
 				}
 			case "AssignmentPattern":
 				left := sa.childByField(child, "left")
@@ -309,16 +279,8 @@ func (sa *ScopeAnalyzer) declarePattern(n ASTNode, scope *Scope, isTDZ bool) {
 		}
 	case "RestPattern":
 		inner := sa.firstChildByKind(n, "Identifier")
-		if inner != nil {
-			name := inner.Text()
-			if name != "" {
-				scope.declare(name, &Declaration{
-					Name:      name,
-					FilePath:  sa.filePath,
-					StartByte: sa.nodeStartByte(inner),
-					isTDZ:     isTDZ,
-				})
-			}
+		if inner != nil && inner.Text() != "" {
+			scope.declare(inner.Text(), sa.makeDecl(inner, isTDZ))
 		}
 	}
 }
@@ -350,14 +312,8 @@ func (sa *ScopeAnalyzer) extractParams(params ASTNode, fnScope *Scope) {
 		kind := param.Kind()
 		switch kind {
 		case "Identifier":
-			name := param.Text()
-			if name != "" {
-				fnScope.declare(name, &Declaration{
-					Name:      name,
-					FilePath:  sa.filePath,
-					StartByte: sa.nodeStartByte(param),
-					isTDZ:     false,
-				})
+			if param.Text() != "" {
+				fnScope.declare(param.Text(), sa.makeDecl(param, false))
 			}
 		case "AssignmentPattern":
 			left := sa.childByField(param, "left")
@@ -366,16 +322,8 @@ func (sa *ScopeAnalyzer) extractParams(params ASTNode, fnScope *Scope) {
 			}
 		case "RestPattern":
 			inner := sa.firstChildByKind(param, "Identifier")
-			if inner != nil {
-				name := inner.Text()
-				if name != "" {
-					fnScope.declare(name, &Declaration{
-						Name:      name,
-						FilePath:  sa.filePath,
-						StartByte: sa.nodeStartByte(inner),
-						isTDZ:     false,
-					})
-				}
+			if inner != nil && inner.Text() != "" {
+				fnScope.declare(inner.Text(), sa.makeDecl(inner, false))
 			}
 		case "ObjectPattern", "ArrayPattern":
 			sa.declarePattern(param, fnScope, false)
@@ -411,14 +359,8 @@ func (sa *ScopeAnalyzer) processImportClause(n ASTNode, scope *Scope) {
 		switch kind {
 		case "Identifier":
 			// default import: import Foo from '...'
-			name := child.Text()
-			if name != "" {
-				scope.declare(name, &Declaration{
-					Name:      name,
-					FilePath:  sa.filePath,
-					StartByte: sa.nodeStartByte(child),
-					isTDZ:     false,
-				})
+			if child.Text() != "" {
+				scope.declare(child.Text(), sa.makeDecl(child, false))
 			}
 		case "NamedImports":
 			// import { a, b as c } from '...'
@@ -426,16 +368,8 @@ func (sa *ScopeAnalyzer) processImportClause(n ASTNode, scope *Scope) {
 		case "NamespaceImport":
 			// import * as ns from '...'
 			ident := sa.firstChildByKind(child, "Identifier")
-			if ident != nil {
-				name := ident.Text()
-				if name != "" {
-					scope.declare(name, &Declaration{
-						Name:      name,
-						FilePath:  sa.filePath,
-						StartByte: sa.nodeStartByte(ident),
-						isTDZ:     false,
-					})
-				}
+			if ident != nil && ident.Text() != "" {
+				scope.declare(ident.Text(), sa.makeDecl(ident, false))
 			}
 		}
 	}
@@ -453,28 +387,14 @@ func (sa *ScopeAnalyzer) processNamedImports(n ASTNode, scope *Scope) {
 			// import specifier: name or alias
 			alias := sa.childByField(child, "alias")
 			if alias != nil {
-				name := alias.Text()
-				if name != "" {
-					scope.declare(name, &Declaration{
-						Name:      name,
-						FilePath:  sa.filePath,
-						StartByte: sa.nodeStartByte(alias),
-						isTDZ:     false,
-					})
+				if alias.Text() != "" {
+					scope.declare(alias.Text(), sa.makeDecl(alias, false))
 				}
 			} else {
 				// No alias — the local name is the imported name
 				nameNode := sa.childByField(child, "name")
-				if nameNode != nil {
-					name := nameNode.Text()
-					if name != "" {
-						scope.declare(name, &Declaration{
-							Name:      name,
-							FilePath:  sa.filePath,
-							StartByte: sa.nodeStartByte(nameNode),
-							isTDZ:     false,
-						})
-					}
+				if nameNode != nil && nameNode.Text() != "" {
+					scope.declare(nameNode.Text(), sa.makeDecl(nameNode, false))
 				}
 			}
 		}
@@ -524,6 +444,18 @@ func (sa *ScopeAnalyzer) nodeStartByte(n ASTNode) int {
 	return n.StartLine()*10000 + n.StartCol()
 }
 
+// makeDecl creates a Declaration for a given identifier node.
+func (sa *ScopeAnalyzer) makeDecl(n ASTNode, isTDZ bool) *Declaration {
+	return &Declaration{
+		Name:      n.Text(),
+		FilePath:  sa.filePath,
+		StartByte: sa.nodeStartByte(n),
+		StartLine: n.StartLine(),
+		StartCol:  n.StartCol(),
+		isTDZ:     isTDZ,
+	}
+}
+
 // childByField returns the first child of n with the given field name.
 func (sa *ScopeAnalyzer) childByField(n ASTNode, field string) ASTNode {
 	count := n.ChildCount()
@@ -534,15 +466,6 @@ func (sa *ScopeAnalyzer) childByField(n ASTNode, field string) ASTNode {
 		}
 	}
 	return nil
-}
-
-// childFieldText returns the text of the first child with the given field name.
-func (sa *ScopeAnalyzer) childFieldText(n ASTNode, field string) string {
-	child := sa.childByField(n, field)
-	if child == nil {
-		return ""
-	}
-	return child.Text()
 }
 
 // firstChildByKind returns the first direct child with the given normalised kind.
