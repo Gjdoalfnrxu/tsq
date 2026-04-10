@@ -2,7 +2,7 @@ package bridge
 
 import "embed"
 
-//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll compat_dataflow.qll compat_tainttracking.qll
+//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll compat_dataflow.qll compat_tainttracking.qll compat_security_xss.qll compat_security_cmdi.qll compat_security_sqli.qll compat_security_pathtraversal.qll
 var bridgeFS embed.FS
 
 // LoadBridge returns all embedded .qll files as a map from filename to contents.
@@ -29,6 +29,10 @@ func LoadBridge() map[string][]byte {
 		"compat_javascript.qll",
 		"compat_dataflow.qll",
 		"compat_tainttracking.qll",
+		"compat_security_xss.qll",
+		"compat_security_cmdi.qll",
+		"compat_security_sqli.qll",
+		"compat_security_pathtraversal.qll",
 	}
 	result := make(map[string][]byte, len(files))
 	for _, name := range files {
@@ -75,6 +79,10 @@ func ImportLoader(bridgeFiles map[string][]byte, parseFn func(src, file string) 
 		"javascript":          "compat_javascript.qll",
 		"DataFlow::PathGraph": "compat_dataflow.qll",
 		"TaintTracking":       "compat_tainttracking.qll",
+		"semmle.javascript.security.dataflow.XssQuery":              "compat_security_xss.qll",
+		"semmle.javascript.security.dataflow.CommandInjectionQuery": "compat_security_cmdi.qll",
+		"semmle.javascript.security.dataflow.SqlInjectionQuery":     "compat_security_sqli.qll",
+		"semmle.javascript.security.dataflow.PathTraversalQuery":    "compat_security_pathtraversal.qll",
 	}
 	return func(path string) (interface{}, bool) {
 		filename, ok := pathToFile[path]

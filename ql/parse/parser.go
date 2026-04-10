@@ -211,19 +211,23 @@ func (p *Parser) parseImport() (*ast.ImportDecl, error) {
 		Span: ast.Span{File: p.file, StartLine: tok.Line, StartCol: tok.Col},
 	}
 
-	// Parse the import path: ident (:: ident)*
+	// Parse the import path: ident ((:: | .) ident)*
 	name, err := p.expect(TokIdent)
 	if err != nil {
 		return nil, err
 	}
 	path := name.Lit
-	for p.at(TokColCol) {
+	for p.at(TokColCol) || p.at(TokDot) {
+		sep := "::"
+		if p.at(TokDot) {
+			sep = "."
+		}
 		p.advance()
 		next, err := p.expect(TokIdent)
 		if err != nil {
 			return nil, err
 		}
-		path += "::" + next.Lit
+		path += sep + next.Lit
 	}
 	imp.Path = path
 

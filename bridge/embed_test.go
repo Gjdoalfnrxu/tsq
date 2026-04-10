@@ -28,6 +28,10 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"compat_javascript.qll",
 		"compat_dataflow.qll",
 		"compat_tainttracking.qll",
+		"compat_security_xss.qll",
+		"compat_security_cmdi.qll",
+		"compat_security_sqli.qll",
+		"compat_security_pathtraversal.qll",
 	}
 	files := LoadBridge()
 	if len(files) != len(expected) {
@@ -99,6 +103,10 @@ func TestImportLoaderKnownPaths(t *testing.T) {
 		"javascript",
 		"DataFlow::PathGraph",
 		"TaintTracking",
+		"semmle.javascript.security.dataflow.XssQuery",
+		"semmle.javascript.security.dataflow.CommandInjectionQuery",
+		"semmle.javascript.security.dataflow.SqlInjectionQuery",
+		"semmle.javascript.security.dataflow.PathTraversalQuery",
 	}
 	for _, path := range knownPaths {
 		result, ok := loader(path)

@@ -124,6 +124,15 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
 			// v2 Phase 2c: CodeQL-compatible TaintTracking module
 			{Name: "TaintTracking::Configuration", Relation: "Symbol", File: "compat_tainttracking.qll"},
+			// v2 Phase 2d: CodeQL-compatible security query libraries
+			{Name: "Xss::XssSource", Relation: "Symbol", File: "compat_security_xss.qll"},
+			{Name: "Xss::XssSink", Relation: "Symbol", File: "compat_security_xss.qll"},
+			{Name: "CommandInjection::CommandInjectionSource", Relation: "Symbol", File: "compat_security_cmdi.qll"},
+			{Name: "CommandInjection::CommandInjectionSink", Relation: "Symbol", File: "compat_security_cmdi.qll"},
+			{Name: "SqlInjection::SqlInjectionSource", Relation: "Symbol", File: "compat_security_sqli.qll"},
+			{Name: "SqlInjection::SqlInjectionSink", Relation: "Symbol", File: "compat_security_sqli.qll"},
+			{Name: "PathTraversal::PathTraversalSource", Relation: "Symbol", File: "compat_security_pathtraversal.qll"},
+			{Name: "PathTraversal::PathTraversalSink", Relation: "Symbol", File: "compat_security_pathtraversal.qll"},
 		},
 		Unavailable: []UnavailableClass{},
 	}
