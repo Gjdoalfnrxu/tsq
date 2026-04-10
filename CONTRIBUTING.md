@@ -2,6 +2,8 @@
 
 ## Development Workflow
 
+After cloning, run `make setup` to configure the git hooks path. This installs a pre-commit hook that auto-formats and auto-fixes lint issues before each commit.
+
 All changes to tsq must go through a pull request. Direct pushes to `main` are not permitted.
 
 ### Branch Naming
