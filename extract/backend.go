@@ -18,8 +18,9 @@ type ExtractorBackend interface {
 	// other method. Resolves source files according to cfg.
 	Open(ctx context.Context, cfg ProjectConfig) error
 
-	// WalkAST calls the visitor for every AST node in every source file.
+	// WalkAST walks the AST of all source files in the project.
 	// The backend controls file ordering. Files are visited sequentially.
+	// It is not safe to call WalkAST concurrently on the same backend instance.
 	WalkAST(ctx context.Context, v ASTVisitor) error
 
 	// ResolveSymbol returns the declaration site for a reference.
@@ -65,13 +66,13 @@ type ASTVisitor interface {
 
 // ASTNode represents a single node in the concrete syntax tree.
 type ASTNode interface {
-	Kind() string      // normalised PascalCase kind name
-	StartLine() int    // 1-based
-	StartCol() int     // 0-based byte column
-	EndLine() int      // 1-based
-	EndCol() int       // 0-based byte column
-	Text() string      // source text of this node
-	ChildCount() int   // number of direct children (named + anonymous)
+	Kind() string    // normalised PascalCase kind name
+	StartLine() int  // 1-based
+	StartCol() int   // 0-based byte column
+	EndLine() int    // 1-based
+	EndCol() int     // 0-based byte column
+	Text() string    // source text of this node
+	ChildCount() int // number of direct children (named + anonymous)
 	Child(i int) ASTNode
 	FieldName() string // field name this node occupies in its parent, or ""
 }

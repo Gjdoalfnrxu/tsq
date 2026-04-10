@@ -35,7 +35,6 @@ type collectingVisitor struct {
 	files     []string
 	allKinds  []string
 	fileKinds map[string][]string // file -> kinds
-	errors    []error
 }
 
 func newCollectingVisitor() *collectingVisitor {
@@ -69,16 +68,6 @@ func (v *collectingVisitor) hasKind(kind string) bool {
 		}
 	}
 	return false
-}
-
-func (v *collectingVisitor) countKind(kind string) int {
-	n := 0
-	for _, k := range v.allKinds {
-		if k == kind {
-			n++
-		}
-	}
-	return n
 }
 
 // TestTreeSitterBackend_Open_FindsFiles checks that Open resolves .ts/.tsx files.
@@ -240,7 +229,7 @@ func TestTreeSitterBackend_WalkAST_NodePositions(t *testing.T) {
 	b := newOpenBackend(t, dir)
 
 	type posNode struct {
-		kind string
+		kind           string
 		sl, sc, el, ec int
 	}
 	var captured []posNode
@@ -528,10 +517,10 @@ func TestTreeSitterBackend_WalkAST_ChildCount(t *testing.T) {
 
 // funcVisitor is a test helper implementing ASTVisitor with function fields.
 type funcVisitor struct {
-	enterFileFn  func(path string) error
-	enterFn      func(node ASTNode) (bool, error)
-	leaveFn      func(node ASTNode) error
-	leaveFileFn  func(path string) error
+	enterFileFn func(path string) error
+	enterFn     func(node ASTNode) (bool, error)
+	leaveFn     func(node ASTNode) error
+	leaveFileFn func(path string) error
 }
 
 func (fv *funcVisitor) EnterFile(path string) error {
