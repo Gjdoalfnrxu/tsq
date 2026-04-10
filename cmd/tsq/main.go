@@ -120,6 +120,7 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", ".", "project root directory")
 	outputFile := fs.String("output", "tsq.db", "output fact database file")
+	backendFlag := fs.String("backend", "treesitter", "extraction backend: treesitter or vendored")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -132,7 +133,17 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 
 	database := db.NewDB()
 	walker := extract.NewFactWalker(database)
-	backend := &extract.TreeSitterBackend{}
+
+	var backend extract.ExtractorBackend
+	switch *backendFlag {
+	case "treesitter":
+		backend = &extract.TreeSitterBackend{}
+	case "vendored":
+		backend = &extract.VendoredBackend{}
+	default:
+		fmt.Fprintf(stderr, "error: unknown backend %q (must be treesitter or vendored)\n", *backendFlag)
+		return 1
+	}
 	defer func() {
 		if err := backend.Close(); err != nil {
 			fmt.Fprintf(stderr, "warning: close backend: %v\n", err)
