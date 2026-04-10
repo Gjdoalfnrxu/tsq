@@ -45,6 +45,7 @@ type parserState struct {
 	lexPos  int
 	lexLine int
 	lexCol  int
+	lexErr  *Token
 }
 
 func (p *Parser) saveState() parserState {
@@ -53,6 +54,7 @@ func (p *Parser) saveState() parserState {
 		lexPos:  p.lexer.pos,
 		lexLine: p.lexer.line,
 		lexCol:  p.lexer.col,
+		lexErr:  p.lexer.err,
 	}
 }
 
@@ -61,6 +63,7 @@ func (p *Parser) restoreState(s parserState) {
 	p.lexer.pos = s.lexPos
 	p.lexer.line = s.lexLine
 	p.lexer.col = s.lexCol
+	p.lexer.err = s.lexErr
 }
 
 func (p *Parser) at(t TokenType) bool {

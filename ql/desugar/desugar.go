@@ -853,9 +853,12 @@ func (d *desugarer) desugarMethodCallExpr(mc *ast.MethodCall, gen *freshVarGen) 
 			lits = append(lits, argLits...)
 			args = append(args, t)
 		}
-		// matches and regexpMatch are predicates (no result), but when used
-		// as an expression they shouldn't have a result variable.
-		// In expression context, all builtins produce a result.
+		// matches and regexpMatch are predicates (no result) — they cannot
+		// be used in expression context. Other builtins produce a result.
+		if mc.Method == "matches" || mc.Method == "regexpMatch" {
+			d.errorf("string method %s() is a predicate and cannot be used as an expression", mc.Method)
+			return datalog.Wildcard{}, lits
+		}
 		fresh := gen.next()
 		args = append(args, fresh)
 		lits = append(lits, datalog.Literal{
