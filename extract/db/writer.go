@@ -87,6 +87,9 @@ func (r *Relation) GetInt(tuple, col int) (int32, error) {
 	if tuple >= r.size {
 		return 0, fmt.Errorf("tuple %d out of range", tuple)
 	}
+	if r.Def.Columns[col].Type == schema.TypeString {
+		return 0, fmt.Errorf("column %q is TypeString, not an integer type", r.Def.Columns[col].Name)
+	}
 	return r.columns[col].ints[tuple], nil
 }
 
@@ -97,6 +100,9 @@ func (r *Relation) GetString(db *DB, tuple, col int) (string, error) {
 	}
 	if tuple >= r.size {
 		return "", fmt.Errorf("tuple %d out of range", tuple)
+	}
+	if r.Def.Columns[col].Type != schema.TypeString {
+		return "", fmt.Errorf("column %q is not TypeString", r.Def.Columns[col].Name)
 	}
 	idx := r.columns[col].strIdxs[tuple]
 	if int(idx) >= len(db.strings) {

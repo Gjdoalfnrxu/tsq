@@ -193,3 +193,81 @@ func TestReadDB_TruncatedHeader(t *testing.T) {
 		t.Fatal("expected error for truncated header")
 	}
 }
+
+func TestReadDB_MalformedRelCount(t *testing.T) {
+	// Build a minimal valid header with relCount = maxRelations+1.
+	// maxRelations = 1024, so set relCount = 1025.
+	data := make([]byte, 16)
+	copy(data[0:4], Magic)
+	binary.LittleEndian.PutUint32(data[4:8], SchemaVersion)
+	binary.LittleEndian.PutUint32(data[8:12], 1025)  // relCount > maxRelations
+	binary.LittleEndian.PutUint32(data[12:16], 0)    // strCount
+	_, err := ReadDB(bytes.NewReader(data), int64(len(data)))
+	if err == nil {
+		t.Fatal("expected error for relCount exceeding maximum")
+	}
+}
+
+func TestReadDB_MalformedStrCount(t *testing.T) {
+	// Build a minimal valid header with strCount = maxStrings+1.
+	// maxStrings = 1<<24 = 16777216.
+	data := make([]byte, 16)
+	copy(data[0:4], Magic)
+	binary.LittleEndian.PutUint32(data[4:8], SchemaVersion)
+	binary.LittleEndian.PutUint32(data[8:12], 0)          // relCount
+	binary.LittleEndian.PutUint32(data[12:16], 1<<24+1)   // strCount > maxStrings
+	_, err := ReadDB(bytes.NewReader(data), int64(len(data)))
+	if err == nil {
+		t.Fatal("expected error for strCount exceeding maximum")
+	}
+}
+
+func TestReadDB_ForwardCompat_UnknownRelation(t *testing.T) {
+	// Write a real DB, then hand-craft a second relation entry in the
+	// directory that references a name not in the schema registry.
+	// ReadDB should succeed and simply omit the unknown relation.
+
+	// Start from an encoded empty DB to get a valid string table base.
+	base := NewDB()
+	var buf bytes.Buffer
+	if err := base.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a fresh binary from scratch:
+	//   header: magic + version + relCount=1 + strCount=2
+	//   directory: one entry pointing to an empty relation with name "GhostRelation"
+	//   relation data: nothing (0 tuples)
+	//   string table: ["", "GhostRelation"]
+
+	le := binary.LittleEndian
+	strTable := buildStringTable([]string{"", "GhostRelation"})
+
+	// directory entry: nameOffset=1, tupleCount=0, colCount=0, dataOffset=16+32=48
+	dirEntry := make([]byte, 32)
+	le.PutUint32(dirEntry[0:4], 1)  // nameOffset -> "GhostRelation"
+	le.PutUint32(dirEntry[4:8], 0)  // tupleCount
+	le.PutUint32(dirEntry[8:12], 0) // colCount
+	le.PutUint64(dirEntry[12:20], 48) // dataOffset
+
+	hdr := make([]byte, 16)
+	copy(hdr[0:4], Magic)
+	le.PutUint32(hdr[4:8], SchemaVersion)
+	le.PutUint32(hdr[8:12], 1) // relCount
+	le.PutUint32(hdr[12:16], 2) // strCount: "", "GhostRelation"
+
+	var out bytes.Buffer
+	out.Write(hdr)
+	out.Write(dirEntry)
+	// no relation data
+	out.Write(strTable)
+
+	data := out.Bytes()
+	db2, err := ReadDB(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("ReadDB should succeed for unknown relation, got: %v", err)
+	}
+	if _, ok := db2.relations["GhostRelation"]; ok {
+		t.Fatal("unknown relation should be absent from result")
+	}
+}

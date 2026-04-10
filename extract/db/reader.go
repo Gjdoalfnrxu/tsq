@@ -27,6 +27,17 @@ func ReadDB(r io.ReaderAt, size int64) (*DB, error) {
 	relCount := le.Uint32(hdr[8:12])
 	strCount := le.Uint32(hdr[12:16])
 
+	const (
+		maxRelations = 1024
+		maxStrings   = 1 << 24 // 16M strings
+	)
+	if relCount > maxRelations {
+		return nil, fmt.Errorf("db: relation count %d exceeds maximum %d", relCount, maxRelations)
+	}
+	if strCount > maxStrings {
+		return nil, fmt.Errorf("db: string count %d exceeds maximum %d", strCount, maxStrings)
+	}
+
 	// Read directory
 	dirBuf := make([]byte, relCount*32)
 	if _, err := r.ReadAt(dirBuf, 16); err != nil {

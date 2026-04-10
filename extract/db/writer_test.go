@@ -132,3 +132,41 @@ func TestGetInt_OutOfRange(t *testing.T) {
 		t.Fatal("expected error for out-of-range col")
 	}
 }
+
+func TestGetIntWrongType(t *testing.T) {
+	// File has col 1 = path (TypeString). Calling GetInt on it must return
+	// an error, not panic on nil ints slice.
+	db := NewDB()
+	r := db.Relation("File")
+	if err := r.AddTuple(db, int32(1), "/src/main.ts", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.GetInt(0, 1) // col 1 is TypeString
+	if err == nil {
+		t.Fatal("expected error when calling GetInt on a TypeString column")
+	}
+}
+
+func TestGetStringWrongType(t *testing.T) {
+	// Contains has col 0 = parent (TypeEntityRef). Calling GetString on it must
+	// return an error, not panic on nil strIdxs slice.
+	db := NewDB()
+	r := db.Relation("Contains")
+	if err := r.AddTuple(db, int32(1), int32(2)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.GetString(db, 0, 0) // col 0 is TypeEntityRef
+	if err == nil {
+		t.Fatal("expected error when calling GetString on a non-TypeString column")
+	}
+}
+
+func TestAddTuple_StringTooLong(t *testing.T) {
+	db := NewDB()
+	r := db.Relation("File")
+	longStr := string(make([]byte, MaxStringLen+1))
+	err := r.AddTuple(db, int32(1), longStr, "hash")
+	if err == nil {
+		t.Fatal("expected error for string exceeding MaxStringLen")
+	}
+}
