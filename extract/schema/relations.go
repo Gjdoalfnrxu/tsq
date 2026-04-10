@@ -166,6 +166,63 @@ func init() {
 		{Name: "name", Type: TypeString},
 		{Name: "valueExpr", Type: TypeEntityRef},
 	}})
+	// v2: Type-aware relations (structural emission via tree-sitter AST patterns)
+	RegisterRelation(RelationDef{Name: "ClassDecl", Version: 2, Columns: []ColumnDef{
+		{Name: "id", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "file", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "InterfaceDecl", Version: 2, Columns: []ColumnDef{
+		{Name: "id", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "file", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "Implements", Version: 2, Columns: []ColumnDef{
+		{Name: "classId", Type: TypeEntityRef},
+		{Name: "interfaceId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "Extends", Version: 2, Columns: []ColumnDef{
+		{Name: "childId", Type: TypeEntityRef},
+		{Name: "parentId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "MethodDecl", Version: 2, Columns: []ColumnDef{
+		{Name: "classOrIfaceId", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "fnId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "MethodCall", Version: 2, Columns: []ColumnDef{
+		{Name: "callId", Type: TypeEntityRef},
+		{Name: "receiverExpr", Type: TypeEntityRef},
+		{Name: "methodName", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "NewExpr", Version: 2, Columns: []ColumnDef{
+		{Name: "callId", Type: TypeEntityRef},
+		{Name: "classId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "ExprType", Version: 2, Columns: []ColumnDef{
+		{Name: "exprId", Type: TypeEntityRef},
+		{Name: "typeId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "TypeDecl", Version: 2, Columns: []ColumnDef{
+		{Name: "typeId", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "kind", Type: TypeString},
+		{Name: "file", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "ReturnStmt", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "stmtNode", Type: TypeEntityRef},
+		{Name: "returnExpr", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "FunctionContains", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "nodeId", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "SymInFunction", Version: 2, Columns: []ColumnDef{
+		{Name: "sym", Type: TypeEntityRef},
+		{Name: "fnId", Type: TypeEntityRef},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},

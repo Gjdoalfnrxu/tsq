@@ -7,16 +7,19 @@ import (
 // TestV1ManifestAvailableCount checks the expected number of available classes.
 func TestV1ManifestAvailableCount(t *testing.T) {
 	m := V1Manifest()
-	if got := len(m.Available); got != 28 {
-		t.Errorf("expected 28 available classes, got %d", got)
+	// v2: 28 original + 5 promoted from unavailable + 12 new v2 = 45
+	// But some relations share bridge classes. Count: 28 + 17 = 45
+	if got := len(m.Available); got != 45 {
+		t.Errorf("expected 45 available classes, got %d", got)
 	}
 }
 
 // TestV1ManifestUnavailableCount checks the expected number of unavailable classes.
 func TestV1ManifestUnavailableCount(t *testing.T) {
 	m := V1Manifest()
-	if got := len(m.Unavailable); got != 7 {
-		t.Errorf("expected 7 unavailable classes, got %d", got)
+	// v2: only DataFlow and TaintTracking remain unavailable
+	if got := len(m.Unavailable); got != 2 {
+		t.Errorf("expected 2 unavailable classes, got %d", got)
 	}
 }
 

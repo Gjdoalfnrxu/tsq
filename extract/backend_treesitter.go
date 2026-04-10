@@ -98,6 +98,23 @@ var kindMap = map[string]string{
 	"do_statement":                          "DoStatement",
 	"decorator":                             "Decorator",
 	"ERROR":                                 "Error",
+	"extends_clause":                        "ExtendsClause",
+	"implements_clause":                     "ImplementsClause",
+	"class":                                 "ClassExpression",
+	"abstract_class_declaration":            "AbstractClassDeclaration",
+	"public_field_definition":               "PublicFieldDefinition",
+	"formal_parameters":                     "FormalParameters",
+	"required_parameter":                    "RequiredParameter",
+	"optional_parameter":                    "OptionalParameter",
+	"rest_parameter":                        "RestParameter",
+	"pair_pattern":                          "PairPattern",
+	"statement_block":                       "Block",
+	"type_assertion":                        "TypeAssertion",
+	"non_null_expression":                   "NonNullExpression",
+	"satisfies_expression":                  "SatisfiesExpression",
+	"heritage_clause":                       "HeritageClause",
+	"extends_type_clause":                   "ExtendsTypeClause",
+	"class_heritage":                        "ClassHeritage",
 }
 
 // normalise converts a tree-sitter node type string to a tsq canonical

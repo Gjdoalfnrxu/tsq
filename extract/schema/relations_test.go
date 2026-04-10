@@ -15,6 +15,10 @@ func TestAllRelationsRegistered(t *testing.T) {
 		"DestructureField", "ArrayDestructure", "DestructureRest",
 		"ImportBinding", "ExportBinding", "TypeFromLib",
 		"JsxElement", "JsxAttribute",
+		// v2 type-aware relations
+		"ClassDecl", "InterfaceDecl", "Implements", "Extends",
+		"MethodDecl", "MethodCall", "NewExpr", "ExprType",
+		"TypeDecl", "ReturnStmt", "FunctionContains", "SymInFunction",
 		"ExtractError", "SchemaVersion",
 	}
 	for _, name := range expected {
@@ -30,8 +34,29 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 33 {
-		t.Fatalf("expected 33 relations in registry, got %d", len(Registry))
+	if len(Registry) != 45 {
+		t.Fatalf("expected 45 relations in registry, got %d", len(Registry))
+	}
+}
+
+func TestV2RelationsRegistered(t *testing.T) {
+	v2Relations := []string{
+		"ClassDecl", "InterfaceDecl", "Implements", "Extends",
+		"MethodDecl", "MethodCall", "NewExpr", "ExprType",
+		"TypeDecl", "ReturnStmt", "FunctionContains", "SymInFunction",
+	}
+	for _, name := range v2Relations {
+		def, ok := Lookup(name)
+		if !ok {
+			t.Errorf("v2 relation %q not found in registry", name)
+			continue
+		}
+		if def.Version != 2 {
+			t.Errorf("v2 relation %q: expected Version=2, got %d", name, def.Version)
+		}
+		if err := def.Validate(); err != nil {
+			t.Errorf("v2 relation %q fails validation: %v", name, err)
+		}
 	}
 }
 

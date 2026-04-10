@@ -15,6 +15,8 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"tsq_jsx.qll",
 		"tsq_imports.qll",
 		"tsq_errors.qll",
+		"tsq_types.qll",
+		"tsq_symbols.qll",
 	}
 	files := LoadBridge()
 	if len(files) != len(expected) {
@@ -81,6 +83,8 @@ func TestBridgeImportLoaderKnownPaths(t *testing.T) {
 		"tsq::jsx",
 		"tsq::imports",
 		"tsq::errors",
+		"tsq::types",
+		"tsq::symbols",
 	}
 	for _, path := range knownPaths {
 		result, ok := loader(path)
