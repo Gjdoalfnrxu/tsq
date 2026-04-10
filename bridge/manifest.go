@@ -34,8 +34,14 @@ type UnavailableWarning struct {
 
 // V1Manifest returns the capability manifest for schema v1.
 func V1Manifest() *CapabilityManifest {
+	return v2Manifest()
+}
+
+// v2Manifest returns the capability manifest including v2 type-aware classes.
+func v2Manifest() *CapabilityManifest {
 	return &CapabilityManifest{
 		Available: []AvailableClass{
+			// v1 base
 			{Name: "ASTNode", Relation: "Node", File: "tsq_base.qll"},
 			{Name: "File", Relation: "File", File: "tsq_base.qll"},
 			{Name: "Contains", Relation: "Contains", File: "tsq_base.qll"},
@@ -64,15 +70,29 @@ func V1Manifest() *CapabilityManifest {
 			{Name: "ExportBinding", Relation: "ExportBinding", File: "tsq_imports.qll"},
 			{Name: "ExtractError", Relation: "ExtractError", File: "tsq_errors.qll"},
 			{Name: "SchemaVersion", Relation: "SchemaVersion", File: "tsq_base.qll"},
+			// v2: previously empty v1 relations now populated
+			{Name: "Symbol", Relation: "Symbol", File: "tsq_symbols.qll"},
+			{Name: "FunctionSymbol", Relation: "FunctionSymbol", File: "tsq_symbols.qll"},
+			{Name: "CallCalleeSym", Relation: "CallCalleeSym", File: "tsq_calls.qll"},
+			{Name: "CallResultSym", Relation: "CallResultSym", File: "tsq_calls.qll"},
+			{Name: "TypeFromLib", Relation: "TypeFromLib", File: "tsq_symbols.qll"},
+			// v2: new type-aware classes
+			{Name: "ClassDecl", Relation: "ClassDecl", File: "tsq_types.qll"},
+			{Name: "InterfaceDecl", Relation: "InterfaceDecl", File: "tsq_types.qll"},
+			{Name: "Implements", Relation: "Implements", File: "tsq_types.qll"},
+			{Name: "Extends", Relation: "Extends", File: "tsq_types.qll"},
+			{Name: "MethodDecl", Relation: "MethodDecl", File: "tsq_types.qll"},
+			{Name: "MethodCall", Relation: "MethodCall", File: "tsq_types.qll"},
+			{Name: "NewExpr", Relation: "NewExpr", File: "tsq_types.qll"},
+			{Name: "ExprType", Relation: "ExprType", File: "tsq_types.qll"},
+			{Name: "TypeDecl", Relation: "TypeDecl", File: "tsq_types.qll"},
+			{Name: "ReturnStmt", Relation: "ReturnStmt", File: "tsq_functions.qll"},
+			{Name: "FunctionContains", Relation: "FunctionContains", File: "tsq_functions.qll"},
+			{Name: "SymInFunction", Relation: "SymInFunction", File: "tsq_symbols.qll"},
 		},
 		Unavailable: []UnavailableClass{
 			{Name: "DataFlow", Reason: "IPA-dependent; requires inter-procedural analysis engine", VersionTarget: "v3"},
 			{Name: "TaintTracking", Reason: "IPA-dependent; requires data flow framework", VersionTarget: "v3"},
-			{Name: "Symbol", Reason: "relation empty in v1; symbol resolution not yet implemented", VersionTarget: "v2"},
-			{Name: "FunctionSymbol", Reason: "relation empty in v1; depends on Symbol", VersionTarget: "v2"},
-			{Name: "CallCalleeSym", Reason: "relation empty in v1; depends on Symbol", VersionTarget: "v2"},
-			{Name: "CallResultSym", Reason: "relation empty in v1; depends on Symbol", VersionTarget: "v2"},
-			{Name: "TypeFromLib", Reason: "relation empty in v1; type resolution not yet implemented", VersionTarget: "v2"},
 		},
 	}
 }

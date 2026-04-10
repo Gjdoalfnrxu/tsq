@@ -130,3 +130,28 @@ class ParamIsFunctionType extends @param_is_function_type {
     /** Gets the parameter index. */
     int getIndex() { ParamIsFunctionType(this, result) }
 }
+
+/** A return statement within a function (v2). */
+class ReturnStmt extends @return_stmt {
+    ReturnStmt() { ReturnStmt(this, _, _) }
+
+    /** Gets the containing function. */
+    Function getFunction() { result = this }
+
+    /** Gets the return statement node. */
+    ASTNode getStmtNode() { ReturnStmt(this, result, _) }
+
+    /** Gets the returned expression (may be 0 for bare return). */
+    ASTNode getReturnExpr() { ReturnStmt(this, _, result) }
+}
+
+/** A containment relationship: fnId contains nodeId (v2). */
+class FunctionContains extends @function_contains {
+    FunctionContains() { FunctionContains(this, _) }
+
+    /** Gets the containing function. */
+    Function getFunction() { result = this }
+
+    /** Gets the contained node. */
+    ASTNode getNode() { FunctionContains(this, result) }
+}
