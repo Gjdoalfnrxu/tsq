@@ -7,14 +7,10 @@
  * @id js/tsq/setstate-updater-calls-fn
  */
 
-// NOTE: We deliberately import ONLY tsq::react. Importing tsq::calls,
-// tsq::variables, tsq::functions, etc. would materialise their
-// characteristic predicates (e.g. `Call(this) :- Call(this,_,_)`) into
-// relations whose names collide with the underlying schema relations
-// (`Call/3`, `VarDecl/4`, ...) — a known v1 engine bug
-// (arity-shadowing in seminaive eval). The bridge predicates in
-// tsq::react use raw atoms only, so this single import is sufficient.
 import tsq::react
+import tsq::calls
+import tsq::variables
+import tsq::functions
 
 from int c, int line
 where setStateUpdaterCallsFn(c, line)

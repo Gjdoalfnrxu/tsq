@@ -74,7 +74,8 @@ func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[s
 			continue
 		}
 		pred := step.Literal.Atom.Predicate
-		delta, hasDelta := deltaRels[pred]
+		arity := len(step.Literal.Atom.Args)
+		delta, hasDelta := deltaRels[relKey(pred, arity)]
 		if !hasDelta || delta.Len() == 0 {
 			continue
 		}
@@ -120,13 +121,16 @@ func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, de
 		}
 		if i == deltaIdx {
 			// Use the delta relation for this step only.
-			// Build a merged map where only this literal's predicate is replaced.
+			// Build a merged map where only this literal's (name, arity)
+			// slot is replaced. We must key by arity, not name, so a delta
+			// for `Foo/1` does not shadow `Foo/3` and vice versa.
 			pred := step.Literal.Atom.Predicate
+			arity := len(step.Literal.Atom.Args)
 			merged := make(map[string]*Relation, len(rels)+1)
 			for k, v := range rels {
 				merged[k] = v
 			}
-			merged[pred] = deltaRel
+			merged[relKey(pred, arity)] = deltaRel
 			current = applyStep(step, merged, current)
 		} else {
 			current = applyStep(step, rels, current)
@@ -191,8 +195,11 @@ func applyComparison(cmp *datalog.Comparison, bindings []binding) []binding {
 }
 
 // applyPositive extends bindings by probing the named relation.
+// The relation lookup is keyed by (predicate, arity) so a 1-arity literal
+// like `C(this)` cannot accidentally probe a 3-arity base relation `C`
+// of the same name.
 func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []binding) []binding {
-	rel, ok := rels[atom.Predicate]
+	rel, ok := rels[relKey(atom.Predicate, len(atom.Args))]
 	if !ok || rel == nil || rel.Len() == 0 {
 		return nil
 	}
@@ -282,8 +289,9 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 }
 
 // applyNegative filters bindings by requiring NO matching tuple exists (anti-join).
+// Lookup is keyed by (predicate, arity) — see applyPositive for the rationale.
 func applyNegative(atom datalog.Atom, rels map[string]*Relation, bindings []binding) []binding {
-	rel, ok := rels[atom.Predicate]
+	rel, ok := rels[relKey(atom.Predicate, len(atom.Args))]
 
 	var out []binding
 	for _, b := range bindings {

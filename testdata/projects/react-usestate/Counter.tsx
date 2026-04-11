@@ -27,5 +27,21 @@ export function Counter() {
   // Updater with no function call in body — should NOT match Case A
   const onBump = () => setCount(prev => prev + 1);
 
-  return <button onClick={onClick}>{count} {name}</button>;
+  // Case C: nested-function positive case. The updater body contains a
+  // nested arrow that itself calls helper(prev) and setName(""). The
+  // base FunctionContains relation is innermost-only, so before
+  // functionContainsStar this case was silently missed. With the
+  // transitive helper, the outer setCount is matched by both Q1 and Q2.
+  const arr = [1, 2, 3];
+  const onNested = () => {
+    setCount(prev => {
+      arr.forEach(() => {
+        helper(prev);
+        setName("");
+      });
+      return prev;
+    });
+  };
+
+  return <button onClick={onClick}>{count} {name} {onReset && onClear && onBump && onNested}</button>;
 }

@@ -336,6 +336,18 @@ func goldenTestCases() []goldenTestCase {
 			queryFile:  "testdata/queries/v2/find_setstate_updater_calls_other_setstate.ql",
 			goldenFile: "testdata/expected/react_usestate_find_setstate_updater_calls_other_setstate.csv",
 		},
+		// Regression: Call class characteristic predicate vs Call/3
+		// base relation. Imports tsq::calls and uses the Call class to
+		// exercise the eval-engine arity-shadow path. Under the old
+		// engine, the 1-arity Call/1 head from the class characteristic
+		// predicate would have been written into the same Relation as
+		// the 3-arity Call/3 base, corrupting downstream joins.
+		{
+			name:       "react-usestate/regression_arity_shadow_call_class",
+			projectDir: "testdata/projects/react-usestate",
+			queryFile:  "testdata/queries/v2/regression_arity_shadow_call_class.ql",
+			goldenFile: "testdata/expected/react_usestate_regression_arity_shadow_call_class.csv",
+		},
 	}
 }
 
