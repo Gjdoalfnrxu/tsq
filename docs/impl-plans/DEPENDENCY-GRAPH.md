@@ -31,6 +31,19 @@ means B must land before A.
   12-typecheck-checker-test (depends on 11)
 
   14-adversarial-review-checklist (no deps — docs only)
+
+  15-builtin-splitat       (no deps — one-liner eval change)
+
+  16-dataflow-config-dispatch (no deps; strongly suggested before 07/08/09)
+       │
+       ├─> 07-compat-find-xss-golden     (needs Configuration to actually dispatch)
+       ├─> 08-compat-find-sqli-golden
+       └─> 09-compat-custom-config-golden
+
+  17-type-fact-population  (no deps)
+       │
+       ├─> 11-typed-ts-fixtures (stronger test story once facts populate)
+       └─> 12-typecheck-checker-test
 ```
 
 ## Notes
@@ -58,5 +71,10 @@ digraph impl_plans {
   "05-fixtures" -> "10-ast-query";
   "06-harness"  -> "13-stdlib-coverage";
   "11-typed-fixtures" -> "12-checker-test";
+  "16-dataflow-dispatch" -> "07-xss";
+  "16-dataflow-dispatch" -> "08-sqli";
+  "16-dataflow-dispatch" -> "09-custom-config";
+  "17-type-facts" -> "11-typed-fixtures";
+  "17-type-facts" -> "12-checker-test";
 }
 ```

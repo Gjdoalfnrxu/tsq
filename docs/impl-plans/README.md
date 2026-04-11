@@ -24,7 +24,7 @@ commit SHAs on `main` for provenance.
 | 1b disjunction   | already done | PR #26 |
 | 1c negation      | already done | PR #26 |
 | 1d abstract      | already done | PR #26 |
-| 1e string builtins | already done | PR #27 (`phase1-efg`) |
+| 1e string builtins | **partial**  | PR #27 (`phase1-efg`); `.splitAt` missing — see plan 15 |
 | 1f if-then-else  | already done | PR #27 |
 | 1g closure syntax | already done | PR #27 |
 | 1h aggregates    | **partial**  | PR #28; `rank` is a count approximation — see plan 01 |
@@ -33,14 +33,14 @@ commit SHAs on `main` for provenance.
 | 1k multi-inherit | already done | PR #28 |
 | 1l annotations   | **partial**  | PR #28; parse-only, no semantics — see plans 02, 03 |
 | 2a javascript.qll | already done | PR #29 |
-| 2b dataflow.qll  | already done | PR #30 |
-| 2c tainttracking | already done | PR #31 |
+| 2b dataflow.qll  | **partial**  | PR #30; API shape only, `hasFlow` ignores user `Configuration` overrides — see plan 16 |
+| 2c tainttracking | **partial**  | PR #31; same Configuration-dispatch gap as 2b — see plan 16 |
 | 2d security libs | already done | PR #32 |
 | 2e import mapping | already done | PR #29 |
 | 3a tsgo integration | **partial** | PR #33; implemented via JSON-RPC, not direct Go dep — see plan 04 |
-| 3b type facts    | already done | PR #34 |
-| 3c typed bridge  | already done | PR #35 |
-| 3d typed dataflow | already done | PR #36 |
+| 3b type facts    | **partial**  | PR #34; only `ExprType`/`SymbolType` registered (7 of 9 relations missing), and both are never populated at extraction time — see plan 17 |
+| 3c typed bridge  | **partial**  | PR #35; operates on empty extent because 3b is unpopulated — unblocked by plan 17 |
+| 3d typed dataflow | **partial**  | PR #36; operates on empty extent because 3b is unpopulated — unblocked by plan 17 |
 
 ## Remaining plans
 
@@ -62,6 +62,9 @@ Merge order is top to bottom. See `DEPENDENCY-GRAPH.md` for the DAG.
 | 12 | [typecheck-checker-test](12-typecheck-checker-test.md) | 4b    | not started |
 | 13 | [stdlib-class-coverage](13-stdlib-class-coverage.md) | 4c      | not started |
 | 14 | [adversarial-review-checklist](14-adversarial-review-checklist.md) | 4c | not started |
+| 15 | [builtin-splitat](15-builtin-splitat.md)       | 1e residual   | not started |
+| 16 | [dataflow-config-dispatch](16-dataflow-config-dispatch.md) | 2b, 2c | not started |
+| 17 | [type-fact-population](17-type-fact-population.md) | 3b           | not started |
 
 ## How to execute a plan
 
