@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Auto-fix formatting and linting before commit.
-# This hook never blocks — it fixes what it can and re-stages modified files.
+# Auto-fix formatting and apply lint fixes, then fail the commit if any
+# unfixable issues remain (errcheck, unused, etc.). This prevents issues
+# that the --fix pass can't handle from reaching CI.
 
 echo "pre-commit: running gofmt..."
 find . -name '*.go' -not -path './.git/*' -not -path './vendor/*' -exec gofmt -w {} +
 
 echo "pre-commit: running golangci-lint --fix..."
-golangci-lint run --fix ./... || true
+set +e
+golangci-lint run --fix ./...
+lint_status=$?
+set -e
 
-# Re-stage any files modified by the above so fixes are included in the commit.
+# Re-stage any files modified by gofmt / lint --fix so fixes land in the commit.
 git diff --name-only | xargs -r git add
 
-exit 0
+exit "$lint_status"
