@@ -354,6 +354,11 @@ func init() {
 		{Name: "sym", Type: TypeEntityRef},
 		{Name: "typeId", Type: TypeEntityRef},
 	}})
+	// v3 Phase 3d: non-taintable primitive types (number, boolean, etc.)
+	// identified by display name, used by taint analysis as a type-based sanitizer.
+	RegisterRelation(RelationDef{Name: "NonTaintableType", Version: 3, Columns: []ColumnDef{
+		{Name: "typeId", Type: TypeEntityRef},
+	}})
 
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{

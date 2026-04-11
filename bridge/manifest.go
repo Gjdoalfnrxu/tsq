@@ -125,6 +125,8 @@ func v2Manifest() *CapabilityManifest {
 			// v3 Phase 3c: bridge classes for tsgo-resolved types
 			{Name: "Type", Relation: "ResolvedType", File: "tsq_types.qll"},
 			{Name: "SymbolTypeBinding", Relation: "SymbolType", File: "tsq_types.qll"},
+			// v3 Phase 3d: type-based sanitizer detection
+			{Name: "NonTaintableType", Relation: "NonTaintableType", File: "tsq_types.qll"},
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},

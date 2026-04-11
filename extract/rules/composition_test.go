@@ -40,6 +40,9 @@ func compositionBaseRels(overrides map[string]*eval.Relation) map[string]*eval.R
 		"Implements":     eval.NewRelation("Implements", 2),
 		"Extends":        eval.NewRelation("Extends", 2),
 		"NewExpr":        eval.NewRelation("NewExpr", 2),
+		// v3 Phase 3d: type-based sanitization
+		"SymbolType":       eval.NewRelation("SymbolType", 2),
+		"NonTaintableType": eval.NewRelation("NonTaintableType", 1),
 	}
 	for k, v := range overrides {
 		base[k] = v

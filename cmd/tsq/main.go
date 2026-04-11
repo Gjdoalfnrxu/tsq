@@ -29,6 +29,20 @@ import (
 
 const version = "0.1.0"
 
+// nonTaintablePrimitives is the set of TypeScript primitive type display names
+// whose values cannot carry string-shaped taint. A value whose resolved type
+// is one of these has typically been parsed or converted (e.g., parseInt),
+// breaking the taint chain. See Phase 3d in CODEQL-COMPAT-PLAN.md.
+var nonTaintablePrimitives = map[string]bool{
+	"number":    true,
+	"boolean":   true,
+	"bigint":    true,
+	"null":      true,
+	"undefined": true,
+	"void":      true,
+	"never":     true,
+}
+
 // run executes the CLI with the given args, writing to stdout/stderr.
 // Returns the exit code.
 func run(args []string, stdout, stderr io.Writer) int {
@@ -258,6 +272,13 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir string
 			if err := database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay); err != nil {
 				fmt.Fprintf(stderr, "warning: add ResolvedType: %v\n", err)
 				continue
+			}
+
+			// Phase 3d: mark non-taintable primitive types for type-based sanitization.
+			if nonTaintablePrimitives[fact.TypeDisplay] {
+				if err := database.Relation("NonTaintableType").AddTuple(database, typeID); err != nil {
+					fmt.Fprintf(stderr, "warning: add NonTaintableType: %v\n", err)
+				}
 			}
 
 			// Map position back to a node ID for ExprType

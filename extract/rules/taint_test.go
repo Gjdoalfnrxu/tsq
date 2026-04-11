@@ -43,6 +43,9 @@ func taintBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relatio
 		"TaintSource": eval.NewRelation("TaintSource", 2),
 		"TaintSink":   eval.NewRelation("TaintSink", 2),
 		"Sanitizer":   eval.NewRelation("Sanitizer", 2),
+		// v3 Phase 3d: type-based sanitization
+		"SymbolType":       eval.NewRelation("SymbolType", 2),
+		"NonTaintableType": eval.NewRelation("NonTaintableType", 1),
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -356,6 +359,89 @@ func TestMultipleTaintKinds(t *testing.T) {
 	}
 }
 
+// TestTaintSanitized_TypeBased_Number verifies that taint is blocked when it
+// flows into a symbol whose resolved type is a non-taintable primitive
+// (e.g., the result of parseInt → number).
+func TestTaintSanitized_TypeBased_Number(t *testing.T) {
+	// Flow: let s = req.query.x; let n = parseInt(s); sink(n);
+	// srcExpr=100, srcSym=10 (string, tainted)
+	// dstSym=20 (number, should be sanitized by type)
+	// sinkExpr=300, sinkSym=20
+	// typeId=500 marked as NonTaintableType (number)
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"TaintSink":   makeRel("TaintSink", 2, iv(300), sv("sql")),
+		"ExprMayRef": makeRel("ExprMayRef", 2,
+			iv(100), iv(10),
+			iv(200), iv(10), // rhs of n = parseInt(s): expr refs s
+			iv(300), iv(20), // sink expr refs n
+		),
+		"Assign": makeRel("Assign", 3, iv(210), iv(200), iv(20)),
+		"SymInFunction": makeRel("SymInFunction", 2,
+			iv(10), iv(1),
+			iv(20), iv(1),
+		),
+		// Type-based sanitizer: dstSym 20 has type 500, which is number.
+		"SymbolType":       makeRel("SymbolType", 2, iv(20), iv(500)),
+		"NonTaintableType": makeRel("NonTaintableType", 1, iv(500)),
+	})
+
+	// First assert SanitizedEdge(10, 20, http_input) is derived.
+	edgeQuery := &datalog.Query{
+		Select: []datalog.Term{v("src"), v("dst"), v("kind")},
+		Body:   []datalog.Literal{pos("SanitizedEdge", v("src"), v("dst"), v("kind"))},
+	}
+	rsEdge := planAndEval(t, AllSystemRules(), edgeQuery, baseRels)
+	if !resultContains(rsEdge, iv(10), iv(20), sv("http_input")) {
+		t.Errorf("expected SanitizedEdge(10, 20, http_input) from type-based sanitizer, got %v", rsEdge.Rows)
+	}
+
+	// Then: no TaintAlert should be produced because sym 20 is type-sanitized.
+	alertQuery := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+	rs := planAndEval(t, AllSystemRules(), alertQuery, baseRels)
+	for _, row := range rs.Rows {
+		if len(row) >= 2 && row[0] == iv(100) && row[1] == iv(300) {
+			t.Errorf("expected no TaintAlert through type-based sanitizer, got %v", row)
+		}
+	}
+}
+
+// TestTaintSanitized_TypeBased_StringPassthrough verifies that taint is NOT
+// blocked when the destination symbol has a taintable (string) type — i.e.,
+// the type-based sanitizer rule only fires for non-taintable primitives.
+func TestTaintSanitized_TypeBased_StringPassthrough(t *testing.T) {
+	// Same shape as above but dstSym 20 has a string type (not in NonTaintableType).
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"TaintSink":   makeRel("TaintSink", 2, iv(300), sv("sql")),
+		"ExprMayRef": makeRel("ExprMayRef", 2,
+			iv(100), iv(10),
+			iv(200), iv(10),
+			iv(300), iv(20),
+		),
+		"Assign": makeRel("Assign", 3, iv(210), iv(200), iv(20)),
+		"SymInFunction": makeRel("SymInFunction", 2,
+			iv(10), iv(1),
+			iv(20), iv(1),
+		),
+		// Symbol type present, but type id 600 is NOT in NonTaintableType.
+		"SymbolType":       makeRel("SymbolType", 2, iv(20), iv(600)),
+		"NonTaintableType": eval.NewRelation("NonTaintableType", 1),
+	})
+
+	alertQuery := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+	rs := planAndEval(t, AllSystemRules(), alertQuery, baseRels)
+	if !resultContains(rs, iv(100), iv(300), sv("http_input"), sv("sql")) {
+		t.Errorf("expected TaintAlert(100, 300, http_input, sql) — string type should not sanitize, got %v", rs.Rows)
+	}
+}
+
 // TestTaintRulesValidate verifies all taint rules pass the planner's validation.
 func TestTaintRulesValidate(t *testing.T) {
 	for i, r := range TaintRules() {
@@ -375,11 +461,11 @@ func TestTaintRulesStratify(t *testing.T) {
 	}
 }
 
-// TestTaintRulesCount verifies we produce exactly 6 taint rules.
+// TestTaintRulesCount verifies we produce exactly 7 taint rules.
 func TestTaintRulesCount(t *testing.T) {
 	rules := TaintRules()
-	if len(rules) != 6 {
-		t.Errorf("expected 6 taint rules, got %d", len(rules))
+	if len(rules) != 7 {
+		t.Errorf("expected 7 taint rules, got %d", len(rules))
 	}
 }
 

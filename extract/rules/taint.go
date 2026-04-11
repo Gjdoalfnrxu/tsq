@@ -46,6 +46,25 @@ func TaintRules() []datalog.Rule {
 			pos("Sanitizer", v("fn"), v("kind")),
 		),
 
+		// Rule 3b: Type-based sanitization (Phase 3d). If a flow edge lands on
+		// a symbol whose resolved type is a non-taintable primitive (number,
+		// boolean, bigint, etc.), the value was parsed or converted and no
+		// longer carries the original string-shaped taint. We quantify over
+		// kinds from TaintSource rather than TaintedSym to avoid a negation
+		// cycle with Rule 2 (which uses not SanitizedEdge).
+		// SanitizedEdge(srcSym, dstSym, kind) :-
+		//     FlowStar(srcSym, dstSym),
+		//     SymbolType(dstSym, typeId),
+		//     NonTaintableType(typeId),
+		//     TaintSource(_, kind).
+		rule("SanitizedEdge",
+			[]datalog.Term{v("srcSym"), v("dstSym"), v("kind")},
+			pos("FlowStar", v("srcSym"), v("dstSym")),
+			pos("SymbolType", v("dstSym"), v("typeId")),
+			pos("NonTaintableType", v("typeId")),
+			pos("TaintSource", w(), v("kind")),
+		),
+
 		// Rule 4: Field-sensitive taint — writing tainted value to a field.
 		// TaintedField(baseSym, fieldName, kind) :- FieldWrite(_, baseSym, fieldName, rhsExpr),
 		//     ExprMayRef(rhsExpr, rhsSym), TaintedSym(rhsSym, kind).
