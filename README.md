@@ -73,10 +73,12 @@ A tsq query is a `.ql` file that imports one or more bridge modules and selects 
 
 The classes you'll reach for most often are defined in those files — for example:
 
-- `Call`, `MethodCall`, `CallArg` (`bridge/tsq_calls.qll`)
-- `Function`, `ArrowFunction` (`bridge/tsq_functions.qll`)
-- `VarDecl`, `Symbol` (`bridge/tsq_variables.qll`)
-- `JSXElement`, `JSXAttribute` (`bridge/tsq_jsx.qll`)
+- `Call`, `CallArg`, `CallArgSpread` (`bridge/tsq_calls.qll`)
+- `MethodCall` (`bridge/tsq_types.qll`)
+- `Function`, `Parameter`, `ReturnStmt`, `FunctionContains` (`bridge/tsq_functions.qll`)
+- `VarDecl`, `Assign` (`bridge/tsq_variables.qll`)
+- `Symbol` (`bridge/tsq_symbols.qll`)
+- `JsxElement`, `JsxAttribute` (`bridge/tsq_jsx.qll`)
 - React-specific helpers including `useState` setters (`bridge/tsq_react.qll`)
 
 Real, runnable examples live in `testdata/queries/v2/`. The smallest one is a one-liner that lists every method-call name in the database:
