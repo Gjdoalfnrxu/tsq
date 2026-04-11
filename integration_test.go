@@ -35,7 +35,7 @@ func extractProject(t *testing.T, projectDir string) *db.DB {
 	defer cancel()
 
 	database := db.NewDB()
-	walker := extract.NewFactWalker(database)
+	walker := extract.NewTypeAwareWalker(database)
 	backend := &extract.TreeSitterBackend{}
 	defer func() {
 		if err := backend.Close(); err != nil {
@@ -322,6 +322,19 @@ func goldenTestCases() []goldenTestCase {
 			projectDir: "testdata/projects/destructuring",
 			queryFile:  "testdata/queries/find_arrow_functions.ql",
 			goldenFile: "testdata/expected/destructuring_find_arrow_functions.csv",
+		},
+		// React useState patterns (Phase F: real-query-useState)
+		{
+			name:       "react-usestate/find_setstate_updater_calls_fn",
+			projectDir: "testdata/projects/react-usestate",
+			queryFile:  "testdata/queries/v2/find_setstate_updater_calls_fn.ql",
+			goldenFile: "testdata/expected/react_usestate_find_setstate_updater_calls_fn.csv",
+		},
+		{
+			name:       "react-usestate/find_setstate_updater_calls_other_setstate",
+			projectDir: "testdata/projects/react-usestate",
+			queryFile:  "testdata/queries/v2/find_setstate_updater_calls_other_setstate.ql",
+			goldenFile: "testdata/expected/react_usestate_find_setstate_updater_calls_other_setstate.csv",
 		},
 	}
 }
