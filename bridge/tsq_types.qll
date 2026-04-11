@@ -1,8 +1,19 @@
 /**
- * Bridge library for type-aware relations (v2).
+ * Bridge library for type-aware relations (v2/v3).
  * Maps ClassDecl, InterfaceDecl, Implements, Extends, MethodDecl,
- * MethodCall, NewExpr, ExprType, TypeDecl.
+ * MethodCall, NewExpr, ExprType, TypeDecl, Type, SymbolTypeBinding.
  */
+
+/** A resolved type (requires tsgo enrichment). */
+class Type extends @resolved_type {
+    Type() { ResolvedType(this, _) }
+
+    /** Gets the display name of this type. */
+    string getDisplayName() { ResolvedType(this, result) }
+
+    /** Gets a textual representation. */
+    string toString() { result = this.getDisplayName() }
+}
 
 /** A class declaration. */
 class ClassDecl extends @class_decl {
@@ -119,8 +130,19 @@ class ExprType extends @expr_type {
     /** Gets the expression. */
     ASTNode getExpr() { result = this }
 
-    /** Gets the type. */
-    int getType() { ExprType(this, result) }
+    /** Gets the resolved type of this expression. */
+    Type getType() { ExprType(this, result) }
+}
+
+/** A binding from a symbol to its resolved type (requires tsgo). */
+class SymbolTypeBinding extends @symbol_type {
+    SymbolTypeBinding() { SymbolType(this, _) }
+
+    /** Gets the symbol. */
+    int getSym() { result = this }
+
+    /** Gets the resolved type of this symbol. */
+    Type getType() { SymbolType(this, result) }
 }
 
 /** A type declaration (type alias, enum, etc.). */
