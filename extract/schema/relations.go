@@ -345,6 +345,16 @@ func init() {
 		{Name: "fnId", Type: TypeEntityRef},
 	}})
 
+	// v3: tsgo-resolved type relations
+	RegisterRelation(RelationDef{Name: "ResolvedType", Version: 3, Columns: []ColumnDef{
+		{Name: "typeId", Type: TypeEntityRef},
+		{Name: "displayName", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "SymbolType", Version: 3, Columns: []ColumnDef{
+		{Name: "sym", Type: TypeEntityRef},
+		{Name: "typeId", Type: TypeEntityRef},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},

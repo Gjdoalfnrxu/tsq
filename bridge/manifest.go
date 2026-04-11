@@ -119,6 +119,9 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "TaintedField", Relation: "TaintedField", File: "tsq_taint.qll"},
 			{Name: "SanitizedEdge", Relation: "SanitizedEdge", File: "tsq_taint.qll"},
 			{Name: "TaintAlert", Relation: "TaintAlert", File: "tsq_taint.qll"},
+			// v3: tsgo-resolved type relations
+			{Name: "ResolvedType", Relation: "ResolvedType", File: "tsq_types.qll"},
+			{Name: "SymbolType", Relation: "SymbolType", File: "tsq_types.qll"},
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
