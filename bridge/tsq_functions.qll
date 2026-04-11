@@ -155,3 +155,4 @@ class FunctionContains extends @function_contains {
     /** Gets the contained node. */
     ASTNode getNode() { FunctionContains(this, result) }
 }
+

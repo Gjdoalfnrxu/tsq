@@ -136,6 +136,9 @@ func (r *resolver) processImports(mod *ast.Module, importLoader func(string) (*a
 			continue
 		}
 		// Recursively resolve the imported module (no further import loading).
+		// Transitive imports inside bridge .qll files are intentionally
+		// flat: each .qll defines names in its own namespace, and the
+		// query controls which bridges are pulled into scope.
 		rm, _ := Resolve(importedAST, nil)
 		r.env.Imports[path] = rm
 		// Make imported predicates and classes available in our env.

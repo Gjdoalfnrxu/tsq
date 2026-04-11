@@ -31,8 +31,9 @@ func naiveEvaluate(rules []plan.PlannedRule, baseRels map[string]*Relation) map[
 	// Ensure head relations exist.
 	for _, rule := range rules {
 		headName := rule.Head.Predicate
-		if _, ok := rels[headName]; !ok {
-			rels[headName] = NewRelation(headName, len(rule.Head.Args))
+		hk := relKey(headName, len(rule.Head.Args))
+		if _, ok := rels[hk]; !ok {
+			rels[hk] = NewRelation(headName, len(rule.Head.Args))
 		}
 	}
 
@@ -41,7 +42,8 @@ func naiveEvaluate(rules []plan.PlannedRule, baseRels map[string]*Relation) map[
 		changed := false
 		for _, rule := range rules {
 			headName := rule.Head.Predicate
-			headRel := rels[headName]
+			hk := relKey(headName, len(rule.Head.Args))
+			headRel := rels[hk]
 			newTuples := Rule(rule, rels)
 			for _, t := range newTuples {
 				if headRel.Add(t) {
@@ -85,7 +87,7 @@ func genFacts(t *rapid.T, schema map[string]int) map[string]*Relation {
 			}
 			rel.Add(tuple)
 		}
-		rels[name] = rel
+		rels[relKey(name, arity)] = rel
 	}
 	return rels
 }
@@ -180,13 +182,13 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 
 	// Evaluate stratum by stratum using the real evaluator.
 	allRels := make(map[string]*Relation, len(baseRels))
-	for k, v := range baseRels {
+	for _, v := range baseRels {
 		// Deep copy so we don't mutate originals.
 		nr := NewRelation(v.Name, v.Arity)
 		for _, t := range v.Tuples() {
 			nr.Add(t)
 		}
-		allRels[k] = nr
+		allRels[relKey(nr.Name, nr.Arity)] = nr
 	}
 
 	_, err := Evaluate(context.Background(), execPlan, allRels)
@@ -197,33 +199,35 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 	// Re-run to get the full relation map (Evaluate only returns query results).
 	// We need to replicate the evaluation loop to capture all derived relations.
 	allRels2 := make(map[string]*Relation, len(baseRels))
-	for k, v := range baseRels {
+	for _, v := range baseRels {
 		nr := NewRelation(v.Name, v.Arity)
 		for _, t := range v.Tuples() {
 			nr.Add(t)
 		}
-		allRels2[k] = nr
+		allRels2[relKey(nr.Name, nr.Arity)] = nr
 	}
 
 	for _, stratum := range execPlan.Strata {
 		for _, rule := range stratum.Rules {
 			headName := rule.Head.Predicate
-			if _, ok := allRels2[headName]; !ok {
-				allRels2[headName] = NewRelation(headName, len(rule.Head.Args))
+			hk := relKey(headName, len(rule.Head.Args))
+			if _, ok := allRels2[hk]; !ok {
+				allRels2[hk] = NewRelation(headName, len(rule.Head.Args))
 			}
 		}
 
 		deltaRels := make(map[string]*Relation)
 		for _, rule := range stratum.Rules {
 			headName := rule.Head.Predicate
-			headRel := allRels2[headName]
+			hk := relKey(headName, len(rule.Head.Args))
+			headRel := allRels2[hk]
 			newTuples := Rule(rule, allRels2)
 			for _, t := range newTuples {
 				if headRel.Add(t) {
-					dr, ok := deltaRels[headName]
+					dr, ok := deltaRels[hk]
 					if !ok {
 						dr = NewRelation(headName, headRel.Arity)
-						deltaRels[headName] = dr
+						deltaRels[hk] = dr
 					}
 					dr.Add(t)
 				}
@@ -245,14 +249,15 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 			nextDelta := make(map[string]*Relation)
 			for _, rule := range stratum.Rules {
 				headName := rule.Head.Predicate
-				headRel := allRels2[headName]
+				hk := relKey(headName, len(rule.Head.Args))
+				headRel := allRels2[hk]
 				newTuples := RuleDelta(rule, allRels2, deltaRels)
 				for _, t := range newTuples {
 					if headRel.Add(t) {
-						dr, ok := nextDelta[headName]
+						dr, ok := nextDelta[hk]
 						if !ok {
 							dr = NewRelation(headName, headRel.Arity)
-							nextDelta[headName] = dr
+							nextDelta[hk] = dr
 						}
 						dr.Add(t)
 					}
@@ -365,21 +370,21 @@ func TestPropertyMonotonicity(t *testing.T) {
 
 		// Create extended facts (superset of facts1).
 		facts2 := make(map[string]*Relation)
-		for name, rel := range facts1 {
-			nr := NewRelation(name, rel.Arity)
+		for k, rel := range facts1 {
+			nr := NewRelation(rel.Name, rel.Arity)
 			for _, t := range rel.Tuples() {
 				nr.Add(t)
 			}
 			// Add extra random tuples.
-			nExtra := rapid.IntRange(1, 10).Draw(t, fmt.Sprintf("nExtra_%s", name))
+			nExtra := rapid.IntRange(1, 10).Draw(t, fmt.Sprintf("nExtra_%s", rel.Name))
 			for i := 0; i < nExtra; i++ {
 				tuple := make(Tuple, rel.Arity)
 				for j := 0; j < rel.Arity; j++ {
-					tuple[j] = IntVal{V: int64(rapid.IntRange(0, 9).Draw(t, fmt.Sprintf("extra_%s_%d_%d", name, i, j)))}
+					tuple[j] = IntVal{V: int64(rapid.IntRange(0, 9).Draw(t, fmt.Sprintf("extra_%s_%d_%d", rel.Name, i, j)))}
 				}
 				nr.Add(tuple)
 			}
-			facts2[name] = nr
+			facts2[k] = nr
 		}
 
 		// Evaluate with extended facts.
