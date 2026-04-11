@@ -86,7 +86,10 @@ func TestMagicSetTransformPreservesResults(t *testing.T) {
 			t.Fatal("magic-set plan has nil query")
 		}
 
-		// Verify structural properties: magic-set plan should have magic predicates.
+		// Verify structural properties: with a binding on the IDB predicate
+		// `Derived`, the magic-set transform must produce at least one
+		// magic_<pred> rule. If none is emitted, the transform silently
+		// no-op'd and the results-preservation guarantee is meaningless.
 		hasMagic := false
 		for _, s := range ep2.Strata {
 			for _, r := range s.Rules {
@@ -95,7 +98,9 @@ func TestMagicSetTransformPreservesResults(t *testing.T) {
 				}
 			}
 		}
-		_ = hasMagic // Base-only rules may not generate magic predicates.
+		if !hasMagic {
+			t.Fatalf("magic-set plan did not emit any magic_* rules despite Derived binding")
+		}
 
 		// NOTE: End-to-end evaluation comparison (magic-set vs naive produces
 		// identical results) is tested in the integration test at the repo root

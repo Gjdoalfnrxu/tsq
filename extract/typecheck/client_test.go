@@ -141,9 +141,13 @@ func TestNewClientBinaryNotFound(t *testing.T) {
 }
 
 func TestDetectTsgoNoEnvNoPath(t *testing.T) {
+	// With no TSGO_PATH and an empty PATH, DetectTsgo must return "".
+	// (t.Setenv automatically restores the previous value on test exit.)
 	t.Setenv("TSGO_PATH", "")
-	// This test validates the function doesn't panic.
-	_ = DetectTsgo()
+	t.Setenv("PATH", "")
+	if got := DetectTsgo(); got != "" {
+		t.Errorf("DetectTsgo() = %q, want \"\" when no env and no PATH", got)
+	}
 }
 
 func TestDetectTsgoWithEnvVar(t *testing.T) {

@@ -1,6 +1,8 @@
 // scoping.ts — nested blocks, shadowing, temporal dead zone
 
 var x = 1;
+const tdzConst = 42;
+let tdzLet = 7;
 
 function outer() {
   var x = 2; // shadows file-level x (var, function-scoped)

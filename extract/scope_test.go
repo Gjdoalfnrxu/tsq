@@ -350,6 +350,6 @@ func TestScopeAnalyzer_TDZ_FromFile(t *testing.T) {
 		}
 	}
 	if !foundTDZ {
-		t.Log("note: no TDZ declarations found at file scope in scoping.ts — may be inside function scopes")
+		t.Fatalf("expected at least one TDZ declaration at file scope in scoping.ts, found none — TDZ analysis has regressed or the fixture is broken")
 	}
 }
