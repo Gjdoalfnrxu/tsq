@@ -84,20 +84,87 @@ interface Loggable {
 	}
 }
 
-// TestV2Extends verifies Extends tuples for class/interface inheritance.
+// entityIDByName scans a relation (e.g. ClassDecl, InterfaceDecl) whose
+// column 0 is an entity id and column 1 is a string name, and returns the
+// id for the first row whose name matches. Fails the test if not found.
+func entityIDByName(t *testing.T, database *db.DB, relName, name string) int32 {
+	t.Helper()
+	r := rel(t, database, relName)
+	for i := 0; i < r.Tuples(); i++ {
+		s, err := r.GetString(database, i, 1)
+		if err != nil {
+			continue
+		}
+		if s == name {
+			id, err := r.GetInt(i, 0)
+			if err != nil {
+				t.Fatalf("%s[%d].id: %v", relName, i, err)
+			}
+			return id
+		}
+	}
+	t.Fatalf("%s: no entity named %q", relName, name)
+	return 0
+}
+
+// hasIntPair returns true if relation r has a tuple with (col0=a, col1=b).
+func hasIntPair(r *db.Relation, a, b int32) bool {
+	for i := 0; i < r.Tuples(); i++ {
+		x, errA := r.GetInt(i, 0)
+		y, errB := r.GetInt(i, 1)
+		if errA == nil && errB == nil && x == a && y == b {
+			return true
+		}
+	}
+	return false
+}
+
+// hasChildID returns true if relation r has a tuple whose column 0 equals id.
+func hasChildID(r *db.Relation, id int32) bool {
+	for i := 0; i < r.Tuples(); i++ {
+		if got, err := r.GetInt(i, 0); err == nil && got == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestV2Extends verifies Extends tuples for class inheritance.
+// Pins (child=Dog's ClassDecl id, parent=some non-Dog id) so that a walker bug
+// emitting the reversed Extends(Animal, Dog) or a self-loop Extends(Dog, Dog)
+// would fail the test.
+//
+// Note: the walker currently emits Extends with the parent column referring to
+// a *type reference* entity id — not the parent ClassDecl's own id — so we
+// cannot assert parent == Animal's ClassDecl id here. The child column IS the
+// Dog ClassDecl id, which is what we pin.
 func TestV2Extends(t *testing.T) {
 	src := `
 class Animal {}
 class Dog extends Animal {}
 `
 	database := v2WalkerTestDB(t, src)
+	dogID := entityIDByName(t, database, "ClassDecl", "Dog")
+	animalID := entityIDByName(t, database, "ClassDecl", "Animal")
 	r := rel(t, database, "Extends")
 	if r.Tuples() == 0 {
 		t.Fatal("Extends: expected tuples for Dog extends Animal")
 	}
+	if !hasChildID(r, dogID) {
+		t.Errorf("Extends: no row with child=Dog's ClassDecl id (%d); rows are for a different child", dogID)
+	}
+	if hasChildID(r, animalID) {
+		t.Errorf("Extends: found row with child=Animal's ClassDecl id (%d) — child/parent columns appear reversed", animalID)
+	}
+	// Self-loop check: (Dog, Dog) would indicate the walker emitted the same id twice.
+	if hasIntPair(r, dogID, dogID) {
+		t.Errorf("Extends: found self-loop row (Dog, Dog)")
+	}
 }
 
-// TestV2Implements verifies Implements tuples.
+// TestV2Implements verifies Implements tuples. Same caveat as TestV2Extends:
+// the interface column references a type-use id, not the InterfaceDecl id, so
+// we pin only the class column (= Dog's ClassDecl id).
 func TestV2Implements(t *testing.T) {
 	src := `
 interface Serializable { serialize(): string; }
@@ -106,9 +173,20 @@ class Dog implements Serializable {
 }
 `
 	database := v2WalkerTestDB(t, src)
+	dogID := entityIDByName(t, database, "ClassDecl", "Dog")
+	ifaceID := entityIDByName(t, database, "InterfaceDecl", "Serializable")
 	r := rel(t, database, "Implements")
 	if r.Tuples() == 0 {
 		t.Fatal("Implements: expected tuples for Dog implements Serializable")
+	}
+	if !hasChildID(r, dogID) {
+		t.Errorf("Implements: no row with class=Dog's ClassDecl id (%d)", dogID)
+	}
+	if hasChildID(r, ifaceID) {
+		t.Errorf("Implements: found row with class=Serializable's InterfaceDecl id (%d) — class/iface columns appear reversed", ifaceID)
+	}
+	if hasIntPair(r, dogID, dogID) {
+		t.Errorf("Implements: found self-loop row (Dog, Dog)")
 	}
 }
 

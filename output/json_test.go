@@ -110,11 +110,17 @@ func TestWriteJSONLines_MultipleRows(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines = %d, want 2", len(lines))
 	}
-	// Each line must be valid JSON.
+	want := []string{"a", "b"}
 	for i, line := range lines {
 		var obj map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
 			t.Errorf("line %d invalid JSON: %v", i, err)
+			continue
+		}
+		if got, ok := obj["x"]; !ok {
+			t.Errorf("line %d: missing 'x' field: %v", i, obj)
+		} else if got != want[i] {
+			t.Errorf("line %d: x = %v, want %q", i, got, want[i])
 		}
 	}
 }

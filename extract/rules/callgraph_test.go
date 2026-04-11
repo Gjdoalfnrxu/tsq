@@ -539,9 +539,11 @@ func TestInheritedMethodCallResolution(t *testing.T) {
 
 	rs := planAndEval(t, CallGraphRules(), query, baseRels)
 	// Known gap: inherited methods don't participate in call resolution yet.
-	// This test documents the current behavior. When fixed, update expected count to 1.
-	t.Logf("CallTarget rows for inherited method call: %d (0 = known gap, 1 = fixed)", len(rs.Rows))
-	// TODO: When MethodDecl is unified with MethodDeclInherited, assert len == 1 here.
+	// Pin current (broken) behaviour so a future fix flips this test red.
+	// TODO: When MethodDecl is unified with MethodDeclInherited, change expected to 1.
+	if got := len(rs.Rows); got != 0 {
+		t.Errorf("expected 0 rows (known gap), got %d — if this is the fix, update the assertion", got)
+	}
 }
 
 // TestMergeSystemRulesNilProg regression: nil program should not panic.

@@ -183,7 +183,10 @@ func TestDataFlowNodeMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	rm, _ := resolve.Resolve(mod, nil)
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
 
 	nodeClass, ok := rm.Env.Classes["DataFlow::Node"]
 	if !ok {

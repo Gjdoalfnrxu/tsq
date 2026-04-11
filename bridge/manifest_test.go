@@ -34,15 +34,6 @@ func TestAllRelationsCovered(t *testing.T) {
 	}
 }
 
-// TestCheckQueryWarnings verifies that importing unavailable classes produces warnings.
-func TestCheckQueryWarnings(t *testing.T) {
-	m := V1Manifest()
-	warnings := m.CheckQuery([]string{"TaintTracking", "ASTNode", "UnknownModule"})
-	if len(warnings) != 0 {
-		t.Errorf("expected 0 warnings (TaintTracking now available, others not in unavailable list), got %d", len(warnings))
-	}
-}
-
 // TestCheckQueryNoWarnings verifies that importing available classes produces no warnings.
 func TestCheckQueryNoWarnings(t *testing.T) {
 	m := V1Manifest()

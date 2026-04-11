@@ -191,8 +191,14 @@ func TestTaintAlert_SanitizedFlow(t *testing.T) {
 		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(501), iv(5)),
 		"CallArg":        makeRel("CallArg", 3, iv(500), iv(0), iv(400)),
 		"CallResultSym":  makeRel("CallResultSym", 2, iv(500), iv(30)),
-		"ReturnStmt":     makeRel("ReturnStmt", 3, iv(5), iv(81), iv(250)),
-		"ReturnSym":      makeRel("ReturnSym", 2, iv(5), iv(29)),
+		// ParamToReturn(fn=5, paramIdx=0): sanitizer passes its input through
+		// to its return value. Needed for InterFlow to produce an edge from the
+		// caller's arg sym (10) to the call result sym (30), which the sanitizer
+		// rule can then block. Without this, the SanitizedEdge rule cannot fire
+		// and the test was silently skipping (masking regressions).
+		"ParamToReturn": makeRel("ParamToReturn", 2, iv(5), iv(0)),
+		"ReturnStmt":    makeRel("ReturnStmt", 3, iv(5), iv(81), iv(250)),
+		"ReturnSym":     makeRel("ReturnSym", 2, iv(5), iv(29)),
 		"SymInFunction": makeRel("SymInFunction", 2,
 			iv(10), iv(1),
 			iv(30), iv(1),
@@ -216,7 +222,7 @@ func TestTaintAlert_SanitizedFlow(t *testing.T) {
 	}
 	rsEdge := planAndEval(t, AllSystemRules(), queryEdge, baseRels)
 	if len(rsEdge.Rows) == 0 {
-		t.Skip("SKIP: no SanitizedEdge produced — inter-procedural flow setup insufficient for this unit test. Sanitizer blocking is tested end-to-end in integration tests.")
+		t.Fatalf("expected at least one SanitizedEdge row, got 0 — sanitizer blocking has regressed or the fixture is broken")
 	}
 
 	// The key invariant: sym 30 (the sink sym) should not be tainted with "http_input"
