@@ -10,8 +10,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// v2: 28 original + 5 promoted from unavailable + 12 new v2 = 45
 	// But some relations share bridge classes. Count: 28 + 17 = 45
 	// v3 Phase 3c: +2 bridge classes (Type, SymbolTypeBinding) = 84
-	if got := len(m.Available); got != 84 {
-		t.Errorf("expected 84 available classes, got %d", got)
+	// v3 Phase 3d: +1 bridge class (NonTaintableType) = 85
+	if got := len(m.Available); got != 85 {
+		t.Errorf("expected 85 available classes, got %d", got)
 	}
 }
 
