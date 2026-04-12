@@ -1361,3 +1361,31 @@ func TestLexerBrackets(t *testing.T) {
 		t.Errorf("expected TokRBrack, got %d", tok.Type)
 	}
 }
+
+// TestParseDeprecatedClassAnnotation verifies that deprecated annotations
+// on class declarations are preserved through parsing (regression test:
+// parser previously dropped annotations for class declarations).
+func TestParseDeprecatedClassAnnotation(t *testing.T) {
+	src := `deprecated class OldThing extends @node { }`
+	p := parse.NewParser(src, "test.ql")
+	mod, err := p.Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(mod.Classes) != 1 {
+		t.Fatalf("expected 1 class, got %d", len(mod.Classes))
+	}
+	cls := mod.Classes[0]
+	if len(cls.Annotations) == 0 {
+		t.Fatal("expected deprecated annotation on class, got none")
+	}
+	found := false
+	for _, a := range cls.Annotations {
+		if a.Name == "deprecated" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'deprecated' annotation, got %v", cls.Annotations)
+	}
+}
