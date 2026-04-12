@@ -12,6 +12,6 @@
 import javascript
 import semmle.javascript.security.dataflow.SqlInjectionQuery
 
-from SqlInjection::SqlInjectionSource source, SqlInjection::SqlInjectionSink sink, TaintAlert alert
+from SqlInjection::SqlInjectionSink sink, TaintAlert alert
 where alert.getSinkKind() = "sql"
 select sink, "Potential SQL injection from user input."

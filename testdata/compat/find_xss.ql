@@ -11,6 +11,6 @@
 import javascript
 import semmle.javascript.security.dataflow.XssQuery
 
-from Xss::XssSource source, Xss::XssSink sink, TaintAlert alert
+from Xss::XssSink sink, TaintAlert alert
 where alert.getSrcKind() = "http_input" and alert.getSinkKind() = "xss"
 select sink, "Potential XSS from user input."
