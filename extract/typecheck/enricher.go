@@ -84,6 +84,44 @@ func (e *Enricher) EnrichFile(filePath string, positions []Position) ([]TypeFact
 	return facts, nil
 }
 
+// WriteTypeFacts writes TypeFact values into the fact DB via the emit callback.
+// For each TypeFact, it emits ExprType and SymbolType tuples, and a ResolvedType
+// tuple for the type itself. The posNodeID callback converts (filePath, line, col)
+// to an entity ID for the expression/symbol at that position. The symID callback
+// converts (filePath, line, col) to a symbol entity ID. The typeEntityID callback
+// converts a type handle to a type entity ID.
+func WriteTypeFacts(
+	emit func(relName string, cols ...interface{}),
+	facts []TypeFact,
+	filePath string,
+	posNodeID func(filePath string, line, col int) uint32,
+	symID func(filePath string, line, col int) uint32,
+	typeEntityID func(typeHandle string) uint32,
+) {
+	// Track which types we've already emitted ResolvedType for to avoid duplicates.
+	seenTypes := make(map[string]bool)
+	for _, fact := range facts {
+		if fact.TypeHandle == "" {
+			continue
+		}
+		typeID := typeEntityID(fact.TypeHandle)
+
+		// ResolvedType: emit once per unique type handle
+		if !seenTypes[fact.TypeHandle] {
+			seenTypes[fact.TypeHandle] = true
+			emit("ResolvedType", typeID, fact.TypeDisplay)
+		}
+
+		// ExprType: link the expression node at this position to the type
+		exprID := posNodeID(filePath, fact.Line, fact.Col)
+		emit("ExprType", exprID, typeID)
+
+		// SymbolType: link the symbol at this position to the type
+		sID := symID(filePath, fact.Line, fact.Col)
+		emit("SymbolType", sID, typeID)
+	}
+}
+
 // Close releases tsgo resources.
 func (e *Enricher) Close() error {
 	return e.client.Close()

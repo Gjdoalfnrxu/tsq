@@ -346,13 +346,59 @@ function foo() {
 	}
 }
 
-// TestV2ExprTypeEmpty verifies ExprType is registered but empty without tsgo.
-func TestV2ExprTypeEmpty(t *testing.T) {
-	src := `const x = 42;`
+// TestV2TypeFactsPopulated verifies that structural type-fact relations are populated
+// from AST patterns without requiring tsgo. ExprType/SymbolType remain empty (tsgo-dependent)
+// but TypeInfo, UnionMember, IntersectionMember, TypeAlias, TypeParameter, and
+// GenericInstantiation are populated structurally.
+func TestV2TypeFactsPopulated(t *testing.T) {
+	src := `
+type StringOrNumber = string | number;
+type Named = { name: string } & { age: number };
+type Identity<T> = T;
+interface Box<T> { value: T; }
+class Container<U extends object> { item: U; }
+const x: Box<string> = { value: "hi" };
+`
 	database := v2WalkerTestDB(t, src)
-	r := rel(t, database, "ExprType")
-	if r.Tuples() != 0 {
-		t.Errorf("ExprType: expected 0 tuples without tsgo, got %d", r.Tuples())
+
+	// TypeInfo should be populated for union, intersection, alias, and generic types
+	typeInfoR := rel(t, database, "TypeInfo")
+	if typeInfoR.Tuples() == 0 {
+		t.Error("TypeInfo: expected non-zero tuples from structural type emission")
+	}
+
+	// UnionMember should be populated for `string | number`
+	unionR := rel(t, database, "UnionMember")
+	if unionR.Tuples() == 0 {
+		t.Error("UnionMember: expected non-zero tuples for union type")
+	}
+
+	// IntersectionMember should be populated for `{ name: string } & { age: number }`
+	interR := rel(t, database, "IntersectionMember")
+	if interR.Tuples() == 0 {
+		t.Error("IntersectionMember: expected non-zero tuples for intersection type")
+	}
+
+	// TypeAlias should be populated for type alias declarations
+	aliasR := rel(t, database, "TypeAlias")
+	if aliasR.Tuples() == 0 {
+		t.Error("TypeAlias: expected non-zero tuples for type alias declarations")
+	}
+
+	// TypeParameter should be populated for generic declarations
+	tpR := rel(t, database, "TypeParameter")
+	if tpR.Tuples() == 0 {
+		t.Error("TypeParameter: expected non-zero tuples for generic declarations")
+	}
+
+	// ExprType and SymbolType remain empty without tsgo
+	exprR := rel(t, database, "ExprType")
+	if exprR.Tuples() != 0 {
+		t.Errorf("ExprType: expected 0 tuples without tsgo, got %d", exprR.Tuples())
+	}
+	symR := rel(t, database, "SymbolType")
+	if symR.Tuples() != 0 {
+		t.Errorf("SymbolType: expected 0 tuples without tsgo, got %d", symR.Tuples())
 	}
 }
 

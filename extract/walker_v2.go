@@ -17,10 +17,13 @@ import (
 //   - Function containment (FunctionContains)
 //   - Type alias declarations (TypeDecl)
 //   - Symbol/FunctionSymbol population from structural patterns
+//   - Structural type facts (TypeInfo, UnionMember, IntersectionMember, etc.)
 //
-// Semantic relations that require tsgo (ExprType, TypeFromLib, etc.) are
-// emitted as empty relations when tsgo is unavailable. The walker degrades
-// gracefully: all tests pass without tsgo installed.
+// Semantic relations that require tsgo (ExprType, SymbolType, etc.) are
+// populated when tsgo enrichment is available. Structural type relations
+// (TypeInfo, UnionMember, IntersectionMember, TypeParameter, TypeAlias,
+// GenericInstantiation) are emitted from AST patterns regardless of tsgo.
+// The walker degrades gracefully: all tests pass without tsgo installed.
 type TypeAwareWalker struct {
 	fw *FactWalker
 
@@ -31,7 +34,8 @@ type TypeAwareWalker struct {
 	classOrIfaceStack []uint32
 
 	// tsgoAvailable indicates whether a tsgo backend is available for semantic analysis.
-	// When false, ExprType and TypeFromLib relations are left empty.
+	// When false, ExprType and SymbolType relations are left empty (tsgo-dependent).
+	// Structural type relations (TypeInfo, UnionMember, etc.) are always populated from AST.
 	tsgoAvailable bool
 }
 
@@ -141,6 +145,14 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		tw.emitSymbolFromVarDecl(node)
 	case "Identifier":
 		tw.emitSymInFunction(node)
+	case "UnionType":
+		tw.emitUnionType(node, id)
+	case "IntersectionType":
+		tw.emitIntersectionType(node, id)
+	case "GenericType":
+		tw.emitGenericType(node, id)
+	case "TypeParameter":
+		tw.emitTypeParameter(node, id)
 	}
 
 	// FunctionContains: any node inside a function body. Function nodes
@@ -171,6 +183,9 @@ func (tw *TypeAwareWalker) emitClassDecl(node ASTNode, id uint32) {
 			tw.fw.emit("Symbol", symID, name, tw.fw.nid(nameNode), tw.fw.fileID)
 		}
 	}
+
+	// Emit TypeParameter for any type parameters on this class
+	tw.emitTypeParameters(node, id)
 
 	// Walk heritage clauses for Extends/Implements
 	tw.processHeritageOfClass(node, id)
@@ -257,6 +272,9 @@ func (tw *TypeAwareWalker) emitInterfaceDecl(node ASTNode, id uint32) {
 			tw.fw.emit("Symbol", symID, name, tw.fw.nid(nameNode), tw.fw.fileID)
 		}
 	}
+
+	// Emit TypeParameter for any type parameters on this interface
+	tw.emitTypeParameters(node, id)
 
 	// Walk children for extends clauses (interfaces extend other interfaces)
 	count := node.ChildCount()
@@ -398,13 +416,22 @@ func (tw *TypeAwareWalker) emitReturnStmt(node ASTNode, id uint32) {
 	tw.fw.emit("ReturnStmt", fnID, id, exprID)
 }
 
-// emitTypeDecl emits TypeDecl for type alias declarations.
+// emitTypeDecl emits TypeDecl for type alias declarations, plus TypeInfo and TypeAlias.
 func (tw *TypeAwareWalker) emitTypeDecl(node ASTNode, id uint32) {
 	name := ""
 	if nameNode := childByField(node, "name"); nameNode != nil {
 		name = nameNode.Text()
 	}
 	tw.fw.emit("TypeDecl", id, name, "alias", tw.fw.fileID)
+
+	// Emit TypeInfo for the alias declaration itself
+	tw.fw.emit("TypeInfo", id, "alias", name)
+
+	// Emit TypeAlias linking the alias to its RHS type node
+	if valueNode := childByField(node, "value"); valueNode != nil {
+		rhsID := tw.fw.nid(valueNode)
+		tw.fw.emit("TypeAlias", id, rhsID)
+	}
 
 	// Also emit a Symbol for the type alias
 	if name != "" {
@@ -413,6 +440,193 @@ func (tw *TypeAwareWalker) emitTypeDecl(node ASTNode, id uint32) {
 			symID := SymID(tw.fw.filePath, name, nameNode.StartLine(), nameNode.StartCol())
 			tw.fw.emit("Symbol", symID, name, tw.fw.nid(nameNode), tw.fw.fileID)
 		}
+	}
+
+	// Emit TypeParameter for any type parameters on this declaration
+	tw.emitTypeParameters(node, id)
+}
+
+// emitUnionType emits TypeInfo and UnionMember tuples for union type nodes (A | B | C).
+func (tw *TypeAwareWalker) emitUnionType(node ASTNode, id uint32) {
+	tw.fw.emit("TypeInfo", id, "union", node.Text())
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k == "|" {
+			continue
+		}
+		memberID := tw.fw.nid(child)
+		tw.fw.emit("UnionMember", id, memberID)
+	}
+}
+
+// emitIntersectionType emits TypeInfo and IntersectionMember tuples for intersection type nodes (A & B).
+func (tw *TypeAwareWalker) emitIntersectionType(node ASTNode, id uint32) {
+	tw.fw.emit("TypeInfo", id, "intersection", node.Text())
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k == "&" {
+			continue
+		}
+		memberID := tw.fw.nid(child)
+		tw.fw.emit("IntersectionMember", id, memberID)
+	}
+}
+
+// emitGenericType emits TypeInfo and GenericInstantiation tuples for generic type references (Box<string>).
+func (tw *TypeAwareWalker) emitGenericType(node ASTNode, id uint32) {
+	tw.fw.emit("TypeInfo", id, "generic", node.Text())
+
+	// Find the base type name (first child, typically an Identifier or TypeIdentifier)
+	nameNode := childByField(node, "name")
+	if nameNode == nil {
+		// Fallback: first child that is an identifier
+		count := node.ChildCount()
+		for i := 0; i < count; i++ {
+			child := node.Child(i)
+			if child == nil {
+				continue
+			}
+			k := child.Kind()
+			if k == "Identifier" || k == "TypeIdentifier" {
+				nameNode = child
+				break
+			}
+		}
+	}
+
+	var genericTypeID uint32
+	if nameNode != nil {
+		genericTypeID = tw.fw.nid(nameNode)
+	}
+
+	// Find type arguments
+	argsNode := childByKind(node, "TypeArguments")
+	if argsNode == nil {
+		// Try field-based access
+		argsNode = childByField(node, "type_arguments")
+	}
+	if argsNode != nil {
+		idx := int32(0)
+		ac := argsNode.ChildCount()
+		for i := 0; i < ac; i++ {
+			arg := argsNode.Child(i)
+			if arg == nil {
+				continue
+			}
+			k := arg.Kind()
+			if k == "<" || k == ">" || k == "," {
+				continue
+			}
+			argID := tw.fw.nid(arg)
+			tw.fw.emit("GenericInstantiation", id, genericTypeID, idx, argID)
+			idx++
+		}
+	}
+}
+
+// emitTypeParameter emits a TypeParameter tuple for an individual type parameter node.
+// TypeParameter nodes appear as children of TypeParameters (the container).
+// The parent declaration (class, interface, function, type alias) is determined
+// by walking up the classOrIfaceStack or by the caller passing the decl ID.
+// Since tree-sitter visits TypeParameter as a standalone node, we find the
+// enclosing declaration from the walker's current context.
+func (tw *TypeAwareWalker) emitTypeParameter(node ASTNode, _ uint32) {
+	// TypeParameter emission is handled by emitTypeParameters called from
+	// the parent declaration (emitClassDecl, emitInterfaceDecl, emitTypeDecl).
+	// This case is intentionally a no-op to avoid double-emission.
+	_ = node
+}
+
+// emitTypeParameters finds and emits TypeParameter tuples for all type parameters
+// on a declaration node (class, interface, type alias, function).
+func (tw *TypeAwareWalker) emitTypeParameters(node ASTNode, declID uint32) {
+	// Look for TypeParameters child
+	tpNode := childByKind(node, "TypeParameters")
+	if tpNode == nil {
+		tpNode = childByField(node, "type_parameters")
+	}
+	if tpNode == nil {
+		return
+	}
+
+	idx := int32(0)
+	count := tpNode.ChildCount()
+	for i := 0; i < count; i++ {
+		child := tpNode.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k == "<" || k == ">" || k == "," {
+			continue
+		}
+		if k != "TypeParameter" {
+			continue
+		}
+
+		// Extract the type parameter name
+		name := ""
+		if nameNode := childByField(child, "name"); nameNode != nil {
+			name = nameNode.Text()
+		} else {
+			// Fallback: first Identifier or TypeIdentifier child
+			cc := child.ChildCount()
+			for j := 0; j < cc; j++ {
+				gc := child.Child(j)
+				if gc == nil {
+					continue
+				}
+				gk := gc.Kind()
+				if gk == "Identifier" || gk == "TypeIdentifier" {
+					name = gc.Text()
+					break
+				}
+			}
+		}
+
+		// Extract constraint type ID (if present: T extends SomeType)
+		var constraintTypeID uint32
+		if constraintNode := childByField(child, "constraint"); constraintNode != nil {
+			constraintTypeID = tw.fw.nid(constraintNode)
+		} else {
+			// Look for Constraint child
+			cc := child.ChildCount()
+			for j := 0; j < cc; j++ {
+				gc := child.Child(j)
+				if gc == nil {
+					continue
+				}
+				if gc.Kind() == "Constraint" {
+					// The constraint type is inside the Constraint node
+					cc2 := gc.ChildCount()
+					for m := 0; m < cc2; m++ {
+						inner := gc.Child(m)
+						if inner == nil {
+							continue
+						}
+						if inner.Text() == "extends" {
+							continue
+						}
+						constraintTypeID = tw.fw.nid(inner)
+						break
+					}
+					break
+				}
+			}
+		}
+
+		tw.fw.emit("TypeParameter", declID, idx, name, constraintTypeID)
+		idx++
 	}
 }
 

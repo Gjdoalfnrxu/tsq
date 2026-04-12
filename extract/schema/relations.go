@@ -360,6 +360,49 @@ func init() {
 		{Name: "typeId", Type: TypeEntityRef},
 	}})
 
+	// v3 Phase 17: type-fact relations (structural + tsgo-enriched)
+	// TypeInfo: detailed info about a type (kind: "union", "intersection", "object", "primitive", etc.)
+	RegisterRelation(RelationDef{Name: "TypeInfo", Version: 3, Columns: []ColumnDef{
+		{Name: "typeId", Type: TypeEntityRef},
+		{Name: "kind", Type: TypeString},
+		{Name: "displayName", Type: TypeString},
+	}})
+	// TypeMember: a named member of an object/interface/class type
+	RegisterRelation(RelationDef{Name: "TypeMember", Version: 3, Columns: []ColumnDef{
+		{Name: "typeId", Type: TypeEntityRef},
+		{Name: "memberName", Type: TypeString},
+		{Name: "memberTypeId", Type: TypeEntityRef},
+	}})
+	// UnionMember: constituent type of a union (e.g. string | number)
+	RegisterRelation(RelationDef{Name: "UnionMember", Version: 3, Columns: []ColumnDef{
+		{Name: "unionTypeId", Type: TypeEntityRef},
+		{Name: "memberTypeId", Type: TypeEntityRef},
+	}})
+	// IntersectionMember: constituent type of an intersection (e.g. A & B)
+	RegisterRelation(RelationDef{Name: "IntersectionMember", Version: 3, Columns: []ColumnDef{
+		{Name: "intersectionTypeId", Type: TypeEntityRef},
+		{Name: "memberTypeId", Type: TypeEntityRef},
+	}})
+	// GenericInstantiation: a generic type instantiated with type arguments
+	RegisterRelation(RelationDef{Name: "GenericInstantiation", Version: 3, Columns: []ColumnDef{
+		{Name: "instanceTypeId", Type: TypeEntityRef},
+		{Name: "genericTypeId", Type: TypeEntityRef},
+		{Name: "argIdx", Type: TypeInt32},
+		{Name: "argTypeId", Type: TypeEntityRef},
+	}})
+	// TypeAlias: a type alias declaration linking alias name to the aliased type
+	RegisterRelation(RelationDef{Name: "TypeAlias", Version: 3, Columns: []ColumnDef{
+		{Name: "aliasTypeId", Type: TypeEntityRef},
+		{Name: "aliasedTypeId", Type: TypeEntityRef},
+	}})
+	// TypeParameter: a type parameter on a generic declaration
+	RegisterRelation(RelationDef{Name: "TypeParameter", Version: 3, Columns: []ColumnDef{
+		{Name: "declId", Type: TypeEntityRef},
+		{Name: "idx", Type: TypeInt32},
+		{Name: "name", Type: TypeString},
+		{Name: "constraintTypeId", Type: TypeEntityRef},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},
