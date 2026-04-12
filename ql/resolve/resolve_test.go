@@ -238,6 +238,173 @@ func TestUndefinedClassInExtends(t *testing.T) {
 	hasError(t, rm, "undefined type")
 }
 
+// ---- Deprecated annotation warnings ----
+
+// TestDeprecatedPredicateWarning: calling a deprecated predicate emits a warning.
+func TestDeprecatedPredicateWarning(t *testing.T) {
+	body := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Name:        "oldPred",
+		Args:        []ast.Expr{},
+	})
+	mod := &ast.Module{
+		Predicates: []ast.PredicateDecl{
+			{
+				Name: "oldPred",
+				Annotations: []ast.Annotation{
+					{Name: "deprecated"},
+				},
+				Span: span(),
+			},
+			{
+				Name: "caller",
+				Body: &body,
+				Span: span(),
+			},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning, got none")
+	}
+	found := false
+	for _, w := range rm.Warnings {
+		if strings.Contains(w.Message, "oldPred") && strings.Contains(w.Message, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning oldPred and deprecated, got: %v", rm.Warnings)
+	}
+}
+
+// TestDeprecatedClassWarning: referencing a deprecated class emits a warning.
+func TestDeprecatedClassWarning(t *testing.T) {
+	mod := &ast.Module{
+		Classes: []ast.ClassDecl{
+			{
+				Name: "OldClass",
+				Annotations: []ast.Annotation{
+					{Name: "deprecated"},
+				},
+				Span: span(),
+			},
+			{
+				Name:       "NewClass",
+				SuperTypes: []ast.TypeRef{typeRef("OldClass")},
+				Span:       span(),
+			},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning, got none")
+	}
+	found := false
+	for _, w := range rm.Warnings {
+		if strings.Contains(w.Message, "OldClass") && strings.Contains(w.Message, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning OldClass and deprecated, got: %v", rm.Warnings)
+	}
+}
+
+// TestDeprecatedMemberWarning: calling a deprecated member emits a warning.
+func TestDeprecatedMemberWarning(t *testing.T) {
+	rt := typeRef("string")
+	fooClass := ast.ClassDecl{
+		Name: "Foo",
+		Members: []ast.MemberDecl{
+			{
+				Name:       "oldMethod",
+				ReturnType: &rt,
+				Annotations: []ast.Annotation{
+					{Name: "deprecated"},
+				},
+				Span: span(),
+			},
+		},
+		Span: span(),
+	}
+	xVar := varExpr("x")
+	mc := &ast.MethodCall{
+		BaseExpr: ast.BaseExpr{Span: span()},
+		Recv:     xVar,
+		Method:   "oldMethod",
+	}
+	resultVar := varExpr("result")
+	predBody := ast.Formula(&ast.Comparison{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Left:        resultVar,
+		Right:       mc,
+		Op:          "=",
+	})
+	prt := typeRef("string")
+	pred := ast.PredicateDecl{
+		Name:       "p",
+		ReturnType: &prt,
+		Params: []ast.ParamDecl{
+			{Type: typeRef("Foo"), Name: "x", Span: span()},
+		},
+		Body: &predBody,
+		Span: span(),
+	}
+	mod := &ast.Module{
+		Classes:    []ast.ClassDecl{fooClass},
+		Predicates: []ast.PredicateDecl{pred},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning, got none")
+	}
+	found := false
+	for _, w := range rm.Warnings {
+		if strings.Contains(w.Message, "oldMethod") && strings.Contains(w.Message, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning oldMethod and deprecated, got: %v", rm.Warnings)
+	}
+}
+
+// TestNoWarningForUndeprecated: no deprecated annotation means no warnings.
+func TestNoWarningForUndeprecated(t *testing.T) {
+	body := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Name:        "normalPred",
+		Args:        []ast.Expr{},
+	})
+	mod := &ast.Module{
+		Predicates: []ast.PredicateDecl{
+			{Name: "normalPred", Span: span()},
+			{Name: "caller", Body: &body, Span: span()},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) != 0 {
+		t.Errorf("expected no warnings, got %d: %v", len(rm.Warnings), rm.Warnings)
+	}
+}
+
 // Variable not bound by exists/forall → ResolveError.
 func TestUnboundVariable(t *testing.T) {
 	unbound := varExpr("x")

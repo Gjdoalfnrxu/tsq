@@ -14,6 +14,18 @@ type ResolvedModule struct {
 	Env         *Environment
 	Annotations *Annotations
 	Errors      []Error
+	Warnings    []Warning
+}
+
+// Warning describes a non-fatal resolution warning (e.g. deprecated usage).
+type Warning struct {
+	Pos     ast.Span
+	Message string
+}
+
+// String formats the warning with file:line:col prefix.
+func (w Warning) String() string {
+	return fmt.Sprintf("%s:%d:%d: warning: %s", w.Pos.File, w.Pos.StartLine, w.Pos.StartCol, w.Message)
 }
 
 // Environment holds all top-level declarations in scope.
@@ -67,10 +79,11 @@ var primitiveTypes = map[string]bool{
 
 // resolver is the internal state for a resolution pass.
 type resolver struct {
-	env    *Environment
-	ann    *Annotations
-	errors []Error
-	mod    *ast.Module
+	env      *Environment
+	ann      *Annotations
+	errors   []Error
+	warnings []Warning
+	mod      *ast.Module
 }
 
 // Resolve performs name resolution on mod.
@@ -106,6 +119,7 @@ func Resolve(mod *ast.Module, importLoader func(path string) (*ast.Module, error
 		Env:         env,
 		Annotations: ann,
 		Errors:      r.errors,
+		Warnings:    r.warnings,
 	}
 	return rm, nil
 }
@@ -116,6 +130,24 @@ func (r *resolver) errorf(span ast.Span, format string, args ...interface{}) {
 		Pos:     span,
 		Message: fmt.Sprintf(format, args...),
 	})
+}
+
+// warnf records a non-fatal warning.
+func (r *resolver) warnf(span ast.Span, format string, args ...interface{}) {
+	r.warnings = append(r.warnings, Warning{
+		Pos:     span,
+		Message: fmt.Sprintf(format, args...),
+	})
+}
+
+// isDeprecated returns true if annotations contain a "deprecated" entry.
+func isDeprecated(anns []ast.Annotation) bool {
+	for _, a := range anns {
+		if a.Name == "deprecated" {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Pass 0: imports ----
@@ -360,8 +392,13 @@ func (r *resolver) resolveTypeRef(tr ast.TypeRef) {
 	if strings.HasPrefix(name, "@") {
 		return
 	}
-	if _, ok := r.env.Classes[name]; !ok {
+	cd, ok := r.env.Classes[name]
+	if !ok {
 		r.errorf(tr.Span, "undefined type %q", name)
+		return
+	}
+	if isDeprecated(cd.Annotations) {
+		r.warnf(tr.Span, "reference to deprecated class %q", name)
 	}
 }
 
@@ -449,8 +486,11 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 		recvType := r.exprType(pc.Recv, s)
 		if recvType != "" {
 			if cd, ok := r.env.Classes[recvType]; ok {
-				if md := r.lookupMember(cd, pc.Name); md == nil {
+				md := r.lookupMember(cd, pc.Name)
+				if md == nil {
 					r.errorf(pc.GetSpan(), "class %q has no member %q", recvType, pc.Name)
+				} else if isDeprecated(md.Annotations) {
+					r.warnf(pc.GetSpan(), "call to deprecated member %q on class %q", pc.Name, recvType)
 				}
 			}
 		}
@@ -460,8 +500,11 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 		return
 	}
 	// Bare call — look up in predicates.
-	if _, ok := r.env.Predicates[pc.Name]; !ok {
+	pd, ok := r.env.Predicates[pc.Name]
+	if !ok {
 		r.errorf(pc.GetSpan(), "undefined predicate %q", pc.Name)
+	} else if isDeprecated(pd.Annotations) {
+		r.warnf(pc.GetSpan(), "call to deprecated predicate %q", pc.Name)
 	}
 	for _, arg := range pc.Args {
 		r.resolveExpr(arg, s)
@@ -544,6 +587,9 @@ func (r *resolver) resolveMethodCall(mc *ast.MethodCall, s *scope) {
 				r.ann.ExprResolutions[mc] = &Resolution{
 					DeclClass:  defClass,
 					DeclMember: md,
+				}
+				if md != nil && isDeprecated(md.Annotations) {
+					r.warnf(mc.GetSpan(), "call to deprecated member %q on class %q", mc.Method, defClass.Name)
 				}
 			} else {
 				r.errorf(mc.GetSpan(), "class %q has no member %q", recvType, mc.Method)
