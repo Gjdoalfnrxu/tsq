@@ -112,6 +112,16 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 	id := tw.fw.nid(node)
 
 	if IsFunctionKind(kind) {
+		// Emit FunctionContains for the function node *before* pushing it
+		// onto fnStack, so that nested function literals are linked to
+		// their lexically enclosing parent function. Without this, the
+		// innermost-only semantics of FunctionContains would emit
+		// `FunctionContains(innerFn, innerFn)` (a self-row) and never
+		// `FunctionContains(outerFn, innerFn)`, breaking transitive
+		// queries like `functionContainsStar` in tsq_react.qll.
+		if len(tw.fnStack) > 0 {
+			tw.fw.emit("FunctionContains", tw.fnStack[len(tw.fnStack)-1], id)
+		}
 		tw.pushFunction(node, id)
 	}
 	switch kind {
@@ -133,8 +143,11 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		tw.emitSymInFunction(node)
 	}
 
-	// FunctionContains: any node inside a function body
-	if len(tw.fnStack) > 0 {
+	// FunctionContains: any node inside a function body. Function nodes
+	// themselves are emitted above, before being pushed onto fnStack, so
+	// they link to their parent function rather than themselves. Skip
+	// re-emitting here for function kinds to avoid the self-row.
+	if !IsFunctionKind(kind) && len(tw.fnStack) > 0 {
 		tw.fw.emit("FunctionContains", tw.fnStack[len(tw.fnStack)-1], id)
 	}
 }

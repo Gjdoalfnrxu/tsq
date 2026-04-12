@@ -9,14 +9,14 @@ import (
 // parallelBootstrap evaluates rules concurrently, grouping by head predicate.
 // Rules with different head predicates run in parallel; rules with the same
 // head predicate run sequentially within their group to avoid data races on
-// the shared Relation.
+// the shared Relation. Grouping is by (name, arity) — same-name different-arity
+// heads are independent and merge into independent relations.
 func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) map[string]*Relation {
-	// Group rules by head predicate.
 	groups := groupByHead(rules)
 
-	// Collect results per group, then merge.
 	type groupResult struct {
-		pred   string
+		key    string // (name, arity) key
+		name   string
 		tuples []Tuple
 	}
 
@@ -24,34 +24,31 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) m
 	var wg sync.WaitGroup
 
 	i := 0
-	for pred, groupRules := range groups {
+	for gk, groupRules := range groups {
 		wg.Add(1)
-		go func(idx int, p string, rs []plan.PlannedRule) {
+		go func(idx int, k string, rs []plan.PlannedRule) {
 			defer wg.Done()
 			var tuples []Tuple
-			// Take a read-only snapshot of allRels for this group.
-			// Each group reads from the shared allRels (safe: read-only at this point).
 			for _, rule := range rs {
 				newTuples := Rule(rule, allRels)
 				tuples = append(tuples, newTuples...)
 			}
-			results[idx] = groupResult{pred: p, tuples: tuples}
-		}(i, pred, groupRules)
+			results[idx] = groupResult{key: k, name: rs[0].Head.Predicate, tuples: tuples}
+		}(i, gk, groupRules)
 		i++
 	}
 
 	wg.Wait()
 
-	// Merge results into delta relations.
 	deltaRels := make(map[string]*Relation)
 	for _, gr := range results {
-		headRel := allRels[gr.pred]
+		headRel := allRels[gr.key]
 		for _, t := range gr.tuples {
 			if headRel.Add(t) {
-				dr, ok := deltaRels[gr.pred]
+				dr, ok := deltaRels[gr.key]
 				if !ok {
-					dr = NewRelation(gr.pred, headRel.Arity)
-					deltaRels[gr.pred] = dr
+					dr = NewRelation(gr.name, headRel.Arity)
+					deltaRels[gr.key] = dr
 				}
 				dr.Add(t)
 			}
@@ -60,12 +57,13 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) m
 	return deltaRels
 }
 
-// parallelDelta evaluates delta rules concurrently, grouping by head predicate.
+// parallelDelta evaluates delta rules concurrently, grouping by head (name, arity).
 func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, deltaRels map[string]*Relation) map[string]*Relation {
 	groups := groupByHead(rules)
 
 	type groupResult struct {
-		pred   string
+		key    string
+		name   string
 		tuples []Tuple
 	}
 
@@ -73,17 +71,17 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 	var wg sync.WaitGroup
 
 	i := 0
-	for pred, groupRules := range groups {
+	for gk, groupRules := range groups {
 		wg.Add(1)
-		go func(idx int, p string, rs []plan.PlannedRule) {
+		go func(idx int, k string, rs []plan.PlannedRule) {
 			defer wg.Done()
 			var tuples []Tuple
 			for _, rule := range rs {
 				newTuples := RuleDelta(rule, allRels, deltaRels)
 				tuples = append(tuples, newTuples...)
 			}
-			results[idx] = groupResult{pred: p, tuples: tuples}
-		}(i, pred, groupRules)
+			results[idx] = groupResult{key: k, name: rs[0].Head.Predicate, tuples: tuples}
+		}(i, gk, groupRules)
 		i++
 	}
 
@@ -91,13 +89,13 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 
 	nextDelta := make(map[string]*Relation)
 	for _, gr := range results {
-		headRel := allRels[gr.pred]
+		headRel := allRels[gr.key]
 		for _, t := range gr.tuples {
 			if headRel.Add(t) {
-				dr, ok := nextDelta[gr.pred]
+				dr, ok := nextDelta[gr.key]
 				if !ok {
-					dr = NewRelation(gr.pred, headRel.Arity)
-					nextDelta[gr.pred] = dr
+					dr = NewRelation(gr.name, headRel.Arity)
+					nextDelta[gr.key] = dr
 				}
 				dr.Add(t)
 			}
@@ -106,12 +104,14 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 	return nextDelta
 }
 
-// groupByHead groups planned rules by their head predicate name.
+// groupByHead groups planned rules by their head (name, arity) key.
+// Two rules with the same head name but different arities form separate
+// groups, so the eval engine never conflates them.
 func groupByHead(rules []plan.PlannedRule) map[string][]plan.PlannedRule {
 	groups := make(map[string][]plan.PlannedRule)
 	for _, rule := range rules {
-		pred := rule.Head.Predicate
-		groups[pred] = append(groups[pred], rule)
+		k := relKey(rule.Head.Predicate, len(rule.Head.Args))
+		groups[k] = append(groups[k], rule)
 	}
 	return groups
 }

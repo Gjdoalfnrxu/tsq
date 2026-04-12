@@ -54,7 +54,7 @@ func TestAggCount(t *testing.T) {
 		IntVal{1}, IntVal{30},
 		IntVal{2}, IntVal{40},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
 	result := Aggregate(agg, rels)
@@ -80,7 +80,7 @@ func TestAggCount(t *testing.T) {
 // TestAggCountNoGroup tests count with no group-by.
 func TestAggCountNoGroup(t *testing.T) {
 	rel := makeRelation("R", 1, IntVal{1}, IntVal{2}, IntVal{3})
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "x", nil, "count", "cnt")
 	result := Aggregate(agg, rels)
@@ -101,7 +101,7 @@ func TestAggMin(t *testing.T) {
 		IntVal{1}, IntVal{10},
 		IntVal{1}, IntVal{30},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "min", "minv")
 	result := Aggregate(agg, rels)
@@ -122,7 +122,7 @@ func TestAggMax(t *testing.T) {
 		IntVal{1}, IntVal{100},
 		IntVal{1}, IntVal{42},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "max", "maxv")
 	result := Aggregate(agg, rels)
@@ -143,7 +143,7 @@ func TestAggSum(t *testing.T) {
 		IntVal{1}, IntVal{20},
 		IntVal{2}, IntVal{5},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "sum", "sumv")
 	result := Aggregate(agg, rels)
@@ -170,7 +170,7 @@ func TestAggAvg(t *testing.T) {
 		IntVal{1}, IntVal{20},
 		IntVal{1}, IntVal{30},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "avg", "avgv")
 	result := Aggregate(agg, rels)
@@ -187,7 +187,7 @@ func TestAggAvg(t *testing.T) {
 // TestAggEmptyInput tests aggregates over empty input.
 func TestAggEmptyInput(t *testing.T) {
 	rel := NewRelation("R", 2)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
 	result := Aggregate(agg, rels)
@@ -207,7 +207,7 @@ func TestAggStrictcount(t *testing.T) {
 		IntVal{1}, IntVal{20},
 		IntVal{2}, IntVal{30},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
 	result := Aggregate(agg, rels)
@@ -230,7 +230,7 @@ func TestAggStrictcount(t *testing.T) {
 // TestAggStrictcountEmpty tests strictcount returns no result for empty set.
 func TestAggStrictcountEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
 	result := Aggregate(agg, rels)
@@ -246,7 +246,7 @@ func TestAggStrictsum(t *testing.T) {
 		IntVal{1}, IntVal{10},
 		IntVal{1}, IntVal{20},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
 	result := Aggregate(agg, rels)
@@ -263,7 +263,7 @@ func TestAggStrictsum(t *testing.T) {
 // TestAggStrictsumEmpty tests strictsum returns no result for empty set.
 func TestAggStrictsumEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
 	result := Aggregate(agg, rels)
@@ -279,7 +279,7 @@ func TestAggConcat(t *testing.T) {
 		IntVal{1}, StrVal{"hello"},
 		IntVal{1}, StrVal{"world"},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "concat", "cval")
 	result := Aggregate(agg, rels)
@@ -301,7 +301,7 @@ func TestAggRank(t *testing.T) {
 		IntVal{1}, IntVal{20},
 		IntVal{1}, IntVal{30},
 	)
-	rels := map[string]*Relation{"R": rel}
+	rels := RelsOf(rel)
 
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
 	result := Aggregate(agg, rels)

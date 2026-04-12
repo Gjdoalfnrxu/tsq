@@ -132,7 +132,16 @@ func NewRelation(name string, arity int) *Relation {
 
 // Add adds a tuple to the relation. Returns true if the tuple was new (actually added).
 // Not safe for concurrent use — callers must serialize writes.
+//
+// Add panics if len(t) != r.Arity. This is a deliberate loud guard:
+// silently accepting an off-arity tuple is how the eval engine arity-shadow
+// bug went undetected (a 1-arity head being written into a 3-arity base
+// relation produced cartesian-style overmatch in later joins).
+// See ql/eval/relkey.go and the regression test in relation_test.go.
 func (r *Relation) Add(t Tuple) bool {
+	if len(t) != r.Arity {
+		panic(fmt.Sprintf("eval.Relation.Add: arity mismatch for relation %q: relation arity=%d, tuple arity=%d", r.Name, r.Arity, len(t)))
+	}
 	k := tupleKey(t)
 	if _, exists := r.set[k]; exists {
 		return false

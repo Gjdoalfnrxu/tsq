@@ -49,10 +49,11 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 	}
 
 	// allRels starts with base facts; derived relations are added as we go.
-	allRels := make(map[string]*Relation, len(baseRels))
-	for k, v := range baseRels {
-		allRels[k] = v
-	}
+	// The map is keyed by (name, arity) via relKey() to ensure that a
+	// rule head whose arity differs from a base relation of the same name
+	// (the QL bridge class characteristic predicate case) does NOT shadow
+	// the base relation. See ql/eval/relkey.go for the rationale.
+	allRels := keyRels(baseRels)
 
 	for si, stratum := range execPlan.Strata {
 		if err := ctx.Err(); err != nil {
@@ -62,8 +63,10 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		// Ensure head relations exist.
 		for _, rule := range stratum.Rules {
 			headName := rule.Head.Predicate
-			if _, ok := allRels[headName]; !ok {
-				allRels[headName] = NewRelation(headName, len(rule.Head.Args))
+			headArity := len(rule.Head.Args)
+			hk := relKey(headName, headArity)
+			if _, ok := allRels[hk]; !ok {
+				allRels[hk] = NewRelation(headName, headArity)
 			}
 		}
 
@@ -75,15 +78,17 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 			deltaRels = make(map[string]*Relation)
 			for _, rule := range stratum.Rules {
 				headName := rule.Head.Predicate
-				headRel := allRels[headName]
+				headArity := len(rule.Head.Args)
+				hk := relKey(headName, headArity)
+				headRel := allRels[hk]
 
 				newTuples := Rule(rule, allRels)
 				for _, t := range newTuples {
 					if headRel.Add(t) {
-						dr, ok := deltaRels[headName]
+						dr, ok := deltaRels[hk]
 						if !ok {
 							dr = NewRelation(headName, headRel.Arity)
-							deltaRels[headName] = dr
+							deltaRels[hk] = dr
 						}
 						dr.Add(t)
 					}
@@ -123,15 +128,17 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				nextDelta := make(map[string]*Relation)
 				for _, rule := range stratum.Rules {
 					headName := rule.Head.Predicate
-					headRel := allRels[headName]
+					headArity := len(rule.Head.Args)
+					hk := relKey(headName, headArity)
+					headRel := allRels[hk]
 
 					newTuples := RuleDelta(rule, allRels, deltaRels)
 					for _, t := range newTuples {
 						if headRel.Add(t) {
-							dr, ok := nextDelta[headName]
+							dr, ok := nextDelta[hk]
 							if !ok {
 								dr = NewRelation(headName, headRel.Arity)
-								nextDelta[headName] = dr
+								nextDelta[hk] = dr
 							}
 							dr.Add(t)
 						}
@@ -144,7 +151,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		// Evaluate aggregates after fixpoint.
 		for _, agg := range stratum.Aggregates {
 			resultRel := Aggregate(agg, allRels)
-			allRels[agg.ResultRelation] = resultRel
+			allRels[relKey(resultRel.Name, resultRel.Arity)] = resultRel
 		}
 	}
 

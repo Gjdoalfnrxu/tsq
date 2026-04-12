@@ -74,7 +74,7 @@ func TestEvalRuleTwoRelationJoin(t *testing.T) {
 		IntVal{2}, IntVal{3},
 		IntVal{3}, IntVal{4},
 	)
-	rels := map[string]*Relation{"Edge": edge}
+	rels := RelsOf(edge)
 
 	rule := plan.PlannedRule{
 		Head: head("Path", v("x"), v("z")),
@@ -104,7 +104,7 @@ func TestEvalRuleThreeRelationJoin(t *testing.T) {
 	R := makeRelation("R", 2, IntVal{1}, IntVal{2})
 	S := makeRelation("S", 2, IntVal{2}, IntVal{3})
 	T := makeRelation("T", 2, IntVal{3}, IntVal{4})
-	rels := map[string]*Relation{"R": R, "S": S, "T": T}
+	rels := RelsOf(R, S, T)
 
 	rule := plan.PlannedRule{
 		Head: head("Q", v("x"), v("w")),
@@ -129,7 +129,7 @@ func TestEvalRuleThreeRelationJoin(t *testing.T) {
 func TestEvalRuleNoMatch(t *testing.T) {
 	A := makeRelation("A", 2, IntVal{1}, IntVal{2})
 	B := makeRelation("B", 2, IntVal{99}, IntVal{100})
-	rels := map[string]*Relation{"A": A, "B": B}
+	rels := RelsOf(A, B)
 
 	rule := plan.PlannedRule{
 		Head: head("Q", v("x"), v("z")),
@@ -153,7 +153,7 @@ func TestEvalRuleComparisonFilter(t *testing.T) {
 		IntVal{3}, IntVal{30},
 		IntVal{4}, IntVal{40},
 	)
-	rels := map[string]*Relation{"R": R}
+	rels := RelsOf(R)
 
 	rule := plan.PlannedRule{
 		Head: head("Q", v("x"), v("y")),
@@ -175,7 +175,7 @@ func TestEvalRuleSelfJoin(t *testing.T) {
 		IntVal{1}, IntVal{2},
 		IntVal{2}, IntVal{3},
 	)
-	rels := map[string]*Relation{"Edge": edge}
+	rels := RelsOf(edge)
 
 	rule := plan.PlannedRule{
 		Head: head("Q", v("x"), v("y")),
@@ -196,7 +196,7 @@ func TestEvalRuleSelfJoin(t *testing.T) {
 func TestEvalRuleAntiJoin(t *testing.T) {
 	A := makeRelation("A", 1, IntVal{1}, IntVal{2}, IntVal{3})
 	B := makeRelation("B", 1, IntVal{2})
-	rels := map[string]*Relation{"A": A, "B": B}
+	rels := RelsOf(A, B)
 
 	rule := plan.PlannedRule{
 		Head: head("Q", v("x")),
