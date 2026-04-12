@@ -121,6 +121,20 @@ func (d *desugarer) run() (*datalog.Program, []error) {
 			if imp == nil || imp.AST == nil {
 				continue
 			}
+			// Merge annotations from imported module so that
+			// ExprResolutions / VarBindings are available during desugaring.
+			if imp.Annotations != nil {
+				for k, v := range imp.Annotations.ExprResolutions {
+					if _, exists := d.ann.ExprResolutions[k]; !exists {
+						d.ann.ExprResolutions[k] = v
+					}
+				}
+				for k, v := range imp.Annotations.VarBindings {
+					if _, exists := d.ann.VarBindings[k]; !exists {
+						d.ann.VarBindings[k] = v
+					}
+				}
+			}
 			for i := range imp.AST.Classes {
 				cd := &imp.AST.Classes[i]
 				rules := d.desugarClass(cd)
@@ -129,6 +143,10 @@ func (d *desugarer) run() (*datalog.Program, []error) {
 			for i := range imp.AST.Predicates {
 				pd := &imp.AST.Predicates[i]
 				rules := d.desugarTopLevelPredicate(pd)
+				prog.Rules = append(prog.Rules, rules...)
+			}
+			for i := range imp.AST.Modules {
+				rules := d.desugarModuleDecl(&imp.AST.Modules[i], "")
 				prog.Rules = append(prog.Rules, rules...)
 			}
 		}

@@ -27,6 +27,41 @@ module TaintTracking {
         predicate isAdditionalTaintStep(int node1, int node2) { none() }
 
         /**
+         * Holds if there is a sanitizer on the taint path from `source` to `sink`,
+         * excluding the endpoints themselves.
+         */
+        predicate sanitizerOnPath(int source, int sink) {
+            exists(int mid |
+                this.isSanitizer(mid) and
+                mid != source and mid != sink and
+                TaintAlert(source, mid, _, _) and
+                TaintAlert(mid, sink, _, _)
+            )
+        }
+
+        /**
+         * Holds if taint flows from `source` to `sink` via taint alert edges only,
+         * with no sanitizer nodes on the path.
+         */
+        predicate flowViaTaintAlert(int source, int sink) {
+            TaintAlert(source, sink, _, _) and
+            not this.sanitizerOnPath(source, sink)
+        }
+
+        /**
+         * Holds if taint flows from `source` to `sink` via an additional taint step.
+         */
+        predicate flowViaAdditionalStep(int source, int sink) {
+            exists(int mid1, int mid2 |
+                this.isAdditionalTaintStep(mid1, mid2) and
+                not this.isSanitizer(mid1) and
+                not this.isSanitizer(mid2) and
+                (source = mid1 or TaintAlert(source, mid1, _, _)) and
+                (mid2 = sink or TaintAlert(mid2, sink, _, _))
+            )
+        }
+
+        /**
          * Holds if taint flows from `source` to `sink` in this configuration.
          * Sanitizers are checked at every node on the path (not just endpoints).
          * Additional taint steps defined by isAdditionalTaintStep are consulted
@@ -40,23 +75,9 @@ module TaintTracking {
             (
                 source = sink
                 or
-                (
-                    TaintAlert(source, sink, _, _) and
-                    not exists(int mid |
-                        this.isSanitizer(mid) and
-                        mid != source and mid != sink and
-                        TaintAlert(source, mid, _, _) and
-                        TaintAlert(mid, sink, _, _)
-                    )
-                )
+                this.flowViaTaintAlert(source, sink)
                 or
-                exists(int mid1, int mid2 |
-                    this.isAdditionalTaintStep(mid1, mid2) and
-                    not this.isSanitizer(mid1) and
-                    not this.isSanitizer(mid2) and
-                    (source = mid1 or TaintAlert(source, mid1, _, _)) and
-                    (mid2 = sink or TaintAlert(mid2, sink, _, _))
-                )
+                this.flowViaAdditionalStep(source, sink)
             )
         }
 
@@ -74,23 +95,9 @@ module TaintTracking {
             (
                 source = sink
                 or
-                (
-                    TaintAlert(source, sink, _, _) and
-                    not exists(int mid |
-                        this.isSanitizer(mid) and
-                        mid != source and mid != sink and
-                        TaintAlert(source, mid, _, _) and
-                        TaintAlert(mid, sink, _, _)
-                    )
-                )
+                this.flowViaTaintAlert(source, sink)
                 or
-                exists(int mid1, int mid2 |
-                    this.isAdditionalTaintStep(mid1, mid2) and
-                    not this.isSanitizer(mid1) and
-                    not this.isSanitizer(mid2) and
-                    (source = mid1 or TaintAlert(source, mid1, _, _)) and
-                    (mid2 = sink or TaintAlert(mid2, sink, _, _))
-                )
+                this.flowViaAdditionalStep(source, sink)
             )
         }
     }

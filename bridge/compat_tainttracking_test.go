@@ -167,6 +167,9 @@ func TestTaintTrackingConfigurationHasFlowMembers(t *testing.T) {
 		"isSink":                false,
 		"isSanitizer":           false,
 		"isAdditionalTaintStep": false,
+		"sanitizerOnPath":       false,
+		"flowViaTaintAlert":     false,
+		"flowViaAdditionalStep": false,
 		"hasFlow":               false,
 		"hasFlowPath":           false,
 	}

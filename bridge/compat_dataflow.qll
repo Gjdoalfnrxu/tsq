@@ -55,6 +55,41 @@ module DataFlow {
         predicate isAdditionalFlowStep(Node pred, Node succ) { none() }
 
         /**
+         * Holds if there is a barrier node on the path from `source` to `sink`,
+         * excluding the endpoints themselves.
+         */
+        predicate barrierOnPath(Node source, Node sink) {
+            exists(Node mid |
+                this.isBarrier(mid) and
+                mid != source and mid != sink and
+                exists(int fn1 | LocalFlowStar(fn1, source, mid)) and
+                exists(int fn2 | LocalFlowStar(fn2, mid, sink))
+            )
+        }
+
+        /**
+         * Holds if data flows from `source` to `sink` via local flow edges only,
+         * with no barrier nodes on the path.
+         */
+        predicate flowViaLocalFlow(Node source, Node sink) {
+            exists(int fnId | LocalFlowStar(fnId, source, sink)) and
+            not this.barrierOnPath(source, sink)
+        }
+
+        /**
+         * Holds if data flows from `source` to `sink` via an additional flow step.
+         */
+        predicate flowViaAdditionalStep(Node source, Node sink) {
+            exists(Node mid1, Node mid2 |
+                this.isAdditionalFlowStep(mid1, mid2) and
+                not this.isBarrier(mid1) and
+                not this.isBarrier(mid2) and
+                (source = mid1 or exists(int fn | LocalFlowStar(fn, source, mid1))) and
+                (mid2 = sink or exists(int fn | LocalFlowStar(fn, mid2, sink)))
+            )
+        }
+
+        /**
          * Holds if data flows from `source` to `sink` in this configuration.
          * Barriers are checked at every node on the path (not just endpoints).
          * Additional flow steps defined by isAdditionalFlowStep are consulted
@@ -68,23 +103,9 @@ module DataFlow {
             (
                 source = sink
                 or
-                (
-                    exists(int fnId | LocalFlowStar(fnId, source, sink)) and
-                    not exists(Node mid |
-                        this.isBarrier(mid) and
-                        mid != source and mid != sink and
-                        exists(int fn1 | LocalFlowStar(fn1, source, mid)) and
-                        exists(int fn2 | LocalFlowStar(fn2, mid, sink))
-                    )
-                )
+                this.flowViaLocalFlow(source, sink)
                 or
-                exists(Node mid1, Node mid2 |
-                    this.isAdditionalFlowStep(mid1, mid2) and
-                    not this.isBarrier(mid1) and
-                    not this.isBarrier(mid2) and
-                    (source = mid1 or exists(int fn | LocalFlowStar(fn, source, mid1))) and
-                    (mid2 = sink or exists(int fn | LocalFlowStar(fn, mid2, sink)))
-                )
+                this.flowViaAdditionalStep(source, sink)
             )
         }
 
@@ -102,23 +123,9 @@ module DataFlow {
             (
                 source = sink
                 or
-                (
-                    exists(int fnId | LocalFlowStar(fnId, source, sink)) and
-                    not exists(Node mid |
-                        this.isBarrier(mid) and
-                        mid != source and mid != sink and
-                        exists(int fn1 | LocalFlowStar(fn1, source, mid)) and
-                        exists(int fn2 | LocalFlowStar(fn2, mid, sink))
-                    )
-                )
+                this.flowViaLocalFlow(source, sink)
                 or
-                exists(Node mid1, Node mid2 |
-                    this.isAdditionalFlowStep(mid1, mid2) and
-                    not this.isBarrier(mid1) and
-                    not this.isBarrier(mid2) and
-                    (source = mid1 or exists(int fn | LocalFlowStar(fn, source, mid1))) and
-                    (mid2 = sink or exists(int fn | LocalFlowStar(fn, mid2, sink)))
-                )
+                this.flowViaAdditionalStep(source, sink)
             )
         }
     }

@@ -169,12 +169,15 @@ func TestDataFlowConfigurationHasFlowMembers(t *testing.T) {
 	}
 
 	expectedMembers := map[string]bool{
-		"isSource":             false,
-		"isSink":               false,
-		"isBarrier":            false,
-		"isAdditionalFlowStep": false,
-		"hasFlow":              false,
-		"hasFlowPath":          false,
+		"isSource":              false,
+		"isSink":                false,
+		"isBarrier":             false,
+		"isAdditionalFlowStep":  false,
+		"barrierOnPath":         false,
+		"flowViaLocalFlow":      false,
+		"flowViaAdditionalStep": false,
+		"hasFlow":               false,
+		"hasFlowPath":           false,
 	}
 	for _, m := range cfgClass.Members {
 		if _, want := expectedMembers[m.Name]; want {
