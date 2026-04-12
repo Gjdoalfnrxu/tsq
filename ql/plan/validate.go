@@ -13,6 +13,16 @@ import (
 func ValidateRule(rule datalog.Rule) []error {
 	var errs []error
 
+	// Rules containing `not _none()` come from abstract class default methods.
+	// These produce head variables that are intentionally unbound — skip validation.
+	for _, lit := range rule.Body {
+		if !lit.Positive && lit.Cmp == nil && lit.Agg == nil {
+			if strings.HasPrefix(lit.Atom.Predicate, "_none") {
+				return nil
+			}
+		}
+	}
+
 	// Collect variables bound by positive body literals and aggregate result vars.
 	positiveVars := map[string]bool{}
 	for _, lit := range rule.Body {
@@ -48,9 +58,14 @@ func ValidateRule(rule datalog.Rule) []error {
 		}
 	}
 
-	// Propagate bindings through equality comparisons: if one side of an
-	// equality is already bound, the other side becomes bound too. Iterate
-	// until no new bindings are found (handles transitive chains like a=b, b=c).
+	// Propagate bindings through equality comparisons.
+	hasPositiveAtom := false
+	for _, lit := range rule.Body {
+		if lit.Cmp == nil && lit.Agg == nil && lit.Positive {
+			hasPositiveAtom = true
+			break
+		}
+	}
 	changed := true
 	for changed {
 		changed = false
@@ -69,6 +84,11 @@ func ValidateRule(rule datalog.Rule) []error {
 			}
 			if rBound && lok && !positiveVars[lv.Name] {
 				positiveVars[lv.Name] = true
+				changed = true
+			}
+			if !hasPositiveAtom && lok && rok && !positiveVars[lv.Name] && !positiveVars[rv.Name] {
+				positiveVars[lv.Name] = true
+				positiveVars[rv.Name] = true
 				changed = true
 			}
 		}
