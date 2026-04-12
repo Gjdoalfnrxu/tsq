@@ -294,8 +294,8 @@ func TestAggConcat(t *testing.T) {
 	}
 }
 
-// TestAggRank tests rank aggregate (v1 approximation).
-func TestAggRank(t *testing.T) {
+// TestRankOrdinal tests that rank returns ordinal positions 1,2,3 not group size.
+func TestRankOrdinal(t *testing.T) {
 	rel := makeRelation("R", 2,
 		IntVal{1}, IntVal{10},
 		IntVal{1}, IntVal{20},
@@ -306,11 +306,70 @@ func TestAggRank(t *testing.T) {
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
 	result := Aggregate(agg, rels)
 
-	if result.Len() != 1 {
-		t.Fatalf("expected 1 group, got %d", result.Len())
+	// rank should emit 3 tuples (one per value) with ranks 1, 2, 3
+	if result.Len() != 3 {
+		t.Fatalf("expected 3 tuples (one per value), got %d", result.Len())
 	}
-	rval := result.Tuples()[0][1].(IntVal).V
-	if rval != 3 {
-		t.Errorf("expected rank=3 (v1 approximation = count), got %d", rval)
+
+	rankSet := map[int64]bool{}
+	for _, row := range result.Tuples() {
+		groupVal := row[0].(IntVal).V
+		if groupVal != 1 {
+			t.Errorf("unexpected group key %d", groupVal)
+		}
+		rankVal := row[1].(IntVal).V
+		rankSet[rankVal] = true
+	}
+	for _, expected := range []int64{1, 2, 3} {
+		if !rankSet[expected] {
+			t.Errorf("expected rank %d in result, got ranks %v", expected, rankSet)
+		}
+	}
+}
+
+// TestRankWithTies tests dense ranking: tied values share the same rank,
+// next distinct value gets rank+1 (no gaps). Since Relations are sets,
+// duplicate (group, rank) tuples are collapsed — the result contains
+// the distinct rank values.
+func TestRankWithTies(t *testing.T) {
+	rel := makeRelation("R", 2,
+		IntVal{1}, IntVal{10},
+		IntVal{1}, IntVal{20},
+		IntVal{1}, IntVal{20},
+		IntVal{1}, IntVal{30},
+	)
+	rels := RelsOf(rel)
+
+	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
+	result := Aggregate(agg, rels)
+
+	// Dense ranking: 10→1, 20→2, 20→2, 30→3.
+	// After set dedup, 3 distinct tuples: (1,1), (1,2), (1,3).
+	if result.Len() != 3 {
+		t.Fatalf("expected 3 distinct rank tuples for ties, got %d", result.Len())
+	}
+
+	rankSet := map[int64]bool{}
+	for _, row := range result.Tuples() {
+		rankVal := row[1].(IntVal).V
+		rankSet[rankVal] = true
+	}
+	for _, expected := range []int64{1, 2, 3} {
+		if !rankSet[expected] {
+			t.Errorf("expected rank %d in result, got ranks %v", expected, rankSet)
+		}
+	}
+}
+
+// TestRankEmptyGroup tests that rank over an empty set yields no rows.
+func TestRankEmptyGroup(t *testing.T) {
+	rel := NewRelation("R", 2)
+	rels := RelsOf(rel)
+
+	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
+	result := Aggregate(agg, rels)
+
+	if result.Len() != 0 {
+		t.Errorf("expected 0 results for empty rank input, got %d", result.Len())
 	}
 }

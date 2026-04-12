@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -77,6 +78,26 @@ func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 	// Compute aggregate per group.
 	arity := len(agg.GroupByVars) + 1
 	result := NewRelation(agg.ResultRelation, arity)
+
+	if agg.Agg.Func == "rank" {
+		// Rank is multi-tuple: for each group, sort values by the ordering
+		// expression and emit one tuple per value with its 1-indexed ordinal
+		// position. Uses dense ranking (no gaps on ties).
+		for _, gk := range groupOrder {
+			g := groupMap[gk]
+			if len(g.values) == 0 {
+				continue
+			}
+			ranks := computeRank(g.values)
+			for _, r := range ranks {
+				t := make(Tuple, arity)
+				copy(t, g.key)
+				t[arity-1] = IntVal{V: r}
+				result.Add(t)
+			}
+		}
+		return result
+	}
 
 	for _, gk := range groupOrder {
 		g := groupMap[gk]
@@ -184,14 +205,81 @@ func computeAggregate(fn string, vals []Value, separator string) (Value, error) 
 		return concatValues(vals, separator), nil
 
 	case "rank":
-		// Ordinal rank — return position in group (1-indexed).
-		// For a simple implementation, rank is just the count of values seen.
-		// Full rank-within-group-by-order is more complex; this is the v1 approximation.
-		return IntVal{V: int64(len(vals))}, nil
+		// Rank is handled as a multi-tuple aggregate in Aggregate().
+		// This path should not be reached; if it is, return an error.
+		return nil, fmt.Errorf("rank aggregate must be handled via computeRank, not computeAggregate")
 
 	default:
 		return nil, fmt.Errorf("unknown aggregate function %q", fn)
 	}
+}
+
+// computeRank sorts values and returns their 1-indexed ordinal positions.
+// Uses dense ranking: tied values share the same rank, and the next distinct
+// value gets rank+1 (no gaps). For example, [10, 20, 20, 30] yields
+// [1, 2, 2, 3]. Values are sorted ascending by their natural order
+// (int < int, string < string lexicographically). Mixed types are sorted
+// with ints before strings.
+func computeRank(vals []Value) []int64 {
+	type indexed struct {
+		val Value
+		idx int
+	}
+	items := make([]indexed, len(vals))
+	for i, v := range vals {
+		items[i] = indexed{val: v, idx: i}
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return valueLess(items[i].val, items[j].val)
+	})
+
+	// Assign dense ranks: each new distinct value gets the next rank.
+	ranks := make([]int64, len(vals))
+	var currentRank int64 = 1
+	for i, item := range items {
+		if i > 0 && !valueEqual(items[i-1].val, item.val) {
+			currentRank++
+		}
+		ranks[item.idx] = currentRank
+	}
+	return ranks
+}
+
+// valueLess returns true if a < b for ordering purposes.
+func valueLess(a, b Value) bool {
+	switch av := a.(type) {
+	case IntVal:
+		switch bv := b.(type) {
+		case IntVal:
+			return av.V < bv.V
+		case StrVal:
+			return true // ints sort before strings
+		}
+	case StrVal:
+		switch bv := b.(type) {
+		case IntVal:
+			return false // strings sort after ints
+		case StrVal:
+			return av.V < bv.V
+		}
+	}
+	return false
+}
+
+// valueEqual returns true if a and b are the same value.
+func valueEqual(a, b Value) bool {
+	switch av := a.(type) {
+	case IntVal:
+		if bv, ok := b.(IntVal); ok {
+			return av.V == bv.V
+		}
+	case StrVal:
+		if bv, ok := b.(StrVal); ok {
+			return av.V == bv.V
+		}
+	}
+	return false
 }
 
 // concatValues concatenates string representations of values with a separator.
