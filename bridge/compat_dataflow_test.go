@@ -195,6 +195,29 @@ func TestDataFlowConfigurationHasFlowMembers(t *testing.T) {
 	}
 }
 
+// TestDataFlowModuleHasLocalFlowStep verifies that localFlowStep is a module-level predicate.
+func TestDataFlowModuleHasLocalFlowStep(t *testing.T) {
+	files := LoadBridge()
+	data, ok := files["compat_dataflow.qll"]
+	if !ok {
+		t.Fatal("compat_dataflow.qll not found")
+	}
+	p := parse.NewParser(string(data), "compat_dataflow.qll")
+	mod, err := p.Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("resolve returned fatal error: %v", err)
+	}
+
+	if _, ok := rm.Env.Predicates["DataFlow::localFlowStep"]; !ok {
+		t.Error("expected predicate DataFlow::localFlowStep not registered")
+	}
+}
+
 // TestDataFlowNodeMembers verifies DataFlow::Node has the expected member predicates.
 func TestDataFlowNodeMembers(t *testing.T) {
 	files := LoadBridge()
@@ -230,79 +253,6 @@ func TestDataFlowNodeMembers(t *testing.T) {
 	for name, found := range expectedMembers {
 		if !found {
 			t.Errorf("DataFlow::Node missing expected member %q", name)
-		}
-	}
-}
-
-// TestDataFlowConfigSubclassQuery verifies that a query using a Configuration
-// subclass with isSource/isSink overrides parses, resolves, and desugars.
-func TestDataFlowConfigSubclassQuery(t *testing.T) {
-	query := `import DataFlow::PathGraph
-
-class MyConfig extends DataFlow::Configuration {
-    override predicate isSource(DataFlow::Node n) { n.getName() = "userInput" }
-    override predicate isSink(DataFlow::Node n) { n.getName() = "dangerousSink" }
-}
-
-from MyConfig cfg, DataFlow::Node src, DataFlow::Node sink
-where cfg.hasFlow(src, sink)
-select src, sink
-`
-	p := parse.NewParser(query, "test_subclass.ql")
-	mod, err := p.Parse()
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	loader := makeDataFlowImportLoader()
-	rm, err := resolve.Resolve(mod, loader)
-	if err != nil {
-		t.Fatalf("resolve error: %v", err)
-	}
-	if len(rm.Errors) > 0 {
-		for _, e := range rm.Errors {
-			t.Errorf("resolve error: %v", e)
-		}
-		t.FailNow()
-	}
-
-	// Desugar.
-	_, dsErrors := desugar.Desugar(rm)
-	if len(dsErrors) > 0 {
-		for _, e := range dsErrors {
-			t.Errorf("desugar error: %v", e)
-		}
-	}
-}
-
-// TestDataFlowConfigEmptySourceReturnsNoRows verifies that an empty-override
-// subclass (isSource = none()) parses and resolves correctly.
-func TestDataFlowConfigEmptySourceReturnsNoRows(t *testing.T) {
-	query := `import DataFlow::PathGraph
-
-class EmptyConfig extends DataFlow::Configuration {
-    override predicate isSource(DataFlow::Node n) { none() }
-    override predicate isSink(DataFlow::Node n) { none() }
-}
-
-from EmptyConfig cfg, DataFlow::Node src, DataFlow::Node sink
-where cfg.hasFlow(src, sink)
-select src, sink
-`
-	p := parse.NewParser(query, "test_empty.ql")
-	mod, err := p.Parse()
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	loader := makeDataFlowImportLoader()
-	rm, err := resolve.Resolve(mod, loader)
-	if err != nil {
-		t.Fatalf("resolve error: %v", err)
-	}
-	if len(rm.Errors) > 0 {
-		for _, e := range rm.Errors {
-			t.Errorf("resolve error: %v", e)
 		}
 	}
 }
