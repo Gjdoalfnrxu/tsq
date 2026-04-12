@@ -93,6 +93,10 @@ func FrameworkRules() []datalog.Rule {
 		),
 
 		// ─── SQL sinks: *.query() ───────────────────────────────────────
+		// Heuristic: any .query() call is treated as a SQL sink. This matches
+		// db.query(), pool.query(), connection.query(), etc. Known false-positive
+		// risk for non-DB .query() methods (URLSearchParams, jQuery, etc.).
+		// Future: constrain receiver to known DB client types or import sources.
 		// TaintSink(argExpr, "sql") :-
 		//   MethodCall(call, _, "query"), CallArg(call, 0, argExpr).
 		rule("TaintSink",
