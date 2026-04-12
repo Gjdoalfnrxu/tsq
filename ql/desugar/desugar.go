@@ -1171,6 +1171,7 @@ var stringBuiltins = map[string]bool{
 	"charAt":      true,
 	"toInt":       true,
 	"toString":    true,
+	"splitAt":     true,
 }
 
 // ---- Helpers ----

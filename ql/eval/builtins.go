@@ -28,6 +28,7 @@ var builtinRegistry = map[string]builtinFunc{
 	"__builtin_string_regexpMatch": builtinStringRegexpMatch,
 	"__builtin_string_toInt":       builtinStringToInt,
 	"__builtin_string_toString":    builtinStringToString,
+	"__builtin_string_splitAt":     builtinStringSplitAt,
 }
 
 // IsBuiltin returns true if the predicate name is a registered builtin.
@@ -364,6 +365,34 @@ func builtinStringToString(atom datalog.Atom, bindings []binding) []binding {
 			continue
 		}
 		nb, ok := bindResult(atom.Args[1], b, StrVal{V: s})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_string_splitAt(this, index, result) — result = this[index:]
+// Predicate fails (no result) if index < 0 or index > len(this).
+func builtinStringSplitAt(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		s, ok := resolveStringArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		idx, ok := resolveIntArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		// Out-of-range: predicate fails (no result row).
+		if idx < 0 || int(idx) > len(s) {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, StrVal{V: s[idx:]})
 		if ok {
 			out = append(out, nb)
 		}
