@@ -1,17 +1,18 @@
 /**
- * Find all calls to eval().
+ * Find function calls whose callee resolves to a known symbol.
  *
  * Clean-room query written from scratch against public CodeQL API
  * documentation (https://codeql.github.com/docs/). Not derived from
  * CodeQL source code.
  *
  * Simple AST-level query: locates CallExpr nodes whose callee is a
- * VarAccess referencing a symbol named "eval".
+ * VarAccess that resolves to a declared symbol, and reports the
+ * symbol name.
  */
 import javascript
 
-from CallExpr call, VarAccess callee
+from CallExpr call, VarAccess callee, Symbol s
 where
     call.getCallee() = callee and
-    exists(Symbol s | callee.getSym() = s and s.getName() = "eval")
-select call, "Call to eval()"
+    callee.getSym() = s
+select call, s.getName()

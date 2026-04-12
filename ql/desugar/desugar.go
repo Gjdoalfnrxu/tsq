@@ -957,7 +957,8 @@ func (d *desugarer) desugarMethodCallExpr(mc *ast.MethodCall, gen *freshVarGen) 
 func (d *desugarer) resolveMethodCallPred(recv ast.Expr, methodName string) string {
 	if d.ann != nil {
 		if res, ok := d.ann.ExprResolutions[recv]; ok && res != nil && res.DeclClass != nil {
-			return mangle(res.DeclClass.Name, methodName)
+			qualName := d.qualifiedClassName(res.DeclClass)
+			return mangle(qualName, methodName)
 		}
 	}
 	return methodName
@@ -971,12 +972,13 @@ func (d *desugarer) resolveReceiverType(recv ast.Expr) string {
 	}
 	switch n := recv.(type) {
 	case *ast.Variable:
+		if n.Name == "this" && d.currentClass != nil {
+			return d.currentClass.Name
+		}
 		// VarBindings records the ParamDecl, whose Type gives the class name.
 		if vb, ok := d.ann.VarBindings[n]; ok && vb.Param != nil {
 			return vb.Param.Type.String()
 		}
-		// Special case: "this" is not in VarBindings but we can infer from ExprResolutions
-		// if there is any resolution that mentions the class. As a fallback, return "".
 		return ""
 	case *ast.MethodCall:
 		if res, ok := d.ann.ExprResolutions[n]; ok && res != nil && res.DeclMember != nil && res.DeclMember.ReturnType != nil {
@@ -1005,10 +1007,22 @@ func (d *desugarer) resolvePredicateCallRecvPred(pc *ast.PredicateCall) string {
 	if cd, ok := d.env.Classes[recvType]; ok {
 		defClass := d.memberDefiningClass(cd, pc.Name)
 		if defClass != nil {
-			return mangle(defClass.Name, pc.Name)
+			qualName := d.qualifiedClassName(defClass)
+			return mangle(qualName, pc.Name)
 		}
 	}
 	return mangle(recvType, pc.Name)
+}
+
+// qualifiedClassName returns the qualified (environment-registered) name for a class,
+// e.g. "DataFlow::Configuration" instead of just "Configuration".
+func (d *desugarer) qualifiedClassName(cd *ast.ClassDecl) string {
+	for name, c := range d.env.Classes {
+		if c == cd {
+			return name
+		}
+	}
+	return cd.Name
 }
 
 // resolveSuperMethod resolves a super.method() call by finding the method in
