@@ -628,6 +628,140 @@ func TestExistsBoundVariable(t *testing.T) {
 	noErrors(t, rm)
 }
 
+// Private predicate in same module → no error.
+func TestPrivatePredicateSameModule(t *testing.T) {
+	body := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Name:        "secret",
+	})
+	mod := &ast.Module{
+		Predicates: []ast.PredicateDecl{
+			{
+				Name:        "secret",
+				Annotations: []ast.Annotation{{Name: "private"}},
+				Span:        span(),
+			},
+			{
+				Name: "caller",
+				Body: &body,
+				Span: span(),
+			},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+}
+
+// Private predicate from another module → resolve error.
+func TestPrivatePredicateCrossModule(t *testing.T) {
+	importedMod := &ast.Module{
+		Predicates: []ast.PredicateDecl{
+			{
+				Name:        "secretPred",
+				Annotations: []ast.Annotation{{Name: "private"}},
+				Span:        span(),
+			},
+		},
+	}
+	loader := func(path string) (*ast.Module, error) {
+		if path == "mylib" {
+			return importedMod, nil
+		}
+		return nil, errors.New("not found")
+	}
+	body := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Name:        "secretPred",
+	})
+	mod := &ast.Module{
+		Imports: []ast.ImportDecl{
+			{Path: "mylib", Span: span()},
+		},
+		Predicates: []ast.PredicateDecl{
+			{Name: "caller", Body: &body, Span: span()},
+		},
+	}
+	rm, _ := resolve.Resolve(mod, loader)
+	hasError(t, rm, "private")
+}
+
+// Private member in same class → no error.
+func TestPrivateMemberSameClass(t *testing.T) {
+	// Class Foo with private method "secret" and public method "caller"
+	// that calls this.secret() via PredicateCall.
+	secretCall := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Recv:        varExpr("this"),
+		Name:        "secret",
+	})
+	mod := &ast.Module{
+		Classes: []ast.ClassDecl{
+			{
+				Name: "Foo",
+				Members: []ast.MemberDecl{
+					{
+						Name:        "secret",
+						Annotations: []ast.Annotation{{Name: "private"}},
+						Span:        span(),
+					},
+					{
+						Name: "caller",
+						Body: &secretCall,
+						Span: span(),
+					},
+				},
+				Span: span(),
+			},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+}
+
+// Private member from another class → resolve error.
+func TestPrivateMemberCrossClass(t *testing.T) {
+	// Class Bar has private method "secret".
+	// Predicate takes a Bar and calls bar.secret().
+	barCall := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Recv:        varExpr("b"),
+		Name:        "secret",
+	})
+	mod := &ast.Module{
+		Classes: []ast.ClassDecl{
+			{
+				Name: "Bar",
+				Members: []ast.MemberDecl{
+					{
+						Name:        "secret",
+						Annotations: []ast.Annotation{{Name: "private"}},
+						Span:        span(),
+					},
+				},
+				Span: span(),
+			},
+		},
+		Predicates: []ast.PredicateDecl{
+			{
+				Name: "caller",
+				Params: []ast.ParamDecl{
+					{Type: typeRef("Bar"), Name: "b", Span: span()},
+				},
+				Body: &barCall,
+				Span: span(),
+			},
+		},
+	}
+	rm, _ := resolve.Resolve(mod, nil)
+	hasError(t, rm, "private")
+}
+
 // Failed import → ResolveError for that import, resolution continues.
 func TestImportLoaderFailure(t *testing.T) {
 	loader := func(path string) (*ast.Module, error) {
