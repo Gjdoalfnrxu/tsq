@@ -45,6 +45,34 @@ module DataFlow {
 
         /** Holds if there is an additional flow step from `pred` to `succ`. */
         predicate isAdditionalFlowStep(Node pred, Node succ) { none() }
+
+        /**
+         * Holds if data flows from `source` to `sink` via local flow edges,
+         * filtered by this configuration's isSource/isSink/isBarrier overrides.
+         */
+        predicate hasFlow(Node source, Node sink) {
+            this.isSource(source) and
+            this.isSink(sink) and
+            not this.isBarrier(source) and
+            not this.isBarrier(sink) and
+            exists(int fnId |
+                LocalFlowStar(fnId, source, sink)
+            )
+        }
+
+        /**
+         * Holds if there is a data-flow path from `source` to `sink`,
+         * filtered by this configuration's isSource/isSink/isBarrier overrides.
+         */
+        predicate hasFlowPath(PathNode source, PathNode sink) {
+            this.isSource(source) and
+            this.isSink(sink) and
+            not this.isBarrier(source) and
+            not this.isBarrier(sink) and
+            exists(int fnId |
+                LocalFlowStar(fnId, source, sink)
+            )
+        }
     }
 
     /**
@@ -62,26 +90,5 @@ module DataFlow {
 
         /** Gets the file containing this node. */
         File getLocation() { Symbol(this, _, _, result) }
-    }
-
-    /**
-     * Holds if data flows from `source` to `sink` via local flow edges.
-     * Uses the transitive closure (LocalFlowStar) relation.
-     */
-    predicate hasFlow(Node source, Node sink) {
-        exists(int fnId |
-            LocalFlowStar(fnId, source, sink)
-        )
-    }
-
-    /**
-     * Holds if there is a data-flow path from `source` to `sink`.
-     * Equivalent to hasFlow for now; provided for API compatibility
-     * with CodeQL path queries.
-     */
-    predicate hasFlowPath(PathNode source, PathNode sink) {
-        exists(int fnId |
-            LocalFlowStar(fnId, source, sink)
-        )
     }
 }

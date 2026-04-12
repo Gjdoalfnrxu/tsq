@@ -25,22 +25,29 @@ module TaintTracking {
 
         /** Holds if there is an additional taint step from `node1` to `node2`. */
         predicate isAdditionalTaintStep(int node1, int node2) { none() }
-    }
 
-    /**
-     * Holds if taint flows from `source` to `sink` via the taint alert relation.
-     * Backed by tsq's TaintAlert(srcExpr, sinkExpr, srcKind, sinkKind) fact.
-     */
-    predicate hasFlow(int source, int sink) {
-        TaintAlert(source, sink, _, _)
-    }
+        /**
+         * Holds if taint flows from `source` to `sink` via the taint alert relation,
+         * filtered by this configuration's isSource/isSink/isSanitizer overrides.
+         */
+        predicate hasFlow(int source, int sink) {
+            this.isSource(source) and
+            this.isSink(sink) and
+            not this.isSanitizer(source) and
+            not this.isSanitizer(sink) and
+            TaintAlert(source, sink, _, _)
+        }
 
-    /**
-     * Holds if there is a taint-flow path from `source` to `sink`.
-     * Equivalent to hasFlow for now; provided for API compatibility
-     * with CodeQL path queries.
-     */
-    predicate hasFlowPath(int source, int sink) {
-        TaintAlert(source, sink, _, _)
+        /**
+         * Holds if there is a taint-flow path from `source` to `sink`,
+         * filtered by this configuration's isSource/isSink/isSanitizer overrides.
+         */
+        predicate hasFlowPath(int source, int sink) {
+            this.isSource(source) and
+            this.isSink(sink) and
+            not this.isSanitizer(source) and
+            not this.isSanitizer(sink) and
+            TaintAlert(source, sink, _, _)
+        }
     }
 }

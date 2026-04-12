@@ -144,9 +144,9 @@ select n
 	}
 }
 
-// TestDataFlowModuleHasPredicates verifies that the DataFlow module
-// exports hasFlow and hasFlowPath predicates.
-func TestDataFlowModuleHasPredicates(t *testing.T) {
+// TestDataFlowConfigurationHasFlowMembers verifies that the DataFlow::Configuration
+// class has hasFlow and hasFlowPath as member predicates (not module-level).
+func TestDataFlowConfigurationHasFlowMembers(t *testing.T) {
 	files := LoadBridge()
 	data, ok := files["compat_dataflow.qll"]
 	if !ok {
@@ -163,13 +163,34 @@ func TestDataFlowModuleHasPredicates(t *testing.T) {
 		t.Fatalf("resolve returned fatal error: %v", err)
 	}
 
-	expectedPredicates := []string{
-		"DataFlow::hasFlow",
-		"DataFlow::hasFlowPath",
+	cfgClass, ok := rm.Env.Classes["DataFlow::Configuration"]
+	if !ok {
+		t.Fatal("DataFlow::Configuration class not found")
 	}
-	for _, name := range expectedPredicates {
-		if _, ok := rm.Env.Predicates[name]; !ok {
-			t.Errorf("expected predicate %q not registered", name)
+
+	expectedMembers := map[string]bool{
+		"isSource":             false,
+		"isSink":               false,
+		"isBarrier":            false,
+		"isAdditionalFlowStep": false,
+		"hasFlow":              false,
+		"hasFlowPath":          false,
+	}
+	for _, m := range cfgClass.Members {
+		if _, want := expectedMembers[m.Name]; want {
+			expectedMembers[m.Name] = true
+		}
+	}
+	for name, found := range expectedMembers {
+		if !found {
+			t.Errorf("DataFlow::Configuration missing expected member %q", name)
+		}
+	}
+
+	// hasFlow and hasFlowPath should NOT be module-level predicates anymore.
+	for _, name := range []string{"DataFlow::hasFlow", "DataFlow::hasFlowPath"} {
+		if _, ok := rm.Env.Predicates[name]; ok {
+			t.Errorf("predicate %q should not be module-level (moved to Configuration member)", name)
 		}
 	}
 }
@@ -209,6 +230,79 @@ func TestDataFlowNodeMembers(t *testing.T) {
 	for name, found := range expectedMembers {
 		if !found {
 			t.Errorf("DataFlow::Node missing expected member %q", name)
+		}
+	}
+}
+
+// TestDataFlowConfigSubclassQuery verifies that a query using a Configuration
+// subclass with isSource/isSink overrides parses, resolves, and desugars.
+func TestDataFlowConfigSubclassQuery(t *testing.T) {
+	query := `import DataFlow::PathGraph
+
+class MyConfig extends DataFlow::Configuration {
+    override predicate isSource(DataFlow::Node n) { n.getName() = "userInput" }
+    override predicate isSink(DataFlow::Node n) { n.getName() = "dangerousSink" }
+}
+
+from MyConfig cfg, DataFlow::Node src, DataFlow::Node sink
+where cfg.hasFlow(src, sink)
+select src, sink
+`
+	p := parse.NewParser(query, "test_subclass.ql")
+	mod, err := p.Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	loader := makeDataFlowImportLoader()
+	rm, err := resolve.Resolve(mod, loader)
+	if err != nil {
+		t.Fatalf("resolve error: %v", err)
+	}
+	if len(rm.Errors) > 0 {
+		for _, e := range rm.Errors {
+			t.Errorf("resolve error: %v", e)
+		}
+		t.FailNow()
+	}
+
+	// Desugar.
+	_, dsErrors := desugar.Desugar(rm)
+	if len(dsErrors) > 0 {
+		for _, e := range dsErrors {
+			t.Errorf("desugar error: %v", e)
+		}
+	}
+}
+
+// TestDataFlowConfigEmptySourceReturnsNoRows verifies that an empty-override
+// subclass (isSource = none()) parses and resolves correctly.
+func TestDataFlowConfigEmptySourceReturnsNoRows(t *testing.T) {
+	query := `import DataFlow::PathGraph
+
+class EmptyConfig extends DataFlow::Configuration {
+    override predicate isSource(DataFlow::Node n) { none() }
+    override predicate isSink(DataFlow::Node n) { none() }
+}
+
+from EmptyConfig cfg, DataFlow::Node src, DataFlow::Node sink
+where cfg.hasFlow(src, sink)
+select src, sink
+`
+	p := parse.NewParser(query, "test_empty.ql")
+	mod, err := p.Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	loader := makeDataFlowImportLoader()
+	rm, err := resolve.Resolve(mod, loader)
+	if err != nil {
+		t.Fatalf("resolve error: %v", err)
+	}
+	if len(rm.Errors) > 0 {
+		for _, e := range rm.Errors {
+			t.Errorf("resolve error: %v", e)
 		}
 	}
 }

@@ -138,9 +138,9 @@ select cfg
 	}
 }
 
-// TestTaintTrackingModuleHasPredicates verifies that the TaintTracking module
-// exports hasFlow and hasFlowPath predicates.
-func TestTaintTrackingModuleHasPredicates(t *testing.T) {
+// TestTaintTrackingConfigurationHasFlowMembers verifies that the TaintTracking::Configuration
+// class has hasFlow and hasFlowPath as member predicates (not module-level).
+func TestTaintTrackingConfigurationHasFlowMembers(t *testing.T) {
 	files := LoadBridge()
 	data, ok := files["compat_tainttracking.qll"]
 	if !ok {
@@ -157,13 +157,77 @@ func TestTaintTrackingModuleHasPredicates(t *testing.T) {
 		t.Fatalf("resolve returned fatal error: %v", err)
 	}
 
-	expectedPredicates := []string{
-		"TaintTracking::hasFlow",
-		"TaintTracking::hasFlowPath",
+	cfgClass, ok := rm.Env.Classes["TaintTracking::Configuration"]
+	if !ok {
+		t.Fatal("TaintTracking::Configuration class not found")
 	}
-	for _, name := range expectedPredicates {
-		if _, ok := rm.Env.Predicates[name]; !ok {
-			t.Errorf("expected predicate %q not registered", name)
+
+	expectedMembers := map[string]bool{
+		"isSource":              false,
+		"isSink":                false,
+		"isSanitizer":           false,
+		"isAdditionalTaintStep": false,
+		"hasFlow":               false,
+		"hasFlowPath":           false,
+	}
+	for _, m := range cfgClass.Members {
+		if _, want := expectedMembers[m.Name]; want {
+			expectedMembers[m.Name] = true
+		}
+	}
+	for name, found := range expectedMembers {
+		if !found {
+			t.Errorf("TaintTracking::Configuration missing expected member %q", name)
+		}
+	}
+
+	// hasFlow and hasFlowPath should NOT be module-level predicates anymore.
+	for _, name := range []string{"TaintTracking::hasFlow", "TaintTracking::hasFlowPath"} {
+		if _, ok := rm.Env.Predicates[name]; ok {
+			t.Errorf("predicate %q should not be module-level (moved to Configuration member)", name)
+		}
+	}
+}
+
+// TestTaintTrackingConfigSubclassQuery verifies that a query using a
+// TaintTracking::Configuration subclass parses and resolves correctly.
+func TestTaintTrackingConfigSubclassQuery(t *testing.T) {
+	query := `import TaintTracking
+import DataFlow::PathGraph
+
+class MyTaintConfig extends TaintTracking::Configuration {
+    override predicate isSource(int n) { n = 1 }
+    override predicate isSink(int n) { n = 2 }
+    override predicate isSanitizer(int n) { n = 3 }
+}
+
+from MyTaintConfig cfg, int src, int sink
+where cfg.hasFlow(src, sink)
+select src, sink
+`
+	p := parse.NewParser(query, "test_taint_subclass.ql")
+	mod, err := p.Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	loader := makeTaintTrackingImportLoader()
+	rm, err := resolve.Resolve(mod, loader)
+	if err != nil {
+		t.Fatalf("resolve error: %v", err)
+	}
+	if len(rm.Errors) > 0 {
+		for _, e := range rm.Errors {
+			t.Errorf("resolve error: %v", e)
+		}
+		t.FailNow()
+	}
+
+	// Desugar.
+	_, dsErrors := desugar.Desugar(rm)
+	if len(dsErrors) > 0 {
+		for _, e := range dsErrors {
+			t.Errorf("desugar error: %v", e)
 		}
 	}
 }

@@ -150,12 +150,14 @@ func (p *Parser) Parse() (*ast.Module, error) {
 			if err != nil {
 				return nil, err
 			}
+			cls.Annotations = anns
 			mod.Classes = append(mod.Classes, *cls)
 		case TokKwClass:
 			cls, err := p.parseClass()
 			if err != nil {
 				return nil, err
 			}
+			cls.Annotations = anns
 			mod.Classes = append(mod.Classes, *cls)
 		case TokKwModule:
 			m, err := p.parseModule()
@@ -338,12 +340,14 @@ func (p *Parser) parseModule() (*ast.ModuleDecl, error) {
 			if err != nil {
 				return nil, err
 			}
+			cls.Annotations = anns
 			m.Classes = append(m.Classes, *cls)
 		case TokKwClass:
 			cls, err := p.parseClass()
 			if err != nil {
 				return nil, err
 			}
+			cls.Annotations = anns
 			m.Classes = append(m.Classes, *cls)
 		case TokKwPredicate:
 			pred, err := p.parsePredicate()
