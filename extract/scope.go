@@ -304,6 +304,26 @@ func (sa *ScopeAnalyzer) extractParams(params ASTNode, fnScope *Scope) {
 			if param.Text() != "" {
 				fnScope.declare(param.Text(), sa.makeDecl(param, false))
 			}
+		case "RequiredParameter", "OptionalParameter":
+			// TypeScript wraps each parameter in RequiredParameter or OptionalParameter.
+			// Extract the name from the "pattern" or "name" child field.
+			// Use the wrapper node's position for the declaration so the SymID matches
+			// what emitParameters computes (which uses param.StartLine/StartCol).
+			nameNode := sa.childByField(param, "pattern")
+			if nameNode == nil {
+				nameNode = sa.childByField(param, "name")
+			}
+			if nameNode != nil && nameNode.Kind() == "Identifier" && nameNode.Text() != "" {
+				fnScope.declare(nameNode.Text(), &Declaration{
+					FilePath:  sa.filePath,
+					Name:      nameNode.Text(),
+					StartByte: sa.nodeStartByte(param),
+					StartLine: param.StartLine(),
+					StartCol:  param.StartCol(),
+				})
+			} else if nameNode != nil {
+				sa.declarePattern(nameNode, fnScope, false)
+			}
 		case "AssignmentPattern":
 			left := sa.childByField(param, "left")
 			if left != nil {

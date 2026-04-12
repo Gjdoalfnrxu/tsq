@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Gjdoalfnrxu/tsq/bridge"
+	"github.com/Gjdoalfnrxu/tsq/extract/rules"
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
 	"github.com/Gjdoalfnrxu/tsq/ql/desugar"
 	"github.com/Gjdoalfnrxu/tsq/ql/eval"
@@ -109,6 +110,10 @@ func runCompatQuery(t *testing.T, queryFile string, factDB *db.DB) *eval.ResultS
 		t.Fatalf("desugar errors in %s:\n  %s", queryFile, strings.Join(msgs, "\n  "))
 	}
 
+	// Merge system rules (taint propagation, call graph, local flow, etc.)
+	// so derived relations like TaintAlert are computed during evaluation.
+	prog = rules.MergeSystemRules(prog, rules.AllSystemRules())
+
 	// Plan
 	execPlan, planErrors := plan.Plan(prog, nil)
 	if len(planErrors) > 0 {
@@ -150,21 +155,19 @@ func compatTestCases() []compatTestCase {
 			projectDir: "testdata/compat/projects/basic",
 			queryFile:  "testdata/compat/find_xss.ql",
 			goldenFile: "testdata/compat/expected/find_xss.csv",
-			skip:       "requires plan 07: XSS security bridge wiring",
 		},
 		{
 			name:       "find_sqli",
 			projectDir: "testdata/compat/projects/basic",
 			queryFile:  "testdata/compat/find_sqli.ql",
 			goldenFile: "testdata/compat/expected/find_sqli.csv",
-			skip:       "requires plan 08: SQLi security bridge wiring",
 		},
 		{
 			name:       "custom_config",
 			projectDir: "testdata/compat/projects/basic",
 			queryFile:  "testdata/compat/custom_config.ql",
 			goldenFile: "testdata/compat/expected/custom_config.csv",
-			skip:       "requires plan 09: DataFlow::Configuration subclass support",
+			skip:       "Configuration.hasFlow requires LocalFlowStar which doesn't cover FieldRead-based sources yet",
 		},
 	}
 }

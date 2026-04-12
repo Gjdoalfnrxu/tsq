@@ -2,8 +2,8 @@ const express = require('express');
 const app = express();
 const db = require('./db');
 
-app.get('/search', function handler(req, res) {
-    const userInput = req.query.q;
+const handler = function(req, res) {
+    const userInput = req.query;
 
     // XSS: user input flows to response body
     res.send('<html>' + userInput + '</html>');
@@ -13,7 +13,9 @@ app.get('/search', function handler(req, res) {
 
     // eval: user input flows to eval
     eval(userInput);
-});
+};
+
+app.get('/search', handler);
 
 class Sanitizer {
     clean(input: string): string { return input.replace(/</g, '&lt;'); }

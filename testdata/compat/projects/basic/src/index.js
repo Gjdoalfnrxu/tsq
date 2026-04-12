@@ -2,7 +2,7 @@ const express = require('express');
 const app = express();
 const db = require('./db');
 
-app.get('/search', function(req, res) {
+const handler = function(req, res) {
     const userInput = req.query.q;
 
     // XSS: user input flows to response body
@@ -13,4 +13,6 @@ app.get('/search', function(req, res) {
 
     // eval: user input flows to eval
     eval(userInput);
-});
+};
+
+app.get('/search', handler);

@@ -91,6 +91,15 @@ func FrameworkRules() []datalog.Rule {
 			[]datalog.Term{v("valueExpr"), s("xss")},
 			pos("JsxAttribute", w(), s("dangerouslySetInnerHTML"), v("valueExpr")),
 		),
+
+		// ─── SQL sinks: *.query() ───────────────────────────────────────
+		// TaintSink(argExpr, "sql") :-
+		//   MethodCall(call, _, "query"), CallArg(call, 0, argExpr).
+		rule("TaintSink",
+			[]datalog.Term{v("argExpr"), s("sql")},
+			pos("MethodCall", v("call"), w(), s("query")),
+			pos("CallArg", v("call"), datalog.IntConst{Value: 0}, v("argExpr")),
+		),
 	}
 }
 

@@ -467,11 +467,11 @@ func TestTaintRulesStratify(t *testing.T) {
 	}
 }
 
-// TestTaintRulesCount verifies we produce exactly 7 taint rules.
+// TestTaintRulesCount verifies we produce exactly 9 taint rules.
 func TestTaintRulesCount(t *testing.T) {
 	rules := TaintRules()
-	if len(rules) != 7 {
-		t.Errorf("expected 7 taint rules, got %d", len(rules))
+	if len(rules) != 9 {
+		t.Errorf("expected 9 taint rules, got %d", len(rules))
 	}
 }
 

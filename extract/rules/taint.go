@@ -14,12 +14,21 @@ import (
 // TaintedSym, SanitizedEdge, TaintedField, and TaintAlert.
 func TaintRules() []datalog.Rule {
 	return []datalog.Rule{
-		// Rule 1: Taint propagation — base case.
+		// Rule 1: Taint propagation — base case (identifier sources).
 		// TaintedSym(srcSym, kind) :- TaintSource(srcExpr, kind), ExprMayRef(srcExpr, srcSym).
 		rule("TaintedSym",
 			[]datalog.Term{v("srcSym"), v("kind")},
 			pos("TaintSource", v("srcExpr"), v("kind")),
 			pos("ExprMayRef", v("srcExpr"), v("srcSym")),
+		),
+
+		// Rule 1b: Taint propagation — VarDecl init is a taint source (handles
+		// FieldRead sources like req.query that don't have ExprMayRef entries).
+		// TaintedSym(sym, kind) :- VarDecl(_, sym, initExpr, _), TaintSource(initExpr, kind).
+		rule("TaintedSym",
+			[]datalog.Term{v("sym"), v("kind")},
+			pos("VarDecl", w(), v("sym"), v("initExpr"), w()),
+			pos("TaintSource", v("initExpr"), v("kind")),
 		),
 
 		// Rule 2: Taint propagation — transitive via FlowStar, blocked by sanitizers.
@@ -85,7 +94,7 @@ func TaintRules() []datalog.Rule {
 			pos("TaintedField", v("baseSym"), v("fieldName"), v("kind")),
 		),
 
-		// Rule 6: Taint alert — tainted value reaches a sink.
+		// Rule 6: Taint alert — tainted value reaches a sink via identifier flow.
 		// TaintAlert(srcExpr, sinkExpr, srcKind, sinkKind) :-
 		//     TaintSource(srcExpr, srcKind), ExprMayRef(srcExpr, srcSym),
 		//     TaintedSym(sinkSym, srcKind), ExprMayRef(sinkExpr, sinkSym),
@@ -96,6 +105,25 @@ func TaintRules() []datalog.Rule {
 			pos("ExprMayRef", v("srcExpr"), v("srcSym")),
 			pos("TaintedSym", v("sinkSym"), v("srcKind")),
 			pos("ExprMayRef", v("sinkExpr"), v("sinkSym")),
+			pos("TaintSink", v("sinkExpr"), v("sinkKind")),
+		),
+
+		// Rule 6b: Taint alert for VarDecl-init-based sources.
+		// When the source expression is a FieldRead (MemberExpression) or
+		// compound expression that initializes a VarDecl, ExprMayRef won't
+		// exist for it. This rule uses the VarDecl linkage to connect the
+		// source to a tainted symbol, then checks that the symbol is actually
+		// tainted (which respects sanitization via Rule 2's negation).
+		// TaintAlert(srcExpr, sinkExpr, srcKind, sinkKind) :-
+		//     TaintSource(srcExpr, srcKind),
+		//     VarDecl(_, sym, srcExpr, _),
+		//     TaintedSym(sym, srcKind),
+		//     TaintSink(sinkExpr, sinkKind).
+		rule("TaintAlert",
+			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+			pos("TaintSource", v("srcExpr"), v("srcKind")),
+			pos("VarDecl", w(), v("sym"), v("srcExpr"), w()),
+			pos("TaintedSym", v("sym"), v("srcKind")),
 			pos("TaintSink", v("sinkExpr"), v("sinkKind")),
 		),
 	}
