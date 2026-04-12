@@ -68,6 +68,18 @@ predicate isUseStateSetterCall(int c) {
 }
 
 /**
+ * Holds if call `c` is a useState setter call and `line` is the start
+ * line of its callee identifier.
+ */
+predicate useStateSetterCallLine(int c, int line) {
+    isUseStateSetterCall(c) and
+    exists(int callee |
+        Call(c, callee, _) and
+        Node(callee, _, _, line, _, _, _)
+    )
+}
+
+/**
  * Holds if `c` is a useState setter call whose first argument is a function
  * literal (arrow or function expression) whose body — including any
  * nested function literals — contains at least one inner Call. This is
@@ -135,3 +147,11 @@ class DangerouslySetInnerHTML extends TaintSink {
     /** Gets a textual representation. */
     override string toString() { result = "DangerouslySetInnerHTML" }
 }
+
+// NOTE: A class form `class UseStateSetterCall extends Call { ... }` was
+// considered but removed because it triggers the v1 engine's
+// arity-shadowing bug — materialising `Call/1` head facts into the same
+// relation as the base `Call/3` schema corrupts joins on `Call`.
+// Use the int-parameter predicates above (`isUseStateSetterCall`,
+// `useStateSetterCallLine`, `setStateUpdaterCallsFn`,
+// `setStateUpdaterCallsOtherSetState`) instead.
