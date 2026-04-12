@@ -440,6 +440,11 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Surface deprecation warnings (non-fatal).
+	for _, w := range resolved.Warnings {
+		fmt.Fprintf(stderr, "  %s\n", w.String())
+	}
+
 	hasErrors := false
 	if len(resolved.Errors) > 0 {
 		for _, e := range resolved.Errors {

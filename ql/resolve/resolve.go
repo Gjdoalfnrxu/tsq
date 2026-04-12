@@ -523,6 +523,9 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 							r.errorf(pc.GetSpan(), "member %q is private to class %q", pc.Name, defClass.Name)
 						}
 					}
+					if md != nil && isDeprecated(md.Annotations) {
+						r.warnf(pc.GetSpan(), "call to deprecated member %q on class %q", pc.Name, recvType)
+					}
 				}
 			}
 		}
@@ -535,13 +538,16 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 	pd, ok := r.env.Predicates[pc.Name]
 	if !ok {
 		r.errorf(pc.GetSpan(), "undefined predicate %q", pc.Name)
-	} else if isPrivate(pd) {
-		// Private predicates are only callable from within the same module.
-		// A predicate's origin is "" for local, or the import path for imported.
-		// The caller is always in the local module (origin "").
-		origin := r.env.PredicateOrigin[pc.Name]
-		if origin != "" {
-			r.errorf(pc.GetSpan(), "predicate %q is private to module %q", pc.Name, origin)
+	} else {
+		if isPrivate(pd) {
+			// Private predicates are only callable from within the same module.
+			origin := r.env.PredicateOrigin[pc.Name]
+			if origin != "" {
+				r.errorf(pc.GetSpan(), "predicate %q is private to module %q", pc.Name, origin)
+			}
+		}
+		if isDeprecated(pd.Annotations) {
+			r.warnf(pc.GetSpan(), "call to deprecated predicate %q", pc.Name)
 		}
 	}
 	for _, arg := range pc.Args {
@@ -631,6 +637,9 @@ func (r *resolver) resolveMethodCall(mc *ast.MethodCall, s *scope) {
 					if s.inClass == nil || s.inClass.Name != defClass.Name {
 						r.errorf(mc.GetSpan(), "member %q is private to class %q", mc.Method, defClass.Name)
 					}
+				}
+				if md != nil && isDeprecated(md.Annotations) {
+					r.warnf(mc.GetSpan(), "call to deprecated member %q on class %q", mc.Method, defClass.Name)
 				}
 			} else {
 				r.errorf(mc.GetSpan(), "class %q has no member %q", recvType, mc.Method)

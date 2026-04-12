@@ -278,7 +278,7 @@ func TestDeprecatedPredicateWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected warning mentioning 'oldPred' and 'deprecated', got: %v", rm.Warnings)
+		t.Errorf("expected warning mentioning oldPred and deprecated, got: %v", rm.Warnings)
 	}
 }
 
@@ -315,7 +315,7 @@ func TestDeprecatedClassWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected warning mentioning 'OldClass' and 'deprecated', got: %v", rm.Warnings)
+		t.Errorf("expected warning mentioning OldClass and deprecated, got: %v", rm.Warnings)
 	}
 }
 
@@ -378,7 +378,7 @@ func TestDeprecatedMemberWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected warning mentioning 'oldMethod' and 'deprecated', got: %v", rm.Warnings)
+		t.Errorf("expected warning mentioning oldMethod and deprecated, got: %v", rm.Warnings)
 	}
 }
 

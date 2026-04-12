@@ -138,9 +138,9 @@ select cfg
 	}
 }
 
-// TestTaintTrackingModuleHasPredicates verifies that the TaintTracking module
-// exports hasFlow and hasFlowPath predicates.
-func TestTaintTrackingModuleHasPredicates(t *testing.T) {
+// TestTaintTrackingConfigurationHasFlowMembers verifies that the TaintTracking::Configuration
+// class has hasFlow and hasFlowPath as member predicates (not module-level).
+func TestTaintTrackingConfigurationHasFlowMembers(t *testing.T) {
 	files := LoadBridge()
 	data, ok := files["compat_tainttracking.qll"]
 	if !ok {
@@ -157,13 +157,34 @@ func TestTaintTrackingModuleHasPredicates(t *testing.T) {
 		t.Fatalf("resolve returned fatal error: %v", err)
 	}
 
-	expectedPredicates := []string{
-		"TaintTracking::hasFlow",
-		"TaintTracking::hasFlowPath",
+	cfgClass, ok := rm.Env.Classes["TaintTracking::Configuration"]
+	if !ok {
+		t.Fatal("TaintTracking::Configuration class not found")
 	}
-	for _, name := range expectedPredicates {
-		if _, ok := rm.Env.Predicates[name]; !ok {
-			t.Errorf("expected predicate %q not registered", name)
+
+	expectedMembers := map[string]bool{
+		"isSource":              false,
+		"isSink":                false,
+		"isSanitizer":           false,
+		"isAdditionalTaintStep": false,
+		"hasFlow":               false,
+		"hasFlowPath":           false,
+	}
+	for _, m := range cfgClass.Members {
+		if _, want := expectedMembers[m.Name]; want {
+			expectedMembers[m.Name] = true
+		}
+	}
+	for name, found := range expectedMembers {
+		if !found {
+			t.Errorf("TaintTracking::Configuration missing expected member %q", name)
+		}
+	}
+
+	// hasFlow and hasFlowPath should NOT be module-level predicates anymore.
+	for _, name := range []string{"TaintTracking::hasFlow", "TaintTracking::hasFlowPath"} {
+		if _, ok := rm.Env.Predicates[name]; ok {
+			t.Errorf("predicate %q should not be module-level (moved to Configuration member)", name)
 		}
 	}
 }

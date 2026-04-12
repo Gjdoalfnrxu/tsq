@@ -144,9 +144,9 @@ select n
 	}
 }
 
-// TestDataFlowModuleHasPredicates verifies that the DataFlow module
-// exports hasFlow and hasFlowPath predicates.
-func TestDataFlowModuleHasPredicates(t *testing.T) {
+// TestDataFlowConfigurationHasFlowMembers verifies that the DataFlow::Configuration
+// class has hasFlow and hasFlowPath as member predicates (not module-level).
+func TestDataFlowConfigurationHasFlowMembers(t *testing.T) {
 	files := LoadBridge()
 	data, ok := files["compat_dataflow.qll"]
 	if !ok {
@@ -163,14 +163,58 @@ func TestDataFlowModuleHasPredicates(t *testing.T) {
 		t.Fatalf("resolve returned fatal error: %v", err)
 	}
 
-	expectedPredicates := []string{
-		"DataFlow::hasFlow",
-		"DataFlow::hasFlowPath",
+	cfgClass, ok := rm.Env.Classes["DataFlow::Configuration"]
+	if !ok {
+		t.Fatal("DataFlow::Configuration class not found")
 	}
-	for _, name := range expectedPredicates {
-		if _, ok := rm.Env.Predicates[name]; !ok {
-			t.Errorf("expected predicate %q not registered", name)
+
+	expectedMembers := map[string]bool{
+		"isSource":             false,
+		"isSink":               false,
+		"isBarrier":            false,
+		"isAdditionalFlowStep": false,
+		"hasFlow":              false,
+		"hasFlowPath":          false,
+	}
+	for _, m := range cfgClass.Members {
+		if _, want := expectedMembers[m.Name]; want {
+			expectedMembers[m.Name] = true
 		}
+	}
+	for name, found := range expectedMembers {
+		if !found {
+			t.Errorf("DataFlow::Configuration missing expected member %q", name)
+		}
+	}
+
+	// hasFlow and hasFlowPath should NOT be module-level predicates anymore.
+	for _, name := range []string{"DataFlow::hasFlow", "DataFlow::hasFlowPath"} {
+		if _, ok := rm.Env.Predicates[name]; ok {
+			t.Errorf("predicate %q should not be module-level (moved to Configuration member)", name)
+		}
+	}
+}
+
+// TestDataFlowModuleHasLocalFlowStep verifies that localFlowStep is a module-level predicate.
+func TestDataFlowModuleHasLocalFlowStep(t *testing.T) {
+	files := LoadBridge()
+	data, ok := files["compat_dataflow.qll"]
+	if !ok {
+		t.Fatal("compat_dataflow.qll not found")
+	}
+	p := parse.NewParser(string(data), "compat_dataflow.qll")
+	mod, err := p.Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("resolve returned fatal error: %v", err)
+	}
+
+	if _, ok := rm.Env.Predicates["DataFlow::localFlowStep"]; !ok {
+		t.Error("expected predicate DataFlow::localFlowStep not registered")
 	}
 }
 
