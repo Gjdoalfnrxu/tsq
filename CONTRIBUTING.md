@@ -35,7 +35,7 @@ Every PR must:
 
 ### Adversarial Review
 
-For each PR, a separate review agent runs the standard review checklist (see implementation plans). The review must find and report any real problems before the PR merges. The implementing agent fixes issues found, then the reviewer re-checks.
+For each PR, a separate review agent runs the [adversarial review checklist](docs/ADVERSARIAL-REVIEW.md). The review must find and report any real problems before the PR merges. The implementing agent fixes issues found, then the reviewer re-checks.
 
 ### Handover Documents
 
