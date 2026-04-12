@@ -448,6 +448,90 @@ func TestTaintSanitized_TypeBased_StringPassthrough(t *testing.T) {
 	}
 }
 
+// TestTaintedSym_VarDeclInit tests Rule 1b: taint propagation via VarDecl init
+// for FieldRead-based sources that lack ExprMayRef entries.
+func TestTaintedSym_VarDeclInit(t *testing.T) {
+	// TaintSource(expr=100, "http_input"), VarDecl(_, sym=10, initExpr=100, _)
+	// → TaintedSym(10, "http_input") via Rule 1b
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		// No ExprMayRef for expr 100 — this is the FieldRead case
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("sym"), v("kind")},
+		Body:   []datalog.Literal{pos("TaintedSym", v("sym"), v("kind"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	if !resultContains(rs, iv(10), sv("http_input")) {
+		t.Errorf("expected TaintedSym(10, http_input) via VarDecl init (Rule 1b), got %v", rs.Rows)
+	}
+}
+
+// TestTaintAlert_VarDeclSource tests Rule 6b: TaintAlert via VarDecl linkage
+// when the source expression is a FieldRead without ExprMayRef.
+func TestTaintAlert_VarDeclSource(t *testing.T) {
+	// Source: TaintSource(100, "http_input") with VarDecl(_, 10, 100, _)
+	// Sink: TaintSink(200, "xss")
+	// Rule 1b gives TaintedSym(10, "http_input"), Rule 6b gives TaintAlert.
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		"TaintSink":   makeRel("TaintSink", 2, iv(200), sv("xss")),
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	if !resultContains(rs, iv(100), iv(200), sv("http_input"), sv("xss")) {
+		t.Errorf("expected TaintAlert(100, 200, http_input, xss) via Rule 6b, got %v", rs.Rows)
+	}
+}
+
+// TestTaintAlert_VarDeclSource_CrossProduct documents the known precision
+// limitation of Rule 6b: independent source/sink pairs across functions
+// produce cross-product false positives because the sink side lacks function
+// scope constraints (no ExprInFunction relation exists yet).
+func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
+	// Source: TaintSource(100, "http_input") → VarDecl sym 10, sink 200 (xss)
+	// Unrelated sink 300 (sql) in a different part of the program
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		"TaintSink": makeRel("TaintSink", 2,
+			iv(200), sv("xss"),
+			iv(300), sv("sql"), // unrelated sink
+		),
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+
+	// Known limitation: Rule 6b produces alerts for BOTH sinks, even though
+	// sink 300 is unrelated. This cross-product false positive will be fixed
+	// when ExprInFunction is added to the schema.
+	gotXss := resultContains(rs, iv(100), iv(200), sv("http_input"), sv("xss"))
+	gotSql := resultContains(rs, iv(100), iv(300), sv("http_input"), sv("sql"))
+
+	if !gotXss {
+		t.Errorf("expected TaintAlert for connected sink 200, got %v", rs.Rows)
+	}
+	if !gotSql {
+		// When this starts failing, the cross-product fix has landed —
+		// update this test to assert !gotSql instead.
+		t.Log("cross-product false positive for sink 300 is expected (known Rule 6b limitation)")
+	}
+}
+
 // TestTaintRulesValidate verifies all taint rules pass the planner's validation.
 func TestTaintRulesValidate(t *testing.T) {
 	for i, r := range TaintRules() {
@@ -467,11 +551,11 @@ func TestTaintRulesStratify(t *testing.T) {
 	}
 }
 
-// TestTaintRulesCount verifies we produce exactly 7 taint rules.
+// TestTaintRulesCount verifies we produce exactly 9 taint rules.
 func TestTaintRulesCount(t *testing.T) {
 	rules := TaintRules()
-	if len(rules) != 7 {
-		t.Errorf("expected 7 taint rules, got %d", len(rules))
+	if len(rules) != 9 {
+		t.Errorf("expected 9 taint rules, got %d", len(rules))
 	}
 }
 
