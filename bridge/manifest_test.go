@@ -11,8 +11,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// But some relations share bridge classes. Count: 28 + 17 = 45
 	// v3 Phase 3c: +2 bridge classes (Type, SymbolTypeBinding) = 84
 	// v3 Phase 3d: +1 bridge class (NonTaintableType) = 85
-	if got := len(m.Available); got != 85 {
-		t.Errorf("expected 85 available classes, got %d", got)
+	// v3 Phase 17: +7 type-fact relations = 92
+	if got := len(m.Available); got != 92 {
+		t.Errorf("expected 92 available classes, got %d", got)
 	}
 }
 

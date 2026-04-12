@@ -127,6 +127,14 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "SymbolTypeBinding", Relation: "SymbolType", File: "tsq_types.qll"},
 			// v3 Phase 3d: type-based sanitizer detection
 			{Name: "NonTaintableType", Relation: "NonTaintableType", File: "tsq_types.qll"},
+			// v3 Phase 17: type-fact relations
+			{Name: "TypeInfo", Relation: "TypeInfo", File: "tsq_types.qll"},
+			{Name: "TypeMember", Relation: "TypeMember", File: "tsq_types.qll"},
+			{Name: "UnionMember", Relation: "UnionMember", File: "tsq_types.qll"},
+			{Name: "IntersectionMember", Relation: "IntersectionMember", File: "tsq_types.qll"},
+			{Name: "GenericInstantiation", Relation: "GenericInstantiation", File: "tsq_types.qll"},
+			{Name: "TypeAlias", Relation: "TypeAlias", File: "tsq_types.qll"},
+			{Name: "TypeParameter", Relation: "TypeParameter", File: "tsq_types.qll"},
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},

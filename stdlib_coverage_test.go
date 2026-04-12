@@ -34,6 +34,15 @@ var stdlibCoverageAllowlist = map[string]string{
 	"SymbolTypeBinding": "internal type binding plumbing",
 	"NonTaintableType":  "internal sanitizer detection; not queried directly",
 
+	// v3 Phase 17: type-fact relations — structural type information for advanced queries.
+	"TypeInfo":             "type metadata; queried via Type class methods",
+	"TypeMember":           "tsgo-enriched; requires type resolution for memberTypeId",
+	"UnionMember":          "union constituents; queried via UnionType.getMember()",
+	"IntersectionMember":   "intersection constituents; queried via IntersectionType.getMember()",
+	"GenericInstantiation": "generic type args; queried via GenericType.getInstantiation()",
+	"TypeAlias":            "type alias resolution; queried via TypeAlias.getAliasedType()",
+	"TypeParameter":        "generic type params; queried via GenericDecl.getTypeParameter()",
+
 	// Call/parameter detail relations — used implicitly by Function/Call.
 	"Parameter":           "accessed via Function.getAParameter(), not standalone",
 	"ParameterRest":       "parameter modifier; not queried directly",

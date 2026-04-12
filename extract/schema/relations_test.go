@@ -19,6 +19,9 @@ func TestAllRelationsRegistered(t *testing.T) {
 		"ClassDecl", "InterfaceDecl", "Implements", "Extends",
 		"MethodDecl", "MethodCall", "NewExpr", "ExprType",
 		"TypeDecl", "ReturnStmt", "FunctionContains", "SymInFunction",
+		// v3 type-fact relations
+		"TypeInfo", "TypeMember", "UnionMember", "IntersectionMember",
+		"GenericInstantiation", "TypeAlias", "TypeParameter",
 		"ExtractError", "SchemaVersion",
 	}
 	for _, name := range expected {
@@ -34,8 +37,8 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 72 {
-		t.Fatalf("expected 72 relations in registry, got %d", len(Registry))
+	if len(Registry) != 79 {
+		t.Fatalf("expected 79 relations in registry, got %d", len(Registry))
 	}
 }
 
