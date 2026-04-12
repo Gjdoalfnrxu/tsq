@@ -238,6 +238,173 @@ func TestUndefinedClassInExtends(t *testing.T) {
 	hasError(t, rm, "undefined type")
 }
 
+// ---- Deprecated annotation warnings ----
+
+// TestDeprecatedPredicateWarning: calling a deprecated predicate emits a warning.
+func TestDeprecatedPredicateWarning(t *testing.T) {
+	body := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Name:        "oldPred",
+		Args:        []ast.Expr{},
+	})
+	mod := &ast.Module{
+		Predicates: []ast.PredicateDecl{
+			{
+				Name: "oldPred",
+				Annotations: []ast.Annotation{
+					{Name: "deprecated"},
+				},
+				Span: span(),
+			},
+			{
+				Name: "caller",
+				Body: &body,
+				Span: span(),
+			},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning, got none")
+	}
+	found := false
+	for _, w := range rm.Warnings {
+		if strings.Contains(w.Message, "oldPred") && strings.Contains(w.Message, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning 'oldPred' and 'deprecated', got: %v", rm.Warnings)
+	}
+}
+
+// TestDeprecatedClassWarning: referencing a deprecated class emits a warning.
+func TestDeprecatedClassWarning(t *testing.T) {
+	mod := &ast.Module{
+		Classes: []ast.ClassDecl{
+			{
+				Name: "OldClass",
+				Annotations: []ast.Annotation{
+					{Name: "deprecated"},
+				},
+				Span: span(),
+			},
+			{
+				Name:       "NewClass",
+				SuperTypes: []ast.TypeRef{typeRef("OldClass")},
+				Span:       span(),
+			},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning, got none")
+	}
+	found := false
+	for _, w := range rm.Warnings {
+		if strings.Contains(w.Message, "OldClass") && strings.Contains(w.Message, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning 'OldClass' and 'deprecated', got: %v", rm.Warnings)
+	}
+}
+
+// TestDeprecatedMemberWarning: calling a deprecated member emits a warning.
+func TestDeprecatedMemberWarning(t *testing.T) {
+	rt := typeRef("string")
+	fooClass := ast.ClassDecl{
+		Name: "Foo",
+		Members: []ast.MemberDecl{
+			{
+				Name:       "oldMethod",
+				ReturnType: &rt,
+				Annotations: []ast.Annotation{
+					{Name: "deprecated"},
+				},
+				Span: span(),
+			},
+		},
+		Span: span(),
+	}
+	xVar := varExpr("x")
+	mc := &ast.MethodCall{
+		BaseExpr: ast.BaseExpr{Span: span()},
+		Recv:     xVar,
+		Method:   "oldMethod",
+	}
+	resultVar := varExpr("result")
+	predBody := ast.Formula(&ast.Comparison{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Left:        resultVar,
+		Right:       mc,
+		Op:          "=",
+	})
+	prt := typeRef("string")
+	pred := ast.PredicateDecl{
+		Name:       "p",
+		ReturnType: &prt,
+		Params: []ast.ParamDecl{
+			{Type: typeRef("Foo"), Name: "x", Span: span()},
+		},
+		Body: &predBody,
+		Span: span(),
+	}
+	mod := &ast.Module{
+		Classes:    []ast.ClassDecl{fooClass},
+		Predicates: []ast.PredicateDecl{pred},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning, got none")
+	}
+	found := false
+	for _, w := range rm.Warnings {
+		if strings.Contains(w.Message, "oldMethod") && strings.Contains(w.Message, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning 'oldMethod' and 'deprecated', got: %v", rm.Warnings)
+	}
+}
+
+// TestNoWarningForUndeprecated: no deprecated annotation means no warnings.
+func TestNoWarningForUndeprecated(t *testing.T) {
+	body := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Name:        "normalPred",
+		Args:        []ast.Expr{},
+	})
+	mod := &ast.Module{
+		Predicates: []ast.PredicateDecl{
+			{Name: "normalPred", Span: span()},
+			{Name: "caller", Body: &body, Span: span()},
+		},
+	}
+	rm, err := resolve.Resolve(mod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	noErrors(t, rm)
+	if len(rm.Warnings) != 0 {
+		t.Errorf("expected no warnings, got %d: %v", len(rm.Warnings), rm.Warnings)
+	}
+}
+
 // Variable not bound by exists/forall → ResolveError.
 func TestUnboundVariable(t *testing.T) {
 	unbound := varExpr("x")
@@ -628,140 +795,6 @@ func TestExistsBoundVariable(t *testing.T) {
 	noErrors(t, rm)
 }
 
-// Private predicate in same module → no error.
-func TestPrivatePredicateSameModule(t *testing.T) {
-	body := ast.Formula(&ast.PredicateCall{
-		BaseFormula: ast.BaseFormula{Span: span()},
-		Name:        "secret",
-	})
-	mod := &ast.Module{
-		Predicates: []ast.PredicateDecl{
-			{
-				Name:        "secret",
-				Annotations: []ast.Annotation{{Name: "private"}},
-				Span:        span(),
-			},
-			{
-				Name: "caller",
-				Body: &body,
-				Span: span(),
-			},
-		},
-	}
-	rm, err := resolve.Resolve(mod, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	noErrors(t, rm)
-}
-
-// Private predicate from another module → resolve error.
-func TestPrivatePredicateCrossModule(t *testing.T) {
-	importedMod := &ast.Module{
-		Predicates: []ast.PredicateDecl{
-			{
-				Name:        "secretPred",
-				Annotations: []ast.Annotation{{Name: "private"}},
-				Span:        span(),
-			},
-		},
-	}
-	loader := func(path string) (*ast.Module, error) {
-		if path == "mylib" {
-			return importedMod, nil
-		}
-		return nil, errors.New("not found")
-	}
-	body := ast.Formula(&ast.PredicateCall{
-		BaseFormula: ast.BaseFormula{Span: span()},
-		Name:        "secretPred",
-	})
-	mod := &ast.Module{
-		Imports: []ast.ImportDecl{
-			{Path: "mylib", Span: span()},
-		},
-		Predicates: []ast.PredicateDecl{
-			{Name: "caller", Body: &body, Span: span()},
-		},
-	}
-	rm, _ := resolve.Resolve(mod, loader)
-	hasError(t, rm, "private")
-}
-
-// Private member in same class → no error.
-func TestPrivateMemberSameClass(t *testing.T) {
-	// Class Foo with private method "secret" and public method "caller"
-	// that calls this.secret() via PredicateCall.
-	secretCall := ast.Formula(&ast.PredicateCall{
-		BaseFormula: ast.BaseFormula{Span: span()},
-		Recv:        varExpr("this"),
-		Name:        "secret",
-	})
-	mod := &ast.Module{
-		Classes: []ast.ClassDecl{
-			{
-				Name: "Foo",
-				Members: []ast.MemberDecl{
-					{
-						Name:        "secret",
-						Annotations: []ast.Annotation{{Name: "private"}},
-						Span:        span(),
-					},
-					{
-						Name: "caller",
-						Body: &secretCall,
-						Span: span(),
-					},
-				},
-				Span: span(),
-			},
-		},
-	}
-	rm, err := resolve.Resolve(mod, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	noErrors(t, rm)
-}
-
-// Private member from another class → resolve error.
-func TestPrivateMemberCrossClass(t *testing.T) {
-	// Class Bar has private method "secret".
-	// Predicate takes a Bar and calls bar.secret().
-	barCall := ast.Formula(&ast.PredicateCall{
-		BaseFormula: ast.BaseFormula{Span: span()},
-		Recv:        varExpr("b"),
-		Name:        "secret",
-	})
-	mod := &ast.Module{
-		Classes: []ast.ClassDecl{
-			{
-				Name: "Bar",
-				Members: []ast.MemberDecl{
-					{
-						Name:        "secret",
-						Annotations: []ast.Annotation{{Name: "private"}},
-						Span:        span(),
-					},
-				},
-				Span: span(),
-			},
-		},
-		Predicates: []ast.PredicateDecl{
-			{
-				Name: "caller",
-				Params: []ast.ParamDecl{
-					{Type: typeRef("Bar"), Name: "b", Span: span()},
-				},
-				Body: &barCall,
-				Span: span(),
-			},
-		},
-	}
-	rm, _ := resolve.Resolve(mod, nil)
-	hasError(t, rm, "private")
-}
-
 // Failed import → ResolveError for that import, resolution continues.
 func TestImportLoaderFailure(t *testing.T) {
 	loader := func(path string) (*ast.Module, error) {
@@ -795,5 +828,42 @@ func TestPredicateWithReturnTypeResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	noErrors(t, rm)
+}
+
+// Subclass accessing inherited non-private member -> should succeed.
+func TestNonPrivateMemberInherited(t *testing.T) {
+	greetCall := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Recv:        varExpr("this"),
+		Name:        "greet",
+	})
+	mod := &ast.Module{
+		Classes: []ast.ClassDecl{
+			{
+				Name: "Parent",
+				Members: []ast.MemberDecl{
+					{
+						Name: "greet",
+						Span: span(),
+					},
+				},
+				Span: span(),
+			},
+			{
+				Name:       "Child",
+				SuperTypes: []ast.TypeRef{{Path: []string{"Parent"}, Span: span()}},
+				Members: []ast.MemberDecl{
+					{
+						Name: "caller",
+						Body: &greetCall,
+						Span: span(),
+					},
+				},
+				Span: span(),
+			},
+		},
+	}
+	rm, _ := resolve.Resolve(mod, nil)
 	noErrors(t, rm)
 }

@@ -14,6 +14,18 @@ type ResolvedModule struct {
 	Env         *Environment
 	Annotations *Annotations
 	Errors      []Error
+	Warnings    []Warning
+}
+
+// Warning describes a non-fatal resolution warning (e.g. deprecated usage).
+type Warning struct {
+	Pos     ast.Span
+	Message string
+}
+
+// String formats the warning with file:line:col prefix.
+func (w Warning) String() string {
+	return fmt.Sprintf("%s:%d:%d: warning: %s", w.Pos.File, w.Pos.StartLine, w.Pos.StartCol, w.Message)
 }
 
 // Environment holds all top-level declarations in scope.
@@ -71,10 +83,11 @@ var primitiveTypes = map[string]bool{
 
 // resolver is the internal state for a resolution pass.
 type resolver struct {
-	env    *Environment
-	ann    *Annotations
-	errors []Error
-	mod    *ast.Module
+	env      *Environment
+	ann      *Annotations
+	errors   []Error
+	warnings []Warning
+	mod      *ast.Module
 }
 
 // Resolve performs name resolution on mod.
@@ -111,6 +124,7 @@ func Resolve(mod *ast.Module, importLoader func(path string) (*ast.Module, error
 		Env:         env,
 		Annotations: ann,
 		Errors:      r.errors,
+		Warnings:    r.warnings,
 	}
 	return rm, nil
 }
@@ -121,6 +135,24 @@ func (r *resolver) errorf(span ast.Span, format string, args ...interface{}) {
 		Pos:     span,
 		Message: fmt.Sprintf(format, args...),
 	})
+}
+
+// warnf records a non-fatal warning.
+func (r *resolver) warnf(span ast.Span, format string, args ...interface{}) {
+	r.warnings = append(r.warnings, Warning{
+		Pos:     span,
+		Message: fmt.Sprintf(format, args...),
+	})
+}
+
+// isDeprecated returns true if annotations contain a "deprecated" entry.
+func isDeprecated(anns []ast.Annotation) bool {
+	for _, a := range anns {
+		if a.Name == "deprecated" {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Pass 0: imports ----
@@ -366,8 +398,13 @@ func (r *resolver) resolveTypeRef(tr ast.TypeRef) {
 	if strings.HasPrefix(name, "@") {
 		return
 	}
-	if _, ok := r.env.Classes[name]; !ok {
+	cd, ok := r.env.Classes[name]
+	if !ok {
 		r.errorf(tr.Span, "undefined type %q", name)
+		return
+	}
+	if isDeprecated(cd.Annotations) {
+		r.warnf(tr.Span, "reference to deprecated class %q", name)
 	}
 }
 
@@ -475,13 +512,16 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 		recvType := r.exprType(pc.Recv, s)
 		if recvType != "" {
 			if cd, ok := r.env.Classes[recvType]; ok {
-				md := r.lookupMember(cd, pc.Name)
-				if md == nil {
+				defClass := r.memberDefiningClass(cd, pc.Name)
+				if defClass == nil {
 					r.errorf(pc.GetSpan(), "class %q has no member %q", recvType, pc.Name)
-				} else if isMemberPrivate(md) {
-					// Private members are only callable from within the same class.
-					if s.inClass == nil || s.inClass.Name != cd.Name {
-						r.errorf(pc.GetSpan(), "member %q is private to class %q", pc.Name, cd.Name)
+				} else {
+					md := r.lookupMember(defClass, pc.Name)
+					if md != nil && isMemberPrivate(md) {
+						// Private members are only callable from within the defining class.
+						if s.inClass == nil || s.inClass.Name != defClass.Name {
+							r.errorf(pc.GetSpan(), "member %q is private to class %q", pc.Name, defClass.Name)
+						}
 					}
 				}
 			}
@@ -627,6 +667,10 @@ func (r *resolver) resolveAggregate(a *ast.Aggregate, s *scope) {
 func (r *resolver) exprType(e ast.Expr, s *scope) string {
 	switch n := e.(type) {
 	case *ast.Variable:
+		// Handle super specially: resolve to the first supertype of the enclosing class.
+		if n.Name == "super" && s.inClass != nil && len(s.inClass.SuperTypes) > 0 {
+			return s.inClass.SuperTypes[0].String()
+		}
 		if info, ok := s.vars[n.Name]; ok {
 			return info.typeName
 		}

@@ -38,12 +38,13 @@ type ImportDecl struct {
 
 // ClassDecl represents a QL class declaration.
 type ClassDecl struct {
-	Name       string
-	IsAbstract bool      // true for `abstract class`
-	SuperTypes []TypeRef // types listed in `extends` clause
-	CharPred   *Formula  // characteristic predicate body (the Foo() { ... } block)
-	Members    []MemberDecl
-	Span       Span
+	Name        string
+	IsAbstract  bool      // true for `abstract class`
+	SuperTypes  []TypeRef // types listed in `extends` clause
+	CharPred    *Formula  // characteristic predicate body (the Foo() { ... } block)
+	Members     []MemberDecl
+	Annotations []Annotation
+	Span        Span
 }
 
 // MemberDecl is a method or field declaration inside a class.
