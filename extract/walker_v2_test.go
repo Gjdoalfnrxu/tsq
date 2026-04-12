@@ -357,6 +357,7 @@ type Named = { name: string } & { age: number };
 type Identity<T> = T;
 interface Box<T> { value: T; }
 class Container<U extends object> { item: U; }
+function identity<V>(x: V): V { return x; }
 const x: Box<string> = { value: "hi" };
 `
 	database := v2WalkerTestDB(t, src)
@@ -385,10 +386,17 @@ const x: Box<string> = { value: "hi" };
 		t.Error("TypeAlias: expected non-zero tuples for type alias declarations")
 	}
 
-	// TypeParameter should be populated for generic declarations
+	// GenericInstantiation should be populated for Box<string>
+	genR := rel(t, database, "GenericInstantiation")
+	if genR.Tuples() == 0 {
+		t.Error("GenericInstantiation: expected non-zero tuples for generic type references")
+	}
+
+	// TypeParameter should be populated for generic declarations (class, interface, function, type alias)
+	// The test source has 4 generic declarations: Identity<T>, Box<T>, Container<U>, identity<V>
 	tpR := rel(t, database, "TypeParameter")
-	if tpR.Tuples() == 0 {
-		t.Error("TypeParameter: expected non-zero tuples for generic declarations")
+	if tpR.Tuples() < 4 {
+		t.Errorf("TypeParameter: expected at least 4 tuples (one per generic decl), got %d", tpR.Tuples())
 	}
 
 	// ExprType and SymbolType remain empty without tsgo

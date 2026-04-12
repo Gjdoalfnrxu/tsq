@@ -19,6 +19,9 @@ func TestAllRelationsRegistered(t *testing.T) {
 		"ClassDecl", "InterfaceDecl", "Implements", "Extends",
 		"MethodDecl", "MethodCall", "NewExpr", "ExprType",
 		"TypeDecl", "ReturnStmt", "FunctionContains", "SymInFunction",
+		// v3 type-fact relations
+		"TypeInfo", "TypeMember", "UnionMember", "IntersectionMember",
+		"GenericInstantiation", "TypeAlias", "TypeParameter",
 		"ExtractError", "SchemaVersion",
 	}
 	for _, name := range expected {

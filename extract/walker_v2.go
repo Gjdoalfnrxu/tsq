@@ -335,6 +335,11 @@ func (tw *TypeAwareWalker) pushFunction(node ASTNode, id uint32) {
 		tw.fw.emit("SymInFunction", retSymID, id)
 	}
 
+	// TypeParameter for generic functions (function identity<T>(...) {})
+	if kind == "FunctionDeclaration" || kind == "GeneratorFunctionDeclaration" || kind == "MethodDefinition" {
+		tw.emitTypeParameters(node, id)
+	}
+
 	// MethodDecl: if inside a class or interface
 	if kind == "MethodDefinition" && len(tw.classOrIfaceStack) > 0 {
 		containerID := tw.classOrIfaceStack[len(tw.classOrIfaceStack)-1]

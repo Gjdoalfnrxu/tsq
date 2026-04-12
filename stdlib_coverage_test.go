@@ -36,7 +36,7 @@ var stdlibCoverageAllowlist = map[string]string{
 
 	// v3 Phase 17: type-fact relations — structural type information for advanced queries.
 	"TypeInfo":             "type metadata; queried via Type class methods",
-	"TypeMember":           "object/interface members; queried via Type.getMember()",
+	"TypeMember":           "tsgo-enriched; requires type resolution for memberTypeId",
 	"UnionMember":          "union constituents; queried via UnionType.getMember()",
 	"IntersectionMember":   "intersection constituents; queried via IntersectionType.getMember()",
 	"GenericInstantiation": "generic type args; queried via GenericType.getInstantiation()",
