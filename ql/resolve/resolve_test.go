@@ -830,3 +830,40 @@ func TestPredicateWithReturnTypeResult(t *testing.T) {
 	}
 	noErrors(t, rm)
 }
+
+// Subclass accessing inherited non-private member -> should succeed.
+func TestNonPrivateMemberInherited(t *testing.T) {
+	greetCall := ast.Formula(&ast.PredicateCall{
+		BaseFormula: ast.BaseFormula{Span: span()},
+		Recv:        varExpr("this"),
+		Name:        "greet",
+	})
+	mod := &ast.Module{
+		Classes: []ast.ClassDecl{
+			{
+				Name: "Parent",
+				Members: []ast.MemberDecl{
+					{
+						Name: "greet",
+						Span: span(),
+					},
+				},
+				Span: span(),
+			},
+			{
+				Name:       "Child",
+				SuperTypes: []ast.TypeRef{{Path: []string{"Parent"}, Span: span()}},
+				Members: []ast.MemberDecl{
+					{
+						Name: "caller",
+						Body: &greetCall,
+						Span: span(),
+					},
+				},
+				Span: span(),
+			},
+		},
+	}
+	rm, _ := resolve.Resolve(mod, nil)
+	noErrors(t, rm)
+}

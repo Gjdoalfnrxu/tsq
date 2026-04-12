@@ -34,6 +34,10 @@ type Environment struct {
 	Classes    map[string]*ast.ClassDecl
 	Imports    map[string]*ResolvedModule
 	Modules    map[string]*ast.ModuleDecl
+	// PredicateOrigin tracks the import path a predicate came from.
+	// Local predicates have origin "". Imported predicates have
+	// origin set to the import path (e.g. "tsq::react").
+	PredicateOrigin map[string]string
 }
 
 // Error describes a name resolution failure.
@@ -91,10 +95,11 @@ type resolver struct {
 // the module is unavailable (resolution continues with errors).
 func Resolve(mod *ast.Module, importLoader func(path string) (*ast.Module, error)) (*ResolvedModule, error) {
 	env := &Environment{
-		Predicates: make(map[string]*ast.PredicateDecl),
-		Classes:    make(map[string]*ast.ClassDecl),
-		Imports:    make(map[string]*ResolvedModule),
-		Modules:    make(map[string]*ast.ModuleDecl),
+		Predicates:      make(map[string]*ast.PredicateDecl),
+		Classes:         make(map[string]*ast.ClassDecl),
+		Imports:         make(map[string]*ResolvedModule),
+		Modules:         make(map[string]*ast.ModuleDecl),
+		PredicateOrigin: make(map[string]string),
 	}
 	ann := &Annotations{
 		ExprResolutions: make(map[ast.Expr]*Resolution),
@@ -177,6 +182,7 @@ func (r *resolver) processImports(mod *ast.Module, importLoader func(string) (*a
 		for name, pd := range rm.Env.Predicates {
 			if _, exists := r.env.Predicates[name]; !exists {
 				r.env.Predicates[name] = pd
+				r.env.PredicateOrigin[name] = path
 			}
 		}
 		for name, cd := range rm.Env.Classes {
@@ -478,6 +484,26 @@ func (r *resolver) resolveQuantified(decls []ast.VarDecl, guard ast.Formula, bod
 	r.resolveFormula(body, inner)
 }
 
+// isPrivate returns true if the predicate has a `private` annotation.
+func isPrivate(pd *ast.PredicateDecl) bool {
+	for _, a := range pd.Annotations {
+		if a.Name == "private" {
+			return true
+		}
+	}
+	return false
+}
+
+// isMemberPrivate returns true if the member has a `private` annotation.
+func isMemberPrivate(md *ast.MemberDecl) bool {
+	for _, a := range md.Annotations {
+		if a.Name == "private" {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvePredicateCall resolves a predicate/method call used as a formula.
 func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 	if pc.Recv != nil {
@@ -486,11 +512,20 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 		recvType := r.exprType(pc.Recv, s)
 		if recvType != "" {
 			if cd, ok := r.env.Classes[recvType]; ok {
-				md := r.lookupMember(cd, pc.Name)
-				if md == nil {
+				defClass := r.memberDefiningClass(cd, pc.Name)
+				if defClass == nil {
 					r.errorf(pc.GetSpan(), "class %q has no member %q", recvType, pc.Name)
-				} else if isDeprecated(md.Annotations) {
-					r.warnf(pc.GetSpan(), "call to deprecated member %q on class %q", pc.Name, recvType)
+				} else {
+					md := r.lookupMember(defClass, pc.Name)
+					if md != nil && isMemberPrivate(md) {
+						// Private members are only callable from within the defining class.
+						if s.inClass == nil || s.inClass.Name != defClass.Name {
+							r.errorf(pc.GetSpan(), "member %q is private to class %q", pc.Name, defClass.Name)
+						}
+					}
+					if md != nil && isDeprecated(md.Annotations) {
+						r.warnf(pc.GetSpan(), "call to deprecated member %q on class %q", pc.Name, recvType)
+					}
 				}
 			}
 		}
@@ -503,8 +538,17 @@ func (r *resolver) resolvePredicateCall(pc *ast.PredicateCall, s *scope) {
 	pd, ok := r.env.Predicates[pc.Name]
 	if !ok {
 		r.errorf(pc.GetSpan(), "undefined predicate %q", pc.Name)
-	} else if isDeprecated(pd.Annotations) {
-		r.warnf(pc.GetSpan(), "call to deprecated predicate %q", pc.Name)
+	} else {
+		if isPrivate(pd) {
+			// Private predicates are only callable from within the same module.
+			origin := r.env.PredicateOrigin[pc.Name]
+			if origin != "" {
+				r.errorf(pc.GetSpan(), "predicate %q is private to module %q", pc.Name, origin)
+			}
+		}
+		if isDeprecated(pd.Annotations) {
+			r.warnf(pc.GetSpan(), "call to deprecated predicate %q", pc.Name)
+		}
 	}
 	for _, arg := range pc.Args {
 		r.resolveExpr(arg, s)
@@ -588,6 +632,12 @@ func (r *resolver) resolveMethodCall(mc *ast.MethodCall, s *scope) {
 					DeclClass:  defClass,
 					DeclMember: md,
 				}
+				// Enforce private visibility for member method calls.
+				if md != nil && isMemberPrivate(md) {
+					if s.inClass == nil || s.inClass.Name != defClass.Name {
+						r.errorf(mc.GetSpan(), "member %q is private to class %q", mc.Method, defClass.Name)
+					}
+				}
 				if md != nil && isDeprecated(md.Annotations) {
 					r.warnf(mc.GetSpan(), "call to deprecated member %q on class %q", mc.Method, defClass.Name)
 				}
@@ -626,6 +676,10 @@ func (r *resolver) resolveAggregate(a *ast.Aggregate, s *scope) {
 func (r *resolver) exprType(e ast.Expr, s *scope) string {
 	switch n := e.(type) {
 	case *ast.Variable:
+		// Handle super specially: resolve to the first supertype of the enclosing class.
+		if n.Name == "super" && s.inClass != nil && len(s.inClass.SuperTypes) > 0 {
+			return s.inClass.SuperTypes[0].String()
+		}
 		if info, ok := s.vars[n.Name]; ok {
 			return info.typeName
 		}

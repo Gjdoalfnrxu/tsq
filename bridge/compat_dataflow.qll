@@ -29,6 +29,14 @@ module DataFlow {
     }
 
     /**
+     * A single local data-flow step between two nodes.
+     * Wraps the LocalFlow fact relation, projecting out the function ID.
+     */
+    predicate localFlowStep(Node pred, Node succ) {
+        exists(int fnId | LocalFlow(fnId, pred, succ))
+    }
+
+    /**
      * A data-flow configuration. Users extend this class and override
      * isSource, isSink, isBarrier, and isAdditionalFlowStep to define
      * a custom data-flow analysis.
@@ -45,6 +53,74 @@ module DataFlow {
 
         /** Holds if there is an additional flow step from `pred` to `succ`. */
         predicate isAdditionalFlowStep(Node pred, Node succ) { none() }
+
+        /**
+         * Holds if data flows from `source` to `sink` in this configuration.
+         * Barriers are checked at every node on the path (not just endpoints).
+         * Additional flow steps defined by isAdditionalFlowStep are consulted
+         * to extend reachability beyond LocalFlow edges.
+         */
+        predicate hasFlow(Node source, Node sink) {
+            this.isSource(source) and
+            this.isSink(sink) and
+            not this.isBarrier(source) and
+            not this.isBarrier(sink) and
+            (
+                source = sink
+                or
+                (
+                    exists(int fnId | LocalFlowStar(fnId, source, sink)) and
+                    not exists(Node mid |
+                        this.isBarrier(mid) and
+                        mid != source and mid != sink and
+                        exists(int fn1 | LocalFlowStar(fn1, source, mid)) and
+                        exists(int fn2 | LocalFlowStar(fn2, mid, sink))
+                    )
+                )
+                or
+                exists(Node mid1, Node mid2 |
+                    this.isAdditionalFlowStep(mid1, mid2) and
+                    not this.isBarrier(mid1) and
+                    not this.isBarrier(mid2) and
+                    (source = mid1 or exists(int fn | LocalFlowStar(fn, source, mid1))) and
+                    (mid2 = sink or exists(int fn | LocalFlowStar(fn, mid2, sink)))
+                )
+            )
+        }
+
+        /**
+         * Holds if there is a data-flow path from `source` to `sink`,
+         * filtered by this configuration's isSource/isSink/isBarrier overrides.
+         * Barriers are checked at every node on the path.
+         * Additional flow steps are consulted for extended reachability.
+         */
+        predicate hasFlowPath(PathNode source, PathNode sink) {
+            this.isSource(source) and
+            this.isSink(sink) and
+            not this.isBarrier(source) and
+            not this.isBarrier(sink) and
+            (
+                source = sink
+                or
+                (
+                    exists(int fnId | LocalFlowStar(fnId, source, sink)) and
+                    not exists(Node mid |
+                        this.isBarrier(mid) and
+                        mid != source and mid != sink and
+                        exists(int fn1 | LocalFlowStar(fn1, source, mid)) and
+                        exists(int fn2 | LocalFlowStar(fn2, mid, sink))
+                    )
+                )
+                or
+                exists(Node mid1, Node mid2 |
+                    this.isAdditionalFlowStep(mid1, mid2) and
+                    not this.isBarrier(mid1) and
+                    not this.isBarrier(mid2) and
+                    (source = mid1 or exists(int fn | LocalFlowStar(fn, source, mid1))) and
+                    (mid2 = sink or exists(int fn | LocalFlowStar(fn, mid2, sink)))
+                )
+            )
+        }
     }
 
     /**
@@ -62,26 +138,5 @@ module DataFlow {
 
         /** Gets the file containing this node. */
         File getLocation() { Symbol(this, _, _, result) }
-    }
-
-    /**
-     * Holds if data flows from `source` to `sink` via local flow edges.
-     * Uses the transitive closure (LocalFlowStar) relation.
-     */
-    predicate hasFlow(Node source, Node sink) {
-        exists(int fnId |
-            LocalFlowStar(fnId, source, sink)
-        )
-    }
-
-    /**
-     * Holds if there is a data-flow path from `source` to `sink`.
-     * Equivalent to hasFlow for now; provided for API compatibility
-     * with CodeQL path queries.
-     */
-    predicate hasFlowPath(PathNode source, PathNode sink) {
-        exists(int fnId |
-            LocalFlowStar(fnId, source, sink)
-        )
     }
 }
