@@ -396,6 +396,60 @@ func TestBuiltinStringToString(t *testing.T) {
 	}
 }
 
+// TestBuiltinStringSplitAt evaluates __builtin_string_splitAt.
+func TestBuiltinStringSplitAt(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		index    int64
+		wantRows int
+		want     string
+	}{
+		{"mid", "hello", 2, 1, "llo"},
+		{"zero", "hello", 0, 1, "hello"},
+		{"full_length", "hello", 5, 1, ""},
+		{"out_of_range", "hello", 6, 0, ""},
+		{"negative", "hello", -1, 0, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := makeRelation("Data", 1, StrVal{V: tt.input})
+			baseRels := map[string]*Relation{"Data": data}
+
+			ep := &plan.ExecutionPlan{
+				Strata: []plan.Stratum{{
+					Rules: []plan.PlannedRule{{
+						Head: head("Result", v("r")),
+						JoinOrder: []plan.JoinStep{
+							positiveStep("Data", v("s")),
+							positiveStep("__builtin_string_splitAt", v("s"), ic(tt.index), v("r")),
+						},
+					}},
+				}},
+				Query: &plan.PlannedQuery{
+					Select:    []datalog.Term{v("r")},
+					JoinOrder: []plan.JoinStep{positiveStep("Result", v("r"))},
+				},
+			}
+
+			rs, err := Evaluate(context.Background(), ep, baseRels)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if len(rs.Rows) != tt.wantRows {
+				t.Fatalf("expected %d rows, got %d: %v", tt.wantRows, len(rs.Rows), rs.Rows)
+			}
+			if tt.wantRows > 0 {
+				got := rs.Rows[0][0].(StrVal).V
+				if got != tt.want {
+					t.Errorf("expected %q, got %q", tt.want, got)
+				}
+			}
+		})
+	}
+}
+
 // TestBuiltinIsBuiltin verifies IsBuiltin for known and unknown predicates.
 func TestBuiltinIsBuiltin(t *testing.T) {
 	if !IsBuiltin("__builtin_string_length") {
