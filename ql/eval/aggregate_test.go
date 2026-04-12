@@ -7,12 +7,6 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
-// makeAgg builds a PlannedAggregate for testing.
-// inputRel: name of the source relation in rels.
-// aggVar: the variable to aggregate.
-// groupByVars: variables forming the group key.
-// fn: aggregate function name.
-// resultRelation: name of the output relation.
 func makeAgg(inputRel, aggVar string, groupByVars []string, fn, resultRelation string) plan.PlannedAggregate {
 	groupBy := make([]datalog.Var, len(groupByVars))
 	for i, n := range groupByVars {
@@ -45,9 +39,7 @@ func makeAgg(inputRel, aggVar string, groupByVars []string, fn, resultRelation s
 	}
 }
 
-// TestAggCount tests count aggregate.
 func TestAggCount(t *testing.T) {
-	// Relation: (group, value)
 	rel := makeRelation("R", 2,
 		IntVal{1}, IntVal{10},
 		IntVal{1}, IntVal{20},
@@ -55,19 +47,14 @@ func TestAggCount(t *testing.T) {
 		IntVal{2}, IntVal{40},
 	)
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
-	// Find group 1 → count 3, group 2 → count 1.
 	counts := map[int64]int64{}
 	for _, row := range result.Tuples() {
-		groupVal := row[0].(IntVal).V
-		cntVal := row[1].(IntVal).V
-		counts[groupVal] = cntVal
+		counts[row[0].(IntVal).V] = row[1].(IntVal).V
 	}
 	if counts[1] != 3 {
 		t.Errorf("group 1: expected count=3, got %d", counts[1])
@@ -77,14 +64,11 @@ func TestAggCount(t *testing.T) {
 	}
 }
 
-// TestAggCountNoGroup tests count with no group-by.
 func TestAggCountNoGroup(t *testing.T) {
 	rel := makeRelation("R", 1, IntVal{1}, IntVal{2}, IntVal{3})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "x", nil, "count", "cnt")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 result, got %d", result.Len())
 	}
@@ -94,60 +78,37 @@ func TestAggCountNoGroup(t *testing.T) {
 	}
 }
 
-// TestAggMin tests min aggregate.
 func TestAggMin(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{50},
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{30},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{50}, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "min", "minv")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
-	minVal := result.Tuples()[0][1].(IntVal).V
-	if minVal != 10 {
-		t.Errorf("expected min=10, got %d", minVal)
+	if result.Tuples()[0][1].(IntVal).V != 10 {
+		t.Errorf("expected min=10, got %d", result.Tuples()[0][1].(IntVal).V)
 	}
 }
 
-// TestAggMax tests max aggregate.
 func TestAggMax(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{5},
-		IntVal{1}, IntVal{100},
-		IntVal{1}, IntVal{42},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{5}, IntVal{1}, IntVal{100}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "max", "maxv")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
-	maxVal := result.Tuples()[0][1].(IntVal).V
-	if maxVal != 100 {
-		t.Errorf("expected max=100, got %d", maxVal)
+	if result.Tuples()[0][1].(IntVal).V != 100 {
+		t.Errorf("expected max=100, got %d", result.Tuples()[0][1].(IntVal).V)
 	}
 }
 
-// TestAggSum tests sum aggregate.
 func TestAggSum(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{20},
-		IntVal{2}, IntVal{5},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{5})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "sum", "sumv")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -163,55 +124,34 @@ func TestAggSum(t *testing.T) {
 	}
 }
 
-// TestAggAvg tests avg aggregate (integer division).
 func TestAggAvg(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{20},
-		IntVal{1}, IntVal{30},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "avg", "avgv")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
-	avgVal := result.Tuples()[0][1].(IntVal).V
-	if avgVal != 20 { // (10+20+30)/3 = 20
-		t.Errorf("expected avg=20, got %d", avgVal)
+	if result.Tuples()[0][1].(IntVal).V != 20 {
+		t.Errorf("expected avg=20, got %d", result.Tuples()[0][1].(IntVal).V)
 	}
 }
 
-// TestAggEmptyInput tests aggregates over empty input.
 func TestAggEmptyInput(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
 	result := Aggregate(agg, rels)
-
-	// No groups → empty result.
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty input, got %d", result.Len())
 	}
 }
 
-// --- Phase 1h: Additional aggregates ---
-
-// TestAggStrictcount tests strictcount — like count but no result for empty set.
 func TestAggStrictcount(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{20},
-		IntVal{2}, IntVal{30},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{30})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -227,98 +167,67 @@ func TestAggStrictcount(t *testing.T) {
 	}
 }
 
-// TestAggStrictcountEmpty tests strictcount returns no result for empty set.
 func TestAggStrictcountEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty strictcount, got %d", result.Len())
 	}
 }
 
-// TestAggStrictsum tests strictsum — like sum but no result for empty set.
 func TestAggStrictsum(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{20},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
-	sval := result.Tuples()[0][1].(IntVal).V
-	if sval != 30 {
-		t.Errorf("expected strictsum=30, got %d", sval)
+	if result.Tuples()[0][1].(IntVal).V != 30 {
+		t.Errorf("expected strictsum=30, got %d", result.Tuples()[0][1].(IntVal).V)
 	}
 }
 
-// TestAggStrictsumEmpty tests strictsum returns no result for empty set.
 func TestAggStrictsumEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty strictsum, got %d", result.Len())
 	}
 }
 
-// TestAggConcat tests concat aggregate.
 func TestAggConcat(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, StrVal{"hello"},
-		IntVal{1}, StrVal{"world"},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, StrVal{"hello"}, IntVal{1}, StrVal{"world"})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "concat", "cval")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
 	cval := result.Tuples()[0][1].(StrVal).V
-	// With default empty separator
 	if cval != "helloworld" {
 		t.Errorf("expected concat='helloworld', got %q", cval)
 	}
 }
 
-// TestRankOrdinal tests that rank returns ordinal positions 1,2,3 not group size.
 func TestRankOrdinal(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{20},
-		IntVal{1}, IntVal{30},
-	)
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
 	result := Aggregate(agg, rels)
-
-	// rank should emit 3 tuples (one per value) with ranks 1, 2, 3
 	if result.Len() != 3 {
 		t.Fatalf("expected 3 tuples (one per value), got %d", result.Len())
 	}
-
 	rankSet := map[int64]bool{}
 	for _, row := range result.Tuples() {
-		groupVal := row[0].(IntVal).V
-		if groupVal != 1 {
-			t.Errorf("unexpected group key %d", groupVal)
+		if row[0].(IntVal).V != 1 {
+			t.Errorf("unexpected group key %d", row[0].(IntVal).V)
 		}
-		rankVal := row[1].(IntVal).V
-		rankSet[rankVal] = true
+		rankSet[row[1].(IntVal).V] = true
 	}
 	for _, expected := range []int64{1, 2, 3} {
 		if !rankSet[expected] {
@@ -327,49 +236,56 @@ func TestRankOrdinal(t *testing.T) {
 	}
 }
 
-// TestRankWithTies tests dense ranking: tied values share the same rank,
-// next distinct value gets rank+1 (no gaps). Since Relations are sets,
-// duplicate (group, rank) tuples are collapsed — the result contains
-// the distinct rank values.
-func TestRankWithTies(t *testing.T) {
-	rel := makeRelation("R", 2,
-		IntVal{1}, IntVal{10},
-		IntVal{1}, IntVal{20},
-		IntVal{1}, IntVal{20},
-		IntVal{1}, IntVal{30},
-	)
-	rels := RelsOf(rel)
-
-	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result := Aggregate(agg, rels)
-
-	// Dense ranking: 10→1, 20→2, 20→2, 30→3.
-	// After set dedup, 3 distinct tuples: (1,1), (1,2), (1,3).
-	if result.Len() != 3 {
-		t.Fatalf("expected 3 distinct rank tuples for ties, got %d", result.Len())
-	}
-
-	rankSet := map[int64]bool{}
-	for _, row := range result.Tuples() {
-		rankVal := row[1].(IntVal).V
-		rankSet[rankVal] = true
-	}
-	for _, expected := range []int64{1, 2, 3} {
-		if !rankSet[expected] {
-			t.Errorf("expected rank %d in result, got ranks %v", expected, rankSet)
-		}
-	}
-}
-
-// TestRankEmptyGroup tests that rank over an empty set yields no rows.
 func TestRankEmptyGroup(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
-
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
 	result := Aggregate(agg, rels)
-
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty rank input, got %d", result.Len())
+	}
+}
+
+func TestComputeRankOrdinal(t *testing.T) {
+	vals := []Value{IntVal{10}, IntVal{20}, IntVal{30}}
+	ranks := computeRank(vals)
+	expected := []int64{1, 2, 3}
+	for i, r := range ranks {
+		if r != expected[i] {
+			t.Errorf("rank[%d]: expected %d, got %d", i, expected[i], r)
+		}
+	}
+}
+
+func TestComputeRankWithTies(t *testing.T) {
+	vals := []Value{IntVal{10}, IntVal{20}, IntVal{20}, IntVal{30}}
+	ranks := computeRank(vals)
+	expected := []int64{1, 2, 3, 4}
+	for i, r := range ranks {
+		if r != expected[i] {
+			t.Errorf("rank[%d]: expected %d, got %d (vals=%v, ranks=%v)", i, expected[i], r, vals, ranks)
+		}
+	}
+}
+
+func TestComputeRankAllTied(t *testing.T) {
+	vals := []Value{IntVal{5}, IntVal{5}, IntVal{5}}
+	ranks := computeRank(vals)
+	expected := []int64{1, 2, 3}
+	for i, r := range ranks {
+		if r != expected[i] {
+			t.Errorf("rank[%d]: expected %d, got %d", i, expected[i], r)
+		}
+	}
+}
+
+func TestComputeRankStableOrder(t *testing.T) {
+	vals := []Value{IntVal{30}, IntVal{20}, IntVal{20}, IntVal{10}}
+	ranks := computeRank(vals)
+	expected := []int64{4, 2, 3, 1}
+	for i, r := range ranks {
+		if r != expected[i] {
+			t.Errorf("rank[%d]: expected %d, got %d", i, expected[i], r)
+		}
 	}
 }

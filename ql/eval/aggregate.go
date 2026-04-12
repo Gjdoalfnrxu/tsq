@@ -82,7 +82,8 @@ func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 	if agg.Agg.Func == "rank" {
 		// Rank is multi-tuple: for each group, sort values by the ordering
 		// expression and emit one tuple per value with its 1-indexed ordinal
-		// position. Uses dense ranking (no gaps on ties).
+		// position. Uses ordinal ranking (unique positions, ties broken by
+		// input order) for CodeQL compatibility.
 		for _, gk := range groupOrder {
 			g := groupMap[gk]
 			if len(g.values) == 0 {
@@ -215,9 +216,10 @@ func computeAggregate(fn string, vals []Value, separator string) (Value, error) 
 }
 
 // computeRank sorts values and returns their 1-indexed ordinal positions.
-// Uses dense ranking: tied values share the same rank, and the next distinct
-// value gets rank+1 (no gaps). For example, [10, 20, 20, 30] yields
-// [1, 2, 2, 3]. Values are sorted ascending by their natural order
+// Uses ordinal ranking for CodeQL compatibility: each tuple gets a unique
+// position (1, 2, 3, ..., N) even when values are tied. Ties are broken
+// by input order (stable sort). For example, [10, 20, 20, 30] yields
+// [1, 2, 3, 4]. Values are sorted ascending by their natural order
 // (int < int, string < string lexicographically). Mixed types are sorted
 // with ints before strings.
 func computeRank(vals []Value) []int64 {
@@ -234,14 +236,11 @@ func computeRank(vals []Value) []int64 {
 		return valueLess(items[i].val, items[j].val)
 	})
 
-	// Assign dense ranks: each new distinct value gets the next rank.
+	// Assign ordinal ranks: each item gets a unique sequential position.
+	// Ties are broken by stable sort order (original insertion order).
 	ranks := make([]int64, len(vals))
-	var currentRank int64 = 1
 	for i, item := range items {
-		if i > 0 && !valueEqual(items[i-1].val, item.val) {
-			currentRank++
-		}
-		ranks[item.idx] = currentRank
+		ranks[item.idx] = int64(i + 1)
 	}
 	return ranks
 }
@@ -250,34 +249,17 @@ func computeRank(vals []Value) []int64 {
 func valueLess(a, b Value) bool {
 	switch av := a.(type) {
 	case IntVal:
-		switch bv := b.(type) {
-		case IntVal:
-			return av.V < bv.V
-		case StrVal:
-			return true // ints sort before strings
-		}
-	case StrVal:
-		switch bv := b.(type) {
-		case IntVal:
-			return false // strings sort after ints
-		case StrVal:
-			return av.V < bv.V
-		}
-	}
-	return false
-}
-
-// valueEqual returns true if a and b are the same value.
-func valueEqual(a, b Value) bool {
-	switch av := a.(type) {
-	case IntVal:
 		if bv, ok := b.(IntVal); ok {
-			return av.V == bv.V
+			return av.V < bv.V
 		}
+		// b is not IntVal (must be StrVal) -- ints sort before strings.
+		return true
 	case StrVal:
 		if bv, ok := b.(StrVal); ok {
-			return av.V == bv.V
+			return av.V < bv.V
 		}
+		// b is not StrVal (must be IntVal) -- strings sort after ints.
+		return false
 	}
 	return false
 }
@@ -319,7 +301,7 @@ func evalLiterals(lits []datalog.Literal, rels map[string]*Relation) []binding {
 		if lit.Cmp != nil {
 			current = applyComparison(lit.Cmp, current)
 		} else if lit.Agg != nil {
-			// Nested aggregate in body — skip for v1.
+			// Nested aggregate in body -- skip for v1.
 		} else if lit.Positive {
 			current = applyPositive(lit.Atom, rels, current)
 		} else {
