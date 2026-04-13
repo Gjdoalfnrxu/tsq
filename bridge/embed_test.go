@@ -32,6 +32,8 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"compat_security_cmdi.qll",
 		"compat_security_sqli.qll",
 		"compat_security_pathtraversal.qll",
+		"compat_dom.qll",
+		"compat_crypto.qll",
 	}
 	files := LoadBridge()
 	if len(files) != len(expected) {

@@ -7,111 +7,80 @@ import (
 // s returns a StringConst term.
 func s(val string) datalog.StringConst { return datalog.StringConst{Value: val} }
 
+// intc returns an IntConst term (shorthand for datalog.IntConst{Value: n}).
+func intc(n int64) datalog.IntConst { return datalog.IntConst{Value: n} }
+
 // FrameworkRules returns the system Datalog rules for framework-specific
 // taint source/sink identification (Phase F). These are pattern-based
 // heuristics that match on function names and method names to populate
-// TaintSource, TaintSink, and ExpressHandler relations.
+// TaintSource, TaintSink, Sanitizer, and handler relations.
 func FrameworkRules() []datalog.Rule {
-	return []datalog.Rule{
-		// ─── Express handler detection ───────────────────────────────────
-		// ExpressHandler(fn) :-
-		//   MethodCall(call, recv, "get"), CallArg(call, _, cbExpr),
-		//   ExprMayRef(cbExpr, cbSym), FunctionSymbol(cbSym, fn).
-		// (Also for "post", "put", "delete", "use", "patch")
-		expressHandlerRule("get"),
-		expressHandlerRule("post"),
-		expressHandlerRule("put"),
-		expressHandlerRule("delete"),
-		expressHandlerRule("use"),
-		expressHandlerRule("patch"),
+	var rules []datalog.Rule
 
-		// ─── Express sources: req.query ──────────────────────────────────
-		// TaintSource(callExpr, "http_input") :-
-		//   MethodCall(call, recv, "query"), ExprMayRef(recv, reqSym),
-		//   Parameter(fn, 0, "req", _, reqSym, _), ExpressHandler(fn),
-		//   ExprMayRef(call, callExpr).
-		// Note: MethodCall here represents property access like req.query.
-		// Since we match on FieldRead instead (req.query is a field read, not method call):
-		// TaintSource(expr, "http_input") :-
-		//   FieldRead(expr, reqSym, "query"),
-		//   Parameter(fn, 0, _, _, reqSym, _), ExpressHandler(fn).
-		rule("TaintSource",
-			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s("query")),
-			pos("Parameter", v("fn"), datalog.IntConst{Value: 0}, w(), w(), v("reqSym"), w()),
-			pos("ExpressHandler", v("fn")),
-		),
+	rules = append(rules, expressRules()...)
+	rules = append(rules, httpHandlerRules()...)
+	rules = append(rules, koaRules()...)
+	rules = append(rules, fastifyRules()...)
+	rules = append(rules, lambdaRules()...)
+	rules = append(rules, nextjsRules()...)
+	rules = append(rules, databaseRules()...)
+	rules = append(rules, sanitizerRules()...)
 
-		// TaintSource(expr, "http_input") :- FieldRead(expr, reqSym, "params"), ...
-		rule("TaintSource",
-			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s("params")),
-			pos("Parameter", v("fn"), datalog.IntConst{Value: 0}, w(), w(), v("reqSym"), w()),
-			pos("ExpressHandler", v("fn")),
-		),
+	// ─── Node.js sinks: child_process.exec ──────────────────────────
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("argExpr"), s("command_injection")},
+		pos("CallCalleeSym", v("call"), v("execSym")),
+		pos("FunctionSymbol", v("execSym"), v("execFn")),
+		pos("Function", v("execFn"), s("exec"), w(), w(), w(), w()),
+		pos("CallArg", v("call"), intc(0), v("argExpr")),
+	))
 
-		// TaintSource(expr, "http_input") :- FieldRead(expr, reqSym, "body"), ...
-		rule("TaintSource",
-			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s("body")),
-			pos("Parameter", v("fn"), datalog.IntConst{Value: 0}, w(), w(), v("reqSym"), w()),
-			pos("ExpressHandler", v("fn")),
-		),
+	// ─── React XSS: dangerouslySetInnerHTML ─────────────────────────
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("valueExpr"), s("xss")},
+		pos("JsxAttribute", w(), s("dangerouslySetInnerHTML"), v("valueExpr")),
+	))
 
-		// ─── Express sinks: res.send ─────────────────────────────────────
-		// TaintSink(argExpr, "xss") :-
-		//   MethodCall(call, recv, "send"), ExprMayRef(recv, resSym),
-		//   Parameter(fn, 1, _, _, resSym, _), ExpressHandler(fn),
-		//   CallArg(call, 0, argExpr).
-		rule("TaintSink",
-			[]datalog.Term{v("argExpr"), s("xss")},
-			pos("MethodCall", v("call"), v("recv"), s("send")),
-			pos("ExprMayRef", v("recv"), v("resSym")),
-			pos("Parameter", v("fn"), datalog.IntConst{Value: 1}, w(), w(), v("resSym"), w()),
-			pos("ExpressHandler", v("fn")),
-			pos("CallArg", v("call"), datalog.IntConst{Value: 0}, v("argExpr")),
-		),
+	// ─── SQL sinks: *.query() (heuristic fallback) ──────────────────
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("argExpr"), s("sql")},
+		pos("MethodCall", v("call"), w(), s("query")),
+		pos("CallArg", v("call"), intc(0), v("argExpr")),
+	))
 
-		// ─── Node.js sinks: child_process.exec ──────────────────────────
-		// TaintSink(argExpr, "command_injection") :-
-		//   CallCalleeSym(call, execSym), FunctionSymbol(execSym, execFn),
-		//   Function(execFn, "exec", _, _, _, _), CallArg(call, 0, argExpr).
-		rule("TaintSink",
-			[]datalog.Term{v("argExpr"), s("command_injection")},
-			pos("CallCalleeSym", v("call"), v("execSym")),
-			pos("FunctionSymbol", v("execSym"), v("execFn")),
-			pos("Function", v("execFn"), s("exec"), w(), w(), w(), w()),
-			pos("CallArg", v("call"), datalog.IntConst{Value: 0}, v("argExpr")),
-		),
-
-		// ─── React XSS: dangerouslySetInnerHTML ─────────────────────────
-		// TaintSink(valueExpr, "xss") :-
-		//   JsxAttribute(elem, "dangerouslySetInnerHTML", valueExpr).
-		rule("TaintSink",
-			[]datalog.Term{v("valueExpr"), s("xss")},
-			pos("JsxAttribute", w(), s("dangerouslySetInnerHTML"), v("valueExpr")),
-		),
-
-		// ─── SQL sinks: *.query() ───────────────────────────────────────
-		// Heuristic: any .query() call is treated as a SQL sink. This matches
-		// db.query(), pool.query(), connection.query(), etc. Known false-positive
-		// risk for non-DB .query() methods (URLSearchParams, jQuery, etc.).
-		// Future: constrain receiver to known DB client types or import sources.
-		// TaintSink(argExpr, "sql") :-
-		//   MethodCall(call, _, "query"), CallArg(call, 0, argExpr).
-		rule("TaintSink",
-			[]datalog.Term{v("argExpr"), s("sql")},
-			pos("MethodCall", v("call"), w(), s("query")),
-			pos("CallArg", v("call"), datalog.IntConst{Value: 0}, v("argExpr")),
-		),
-	}
+	return rules
 }
 
-// expressHandlerRule generates:
-//
-//	ExpressHandler(fn) :-
-//	  MethodCall(call, _, methodName), CallArg(call, _, cbExpr),
-//	  ExprMayRef(cbExpr, cbSym), FunctionSymbol(cbSym, fn).
+// ─── Express (existing) ─────────────────────────────────────────────────────
+
+func expressRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	for _, method := range []string{"get", "post", "put", "delete", "use", "patch"} {
+		rules = append(rules, expressHandlerRule(method))
+	}
+
+	for _, field := range []string{"query", "params", "body"} {
+		rules = append(rules, rule("TaintSource",
+			[]datalog.Term{v("expr"), s("http_input")},
+			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
+			pos("ExpressHandler", v("fn")),
+		))
+	}
+
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("argExpr"), s("xss")},
+		pos("MethodCall", v("call"), v("recv"), s("send")),
+		pos("ExprMayRef", v("recv"), v("resSym")),
+		pos("Parameter", v("fn"), intc(1), w(), w(), v("resSym"), w()),
+		pos("ExpressHandler", v("fn")),
+		pos("CallArg", v("call"), intc(0), v("argExpr")),
+	))
+
+	return rules
+}
+
 func expressHandlerRule(methodName string) datalog.Rule {
 	return rule("ExpressHandler",
 		[]datalog.Term{v("fn")},
@@ -120,4 +89,272 @@ func expressHandlerRule(methodName string) datalog.Rule {
 		pos("ExprMayRef", v("cbExpr"), v("cbSym")),
 		pos("FunctionSymbol", v("cbSym"), v("fn")),
 	)
+}
+
+// ─── B1: Node.js HTTP module ────────────────────────────────────────────────
+
+func httpHandlerRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	for _, mod := range []string{"http", "https"} {
+		rules = append(rules, rule("HttpHandler",
+			[]datalog.Term{v("fn")},
+			pos("CallCalleeSym", v("call"), v("calleeSym")),
+			pos("ImportBinding", v("calleeSym"), s(mod), s("createServer")),
+			pos("CallArg", v("call"), w(), v("cbExpr")),
+			pos("ExprMayRef", v("cbExpr"), v("cbSym")),
+			pos("FunctionSymbol", v("cbSym"), v("fn")),
+		))
+	}
+
+	for _, field := range []string{"url", "headers", "method"} {
+		rules = append(rules, rule("TaintSource",
+			[]datalog.Term{v("expr"), s("http_input")},
+			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
+			pos("HttpHandler", v("fn")),
+		))
+	}
+
+	for _, method := range []string{"write", "end"} {
+		rules = append(rules, rule("TaintSink",
+			[]datalog.Term{v("argExpr"), s("xss")},
+			pos("MethodCall", v("call"), v("recv"), s(method)),
+			pos("ExprMayRef", v("recv"), v("resSym")),
+			pos("Parameter", v("fn"), intc(1), w(), w(), v("resSym"), w()),
+			pos("HttpHandler", v("fn")),
+			pos("CallArg", v("call"), intc(0), v("argExpr")),
+		))
+	}
+
+	return rules
+}
+
+// ─── B2: Koa.js ─────────────────────────────────────────────────────────────
+
+func koaRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	rules = append(rules, rule("KoaHandler",
+		[]datalog.Term{v("fn")},
+		pos("MethodCall", v("call"), w(), s("use")),
+		pos("CallArg", v("call"), w(), v("cbExpr")),
+		pos("ExprMayRef", v("cbExpr"), v("cbSym")),
+		pos("FunctionSymbol", v("cbSym"), v("fn")),
+	))
+
+	rules = append(rules, rule("TaintSource",
+		[]datalog.Term{v("expr"), s("http_input")},
+		pos("FieldRead", v("expr"), v("ctxSym"), s("query")),
+		pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
+		pos("KoaHandler", v("fn")),
+	))
+
+	for _, field := range []string{"body", "query"} {
+		rules = append(rules, rule("TaintSource",
+			[]datalog.Term{v("expr"), s("http_input")},
+			pos("FieldRead", v("reqExpr"), v("ctxSym"), s("request")),
+			pos("FieldRead", v("expr"), v("reqExpr"), s(field)),
+			pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
+			pos("KoaHandler", v("fn")),
+		))
+	}
+
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("rhsExpr"), s("xss")},
+		pos("FieldWrite", w(), v("ctxSym"), s("body"), v("rhsExpr")),
+		pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
+		pos("KoaHandler", v("fn")),
+	))
+
+	return rules
+}
+
+// ─── B3: Fastify ────────────────────────────────────────────────────────────
+
+func fastifyRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	for _, method := range []string{"get", "post", "put", "delete", "patch", "head", "options"} {
+		rules = append(rules, rule("FastifyHandler",
+			[]datalog.Term{v("fn")},
+			pos("MethodCall", v("call"), w(), s(method)),
+			pos("CallArg", v("call"), w(), v("cbExpr")),
+			pos("ExprMayRef", v("cbExpr"), v("cbSym")),
+			pos("FunctionSymbol", v("cbSym"), v("fn")),
+		))
+	}
+
+	for _, field := range []string{"body", "query", "params"} {
+		rules = append(rules, rule("TaintSource",
+			[]datalog.Term{v("expr"), s("http_input")},
+			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
+			pos("FastifyHandler", v("fn")),
+		))
+	}
+
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("argExpr"), s("xss")},
+		pos("MethodCall", v("call"), v("recv"), s("send")),
+		pos("ExprMayRef", v("recv"), v("replySym")),
+		pos("Parameter", v("fn"), intc(1), w(), w(), v("replySym"), w()),
+		pos("FastifyHandler", v("fn")),
+		pos("CallArg", v("call"), intc(0), v("argExpr")),
+	))
+
+	return rules
+}
+
+// ─── B4: AWS Lambda ─────────────────────────────────────────────────────────
+
+func lambdaRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	rules = append(rules, rule("LambdaHandler",
+		[]datalog.Term{v("fn")},
+		pos("ExportBinding", s("handler"), v("localSym"), w()),
+		pos("FunctionSymbol", v("localSym"), v("fn")),
+	))
+
+	rules = append(rules, rule("TaintSource",
+		[]datalog.Term{v("expr"), s("http_input")},
+		pos("FieldRead", v("expr"), v("eventSym"), w()),
+		pos("Parameter", v("fn"), intc(0), w(), w(), v("eventSym"), w()),
+		pos("LambdaHandler", v("fn")),
+	))
+
+	return rules
+}
+
+// ─── B5: Next.js API routes ─────────────────────────────────────────────────
+
+func nextjsRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	rules = append(rules, rule("NextjsHandler",
+		[]datalog.Term{v("fn")},
+		pos("ExportBinding", s("default"), v("localSym"), w()),
+		pos("FunctionSymbol", v("localSym"), v("fn")),
+	))
+
+	for _, field := range []string{"query", "body"} {
+		rules = append(rules, rule("TaintSource",
+			[]datalog.Term{v("expr"), s("http_input")},
+			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
+			pos("NextjsHandler", v("fn")),
+		))
+	}
+
+	for _, method := range []string{"send", "json"} {
+		rules = append(rules, rule("TaintSink",
+			[]datalog.Term{v("argExpr"), s("xss")},
+			pos("MethodCall", v("call"), v("recv"), s(method)),
+			pos("ExprMayRef", v("recv"), v("resSym")),
+			pos("Parameter", v("fn"), intc(1), w(), w(), v("resSym"), w()),
+			pos("NextjsHandler", v("fn")),
+			pos("CallArg", v("call"), intc(0), v("argExpr")),
+		))
+	}
+
+	return rules
+}
+
+// ─── B6: Database drivers ───────────────────────────────────────────────────
+
+func databaseRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	for _, mod := range []string{"pg", "mysql", "mysql2", "better-sqlite3"} {
+		for _, method := range []string{"query", "execute"} {
+			rules = append(rules, rule("TaintSink",
+				[]datalog.Term{v("argExpr"), s("sql")},
+				pos("ImportBinding", v("dbSym"), s(mod), w()),
+				pos("MethodCall", v("call"), v("recv"), s(method)),
+				pos("ExprMayRef", v("recv"), v("dbSym")),
+				pos("CallArg", v("call"), intc(0), v("argExpr")),
+			))
+		}
+	}
+
+	for _, method := range []string{"find", "findOne", "aggregate"} {
+		rules = append(rules, rule("TaintSink",
+			[]datalog.Term{v("argExpr"), s("sql")},
+			pos("ImportBinding", v("dbSym"), s("mongoose"), w()),
+			pos("MethodCall", v("call"), v("recv"), s(method)),
+			pos("ExprMayRef", v("recv"), v("dbSym")),
+			pos("CallArg", v("call"), intc(0), v("argExpr")),
+		))
+	}
+
+	rules = append(rules, rule("TaintSink",
+		[]datalog.Term{v("argExpr"), s("sql")},
+		pos("ImportBinding", v("dbSym"), s("sequelize"), w()),
+		pos("MethodCall", v("call"), v("recv"), s("query")),
+		pos("ExprMayRef", v("recv"), v("dbSym")),
+		pos("CallArg", v("call"), intc(0), v("argExpr")),
+	))
+
+	return rules
+}
+
+// ─── B7: Sanitizer libraries ────────────────────────────────────────────────
+
+func sanitizerRules() []datalog.Rule {
+	var rules []datalog.Rule
+
+	xssSanitizers := []struct {
+		module string
+		name   string
+	}{
+		{"dompurify", "sanitize"},
+		{"xss", "default"},
+		{"escape-html", "default"},
+		{"he", "encode"},
+		{"he", "escape"},
+		{"sanitize-html", "default"},
+	}
+
+	for _, san := range xssSanitizers {
+		rules = append(rules, rule("Sanitizer",
+			[]datalog.Term{v("fn"), s("xss")},
+			pos("ImportBinding", v("localSym"), s(san.module), s(san.name)),
+			pos("FunctionSymbol", v("localSym"), v("fn")),
+		))
+	}
+
+	sqlSanitizers := []struct {
+		module string
+		name   string
+	}{
+		{"sqlstring", "escape"},
+		{"sqlstring", "format"},
+	}
+
+	for _, san := range sqlSanitizers {
+		rules = append(rules, rule("Sanitizer",
+			[]datalog.Term{v("fn"), s("sql")},
+			pos("ImportBinding", v("localSym"), s(san.module), s(san.name)),
+			pos("FunctionSymbol", v("localSym"), v("fn")),
+		))
+	}
+
+	cmdSanitizers := []struct {
+		module string
+		name   string
+	}{
+		{"shell-escape", "default"},
+		{"shell-quote", "quote"},
+	}
+
+	for _, san := range cmdSanitizers {
+		rules = append(rules, rule("Sanitizer",
+			[]datalog.Term{v("fn"), s("command_injection")},
+			pos("ImportBinding", v("localSym"), s(san.module), s(san.name)),
+			pos("FunctionSymbol", v("localSym"), v("fn")),
+		))
+	}
+
+	return rules
 }
