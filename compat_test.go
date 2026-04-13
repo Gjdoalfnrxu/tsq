@@ -183,6 +183,12 @@ func compatTestCases() []compatTestCase {
 			queryFile:  "testdata/compat/dataflow_predicates.ql",
 			goldenFile: "testdata/compat/expected/dataflow_predicates.csv",
 		},
+		{
+			name:       "express_sqli",
+			projectDir: "testdata/compat/projects/express-sqli",
+			queryFile:  "testdata/compat/find_sqli_express.ql",
+			goldenFile: "testdata/compat/expected/find_sqli_express.csv",
+		},
 	}
 }
 
