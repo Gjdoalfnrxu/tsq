@@ -73,7 +73,7 @@ module TaintTracking {
             not this.isSanitizer(source) and
             not this.isSanitizer(sink) and
             (
-                source = sink
+                (this.isSource(source) and source = sink)
                 or
                 this.flowViaTaintAlert(source, sink)
                 or
@@ -93,7 +93,7 @@ module TaintTracking {
             not this.isSanitizer(source) and
             not this.isSanitizer(sink) and
             (
-                source = sink
+                (this.isSource(source) and source = sink)
                 or
                 this.flowViaTaintAlert(source, sink)
                 or

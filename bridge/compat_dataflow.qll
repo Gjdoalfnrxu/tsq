@@ -119,7 +119,7 @@ module DataFlow {
             not this.isBarrier(source) and
             not this.isBarrier(sink) and
             (
-                source = sink
+                (this.isSource(source) and source = sink)
                 or
                 this.flowViaLocalFlow(source, sink)
                 or
@@ -139,7 +139,7 @@ module DataFlow {
             not this.isBarrier(source) and
             not this.isBarrier(sink) and
             (
-                source = sink
+                (this.isSource(source) and source = sink)
                 or
                 this.flowViaLocalFlow(source, sink)
                 or
