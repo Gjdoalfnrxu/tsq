@@ -422,7 +422,7 @@ func TestAdditionalTaintStep_FlowStar(t *testing.T) {
 	}
 	found := false
 	for _, row := range rs.Rows {
-		if row[0] == eval.IntVal{10} && row[1] == eval.IntVal{20} {
+		if row[0] == (eval.IntVal{10}) && row[1] == (eval.IntVal{20}) {
 			found = true
 			break
 		}
@@ -450,7 +450,7 @@ func TestAdditionalFlowStep_FlowStar(t *testing.T) {
 	rs := planAndEval(t, allRulesForComposition(), query, baseRels)
 	found := false
 	for _, row := range rs.Rows {
-		if row[0] == eval.IntVal{30} && row[1] == eval.IntVal{40} {
+		if row[0] == (eval.IntVal{30}) && row[1] == (eval.IntVal{40}) {
 			found = true
 			break
 		}
