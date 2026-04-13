@@ -116,8 +116,13 @@ func TaintRules() []datalog.Rule {
 		// tainted (which respects sanitization via Rule 2's negation).
 		// The sink side is scoped by requiring a tainted symbol exists in
 		// the same function as the sink expression (via SymInFunction and
-		// ExprInFunction), preventing cross-product false positives across
-		// independent functions.
+		// ExprInFunction). This is an intentional over-approximation: we
+		// can't require ExprMayRef(sinkExpr, sinkSym) because the sink expr
+		// is typically a compound expression (e.g. concatenation) where
+		// the tainted identifier is a sub-expression, not the expr itself.
+		// Function-scoping prevents cross-function false positives while
+		// accepting intra-function over-approximation — the correct tradeoff
+		// for security analysis (false positives > false negatives).
 		rule("TaintAlert",
 			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
 			pos("TaintSource", v("srcExpr"), v("srcKind")),

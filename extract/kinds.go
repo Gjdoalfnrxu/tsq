@@ -59,6 +59,7 @@ var ExpressionKinds = []string{
 	"UpdateExpression",
 	"SequenceExpression",
 	"CommaExpression",
+	"OptionalChainExpression",
 }
 
 var expressionKindSet map[string]bool

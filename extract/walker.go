@@ -173,6 +173,10 @@ func (fw *FactWalker) enterNode(node ASTNode) (bool, error) {
 		if len(fw.jsxElementStack) > 0 {
 			fw.emitJsxAttr(node, fw.jsxElementStack[len(fw.jsxElementStack)-1])
 		}
+	case "TemplateString":
+		fw.emitTemplateLiteral(node, id, 0)
+	case "TaggedTemplateExpression":
+		fw.emitTaggedTemplate(node, id)
 	case "Error":
 		fw.emitExtractError(fw.fileID, node.StartLine(), "parse",
 			fmt.Sprintf("syntax error at line %d col %d", node.StartLine(), node.StartCol()))

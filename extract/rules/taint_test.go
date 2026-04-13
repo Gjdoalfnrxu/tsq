@@ -497,10 +497,9 @@ func TestTaintAlert_VarDeclSource(t *testing.T) {
 	}
 }
 
-// TestTaintAlert_VarDeclSource_CrossProduct verifies that Rule 6b no longer
-// produces cross-product false positives. After the fix, unrelated sinks
-// in different functions are excluded because ExprInFunction scoping
-// prevents cross-function matching.
+// TestTaintAlert_VarDeclSource_CrossProduct verifies that Rule 6b does not
+// produce cross-product false positives across functions. Sinks in different
+// functions are excluded by SymInFunction/ExprInFunction scoping.
 func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
 	// Source: TaintSource(100, "http_input") -> VarDecl sym 10 in fn 1
 	// Connected sink 200 (xss) is in fn 1 (same function as tainted sym)

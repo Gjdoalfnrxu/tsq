@@ -208,6 +208,9 @@ func computeAggregate(fn string, vals []Value, separator string) (Value, error) 
 	case "unique":
 		seen := make(map[string]Value)
 		for _, val := range vals {
+			if val == nil {
+				continue
+			}
 			k := fmt.Sprintf("%v", val)
 			seen[k] = val
 		}

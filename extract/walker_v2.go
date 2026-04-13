@@ -143,7 +143,7 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		tw.emitTypeDecl(node, id)
 	case "VariableDeclarator":
 		tw.emitSymbolFromVarDecl(node)
-	case "EnumDeclaration":
+	case "EnumDeclaration", "ConstEnumDeclaration":
 		tw.emitEnumDecl(node, id)
 	case "OptionalChainExpression":
 		tw.emitOptionalChain(node, id)
