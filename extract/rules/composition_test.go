@@ -405,7 +405,7 @@ func TestEmptyRelationsNoFlowStar(t *testing.T) {
 // are lifted into FlowStar, enabling taint to propagate through user-defined steps.
 func TestAdditionalTaintStep_FlowStar(t *testing.T) {
 	additionalStep := eval.NewRelation("AdditionalTaintStep", 2)
-	additionalStep.Add(eval.Tuple{eval.IntVal(10), eval.IntVal(20)})
+	additionalStep.Add(eval.Tuple{eval.IntVal{10}, eval.IntVal{20}})
 
 	baseRels := compositionBaseRels(map[string]*eval.Relation{
 		"AdditionalTaintStep": additionalStep,
@@ -422,7 +422,7 @@ func TestAdditionalTaintStep_FlowStar(t *testing.T) {
 	}
 	found := false
 	for _, row := range rs.Rows {
-		if row[0] == eval.IntVal(10) && row[1] == eval.IntVal(20) {
+		if row[0] == eval.IntVal{10} && row[1] == eval.IntVal{20} {
 			found = true
 			break
 		}
@@ -436,7 +436,7 @@ func TestAdditionalTaintStep_FlowStar(t *testing.T) {
 // are lifted into FlowStar.
 func TestAdditionalFlowStep_FlowStar(t *testing.T) {
 	additionalStep := eval.NewRelation("AdditionalFlowStep", 2)
-	additionalStep.Add(eval.Tuple{eval.IntVal(30), eval.IntVal(40)})
+	additionalStep.Add(eval.Tuple{eval.IntVal{30}, eval.IntVal{40}})
 
 	baseRels := compositionBaseRels(map[string]*eval.Relation{
 		"AdditionalFlowStep": additionalStep,
@@ -450,7 +450,7 @@ func TestAdditionalFlowStep_FlowStar(t *testing.T) {
 	rs := planAndEval(t, allRulesForComposition(), query, baseRels)
 	found := false
 	for _, row := range rs.Rows {
-		if row[0] == eval.IntVal(30) && row[1] == eval.IntVal(40) {
+		if row[0] == eval.IntVal{30} && row[1] == eval.IntVal{40} {
 			found = true
 			break
 		}
@@ -465,16 +465,16 @@ func TestAdditionalFlowStep_FlowStar(t *testing.T) {
 func TestAdditionalTaintStep_Transitivity(t *testing.T) {
 	// LocalFlow: 10 → 20 in fn=1
 	assign := eval.NewRelation("Assign", 3)
-	assign.Add(eval.Tuple{eval.IntVal(100), eval.IntVal(200), eval.IntVal(20)}) // lhsNode=100, rhsExpr=200, lhsSym=20
+	assign.Add(eval.Tuple{eval.IntVal{100}, eval.IntVal{200}, eval.IntVal{20}}) // lhsNode=100, rhsExpr=200, lhsSym=20
 	exprMayRef := eval.NewRelation("ExprMayRef", 2)
-	exprMayRef.Add(eval.Tuple{eval.IntVal(200), eval.IntVal(10)}) // rhsExpr=200 refers to sym 10
+	exprMayRef.Add(eval.Tuple{eval.IntVal{200}, eval.IntVal{10}}) // rhsExpr=200 refers to sym 10
 	symInFn := eval.NewRelation("SymInFunction", 2)
-	symInFn.Add(eval.Tuple{eval.IntVal(10), eval.IntVal(1)})
-	symInFn.Add(eval.Tuple{eval.IntVal(20), eval.IntVal(1)})
+	symInFn.Add(eval.Tuple{eval.IntVal{10}, eval.IntVal{1}})
+	symInFn.Add(eval.Tuple{eval.IntVal{20}, eval.IntVal{1}})
 
 	// AdditionalTaintStep: 20 → 30 (crosses function boundary via user-defined step)
 	additionalStep := eval.NewRelation("AdditionalTaintStep", 2)
-	additionalStep.Add(eval.Tuple{eval.IntVal(20), eval.IntVal(30)})
+	additionalStep.Add(eval.Tuple{eval.IntVal{20}, eval.IntVal{30}})
 
 	baseRels := compositionBaseRels(map[string]*eval.Relation{
 		"Assign":              assign,
@@ -494,7 +494,7 @@ func TestAdditionalTaintStep_Transitivity(t *testing.T) {
 	for _, row := range rs.Rows {
 		src, _ := row[0].(eval.IntVal)
 		dst, _ := row[1].(eval.IntVal)
-		flowPairs[[2]int{int(src), int(dst)}] = true
+		flowPairs[[2]int{int(src.V), int(dst.V)}] = true
 	}
 	for _, pair := range [][2]int{{10, 20}, {20, 30}, {10, 30}} {
 		if !flowPairs[pair] {
