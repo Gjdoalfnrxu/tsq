@@ -101,4 +101,15 @@ module TaintTracking {
             )
         }
     }
+
+    /**
+     * Holds if there is a single-step taint-flow edge from `a` to `b`.
+     * Provides the path graph edges for taint-tracking path queries.
+     * Individual LocalFlow and InterFlow steps.
+     */
+    predicate edges(int a, int b) {
+        exists(int fn | LocalFlow(fn, a, b))
+        or
+        InterFlow(a, b)
+    }
 }

@@ -164,4 +164,15 @@ module DataFlow {
         /** Gets the file containing this node. */
         File getLocation() { Symbol(this, _, _, result) }
     }
+
+    /**
+     * Holds if there is a single-step data-flow edge from `a` to `b`.
+     * Provides the path graph edges for path queries —
+     * individual LocalFlow and InterFlow steps.
+     */
+    predicate edges(PathNode a, PathNode b) {
+        exists(int fn | LocalFlow(fn, a, b))
+        or
+        InterFlow(a, b)
+    }
 }
