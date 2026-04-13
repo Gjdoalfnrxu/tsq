@@ -65,6 +65,12 @@ Merge order is top to bottom. See `DEPENDENCY-GRAPH.md` for the DAG.
 | 15 | [builtin-splitat](15-builtin-splitat.md)       | 1e residual   | not started |
 | 16 | [dataflow-config-dispatch](16-dataflow-config-dispatch.md) | 2b, 2c | not started |
 | 17 | [type-fact-population](17-type-fact-population.md) | 3b           | not started |
+| 18 | [sanitizer-function-symbol](18-sanitizer-function-symbol.md) | Sanitizer fix | not started |
+| 19 | [command-injection-sinks](19-command-injection-sinks.md) | Sink coverage | not started |
+| 20 | [path-traversal-sinks](20-path-traversal-sinks.md) | Sink coverage | not started |
+| 21 | [field-sensitive-taint](21-field-sensitive-taint.md) | Taint precision | not started |
+| 22 | [e2e-phase3-fixtures](22-e2e-phase3-fixtures.md) | E2E Phase 3 | not started |
+| 23 | [e2e-phase4-perf](23-e2e-phase4-perf.md) | E2E Phase 4 | not started |
 
 ## How to execute a plan
 

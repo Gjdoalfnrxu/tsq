@@ -44,6 +44,19 @@ means B must land before A.
        │
        ├─> 11-typed-ts-fixtures (stronger test story once facts populate)
        └─> 12-typecheck-checker-test
+
+  18-sanitizer-function-symbol (no deps — extraction change)
+       │
+       ├─> 19-command-injection-sinks (needs FunctionSymbol for imports)
+       └─> 20-path-traversal-sinks   (needs FunctionSymbol for imports)
+
+  21-field-sensitive-taint (no deps — taint rule addition)
+       │
+       └─> 22-e2e-phase3-fixtures (field-sensitive fixture blocked by 21)
+
+  22-e2e-phase3-fixtures   (partial dep on 21; deep-call-chain and koa are independent)
+
+  23-e2e-phase4-perf       (no deps — independent benchmarking infrastructure)
 ```
 
 ## Notes
@@ -76,5 +89,8 @@ digraph impl_plans {
   "16-dataflow-dispatch" -> "09-custom-config";
   "17-type-facts" -> "11-typed-fixtures";
   "17-type-facts" -> "12-checker-test";
+  "18-sanitizer-fn-symbol" -> "19-cmdi-sinks";
+  "18-sanitizer-fn-symbol" -> "20-pathtraversal-sinks";
+  "21-field-sensitive" -> "22-e2e-phase3";
 }
 ```
