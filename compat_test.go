@@ -183,6 +183,12 @@ func compatTestCases() []compatTestCase {
 			queryFile:  "testdata/compat/dataflow_predicates.ql",
 			goldenFile: "testdata/compat/expected/dataflow_predicates.csv",
 		},
+		{
+			name:       "express_sqli",
+			projectDir: "testdata/compat/projects/express-sqli",
+			queryFile:  "testdata/compat/find_sqli_express.ql",
+			goldenFile: "testdata/compat/expected/find_sqli_express.csv",
+		},
 	}
 }
 
@@ -206,7 +212,6 @@ func TestCompat(t *testing.T) {
 			}
 
 			rs := runCompatQuery(t, tc.queryFile, factDB)
-			got := resultToCSV(rs)
 
 			// Guard against empty results: an empty golden is almost
 			// certainly a bug — the fixture files are designed to produce
@@ -218,6 +223,7 @@ func TestCompat(t *testing.T) {
 				t.Fatal("query returned zero rows — refusing to write an empty golden file; check the query and fixture data")
 			}
 
+			got := resultToCSV(rs)
 			compareGolden(t, tc.goldenFile, got)
 		})
 	}

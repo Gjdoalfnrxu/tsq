@@ -367,6 +367,17 @@ func TestGolden(t *testing.T) {
 			}
 
 			rs := runQuery(t, tc.queryFile, factDB)
+
+			// Guard: empty results usually indicate a bug, unless the test
+			// explicitly expects zero rows.
+			expectEmpty := tc.name == "simple/find_async_functions"
+			if len(rs.Rows) == 0 && !expectEmpty && !*updateGolden {
+				t.Fatal("query returned zero rows — expected at least one result from the fixture data")
+			}
+			if len(rs.Rows) == 0 && !expectEmpty && *updateGolden {
+				t.Fatal("query returned zero rows — refusing to write an empty golden file")
+			}
+
 			got := resultToCSV(rs)
 			compareGolden(t, tc.goldenFile, got)
 		})
