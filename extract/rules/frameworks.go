@@ -150,11 +150,15 @@ func koaRules() []datalog.Rule {
 		pos("KoaHandler", v("fn")),
 	))
 
+	// ctx.request.body / ctx.request.query — chain through ExprMayRef to
+	// bridge from FieldRead's expr (AST node ID) to the next FieldRead's
+	// baseSym (symbol ID).
 	for _, field := range []string{"body", "query"} {
 		rules = append(rules, rule("TaintSource",
 			[]datalog.Term{v("expr"), s("http_input")},
 			pos("FieldRead", v("reqExpr"), v("ctxSym"), s("request")),
-			pos("FieldRead", v("expr"), v("reqExpr"), s(field)),
+			pos("ExprMayRef", v("reqExpr"), v("reqSym")),
+			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
 			pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
 			pos("KoaHandler", v("fn")),
 		))
@@ -278,12 +282,14 @@ func databaseRules() []datalog.Rule {
 		}
 	}
 
+	// Mongoose: .find()/.findOne()/.aggregate() are NoSQL query methods.
+	// We use a heuristic: any .find/.findOne/.aggregate call is a potential
+	// NoSQL injection sink. This is similar to the .query() heuristic for SQL.
+	// We can't easily constrain to mongoose models without type resolution.
 	for _, method := range []string{"find", "findOne", "aggregate"} {
 		rules = append(rules, rule("TaintSink",
-			[]datalog.Term{v("argExpr"), s("sql")},
-			pos("ImportBinding", v("dbSym"), s("mongoose"), w()),
-			pos("MethodCall", v("call"), v("recv"), s(method)),
-			pos("ExprMayRef", v("recv"), v("dbSym")),
+			[]datalog.Term{v("argExpr"), s("nosql")},
+			pos("MethodCall", v("call"), w(), s(method)),
 			pos("CallArg", v("call"), intc(0), v("argExpr")),
 		))
 	}

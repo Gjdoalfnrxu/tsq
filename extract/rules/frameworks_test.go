@@ -379,11 +379,10 @@ func TestDatabaseSink_PgQuery(t *testing.T) {
 }
 
 func TestDatabaseSink_MongooseFind(t *testing.T) {
+	// Mongoose uses heuristic: any .find() call is a NoSQL sink
 	baseRels := frameworkBaseRels(map[string]*eval.Relation{
-		"ImportBinding": makeRel("ImportBinding", 3, iv(50), sv("mongoose"), sv("default")),
-		"MethodCall":    makeRel("MethodCall", 3, iv(500), iv(400), sv("find")),
-		"ExprMayRef":    makeRel("ExprMayRef", 2, iv(400), iv(50)),
-		"CallArg":       makeRel("CallArg", 3, iv(500), iv(0), iv(800)),
+		"MethodCall": makeRel("MethodCall", 3, iv(500), iv(400), sv("find")),
+		"CallArg":    makeRel("CallArg", 3, iv(500), iv(0), iv(800)),
 	})
 
 	query := &datalog.Query{
@@ -392,8 +391,8 @@ func TestDatabaseSink_MongooseFind(t *testing.T) {
 	}
 
 	rs := planAndEval(t, AllSystemRules(), query, baseRels)
-	if !resultContains(rs, iv(800), sv("sql")) {
-		t.Errorf("expected TaintSink(800, sql) from mongoose .find(), got %v", rs.Rows)
+	if !resultContains(rs, iv(800), sv("nosql")) {
+		t.Errorf("expected TaintSink(800, nosql) from .find() heuristic, got %v", rs.Rows)
 	}
 }
 

@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -556,6 +557,9 @@ func builtinIntAbs(atom datalog.Atom, bindings []binding) []binding {
 			continue
 		}
 		if n < 0 {
+			if n == math.MinInt64 {
+				continue // overflow: abs(MinInt64) not representable in int64
+			}
 			n = -n
 		}
 		nb, ok := bindResult(atom.Args[1], b, IntVal{V: n})
