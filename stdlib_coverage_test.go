@@ -155,6 +155,10 @@ var stdlibCoverageAllowlist = map[string]string{
 	"RegExpLiteral": "stub — regex literal analysis deferred; requires AST regex parsing",
 	"RegExpTerm":    "stub — regex term analysis deferred; requires regex parse tree",
 
+	// A3: Additional taint/flow step materializers — populated by Configuration overrides.
+	"AdditionalTaintStep": "materializer from TaintTracking::Configuration.isAdditionalTaintStep",
+	"AdditionalFlowStep":  "materializer from DataFlow::Configuration.isAdditionalFlowStep",
+
 	// Taint relations — some used in queries but as predicates, not class refs.
 	"TaintSink":     "internal taint plumbing",
 	"TaintSource":   "used as predicate in queries, not as class",

@@ -119,7 +119,7 @@ module DataFlow {
             not this.isBarrier(source) and
             not this.isBarrier(sink) and
             (
-                source = sink
+                (this.isSource(source) and source = sink)
                 or
                 this.flowViaLocalFlow(source, sink)
                 or
@@ -139,7 +139,7 @@ module DataFlow {
             not this.isBarrier(source) and
             not this.isBarrier(sink) and
             (
-                source = sink
+                (this.isSource(source) and source = sink)
                 or
                 this.flowViaLocalFlow(source, sink)
                 or
@@ -175,4 +175,13 @@ module DataFlow {
         or
         InterFlow(a, b)
     }
+}
+
+/**
+ * Materializes user-defined additional flow steps from all
+ * DataFlow::Configuration subclasses into the AdditionalFlowStep
+ * relation used by system flow rules (FlowStar).
+ */
+predicate AdditionalFlowStep(int src, int dst) {
+    exists(DataFlow::Configuration config | config.isAdditionalFlowStep(src, dst))
 }

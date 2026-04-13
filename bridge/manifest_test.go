@@ -16,8 +16,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// Batch 2 Phase 2: +3 template + 2 enum + 2 optional/nullish = 107
 	// Phase E: +3 HTTP + 2 IO + 2 RegExp = 114
 	// C3/C4/C6: +1 Decorator + 2 Namespace + 1 TypeGuard = 118
-	if got := len(m.Available); got != 118 {
-		t.Errorf("expected 118 available classes, got %d", got)
+	// Phase A3: +2 AdditionalTaintStep + AdditionalFlowStep = 120
+	if got := len(m.Available); got != 120 {
+		t.Errorf("expected 120 available classes, got %d", got)
 	}
 }
 

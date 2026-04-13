@@ -65,5 +65,23 @@ func CompositionRules() []datalog.Rule {
 			pos("FlowStar", v("src"), v("mid")),
 			pos("FlowStar", v("mid"), v("dst")),
 		),
+
+		// Rule 6: FlowStar — additional taint steps (Plan A3).
+		// User-defined isAdditionalTaintStep overrides on TaintTracking::Configuration
+		// subclasses produce AdditionalTaintStep(src, dst) facts via the desugarer's
+		// override dispatch. These extend reachability beyond the base flow graph.
+		// FlowStar(src, dst) :- AdditionalTaintStep(src, dst).
+		rule("FlowStar",
+			[]datalog.Term{v("src"), v("dst")},
+			pos("AdditionalTaintStep", v("src"), v("dst")),
+		),
+
+		// Rule 7: FlowStar — additional flow steps (DataFlow::Configuration).
+		// Same as Rule 6 but for DataFlow::Configuration.isAdditionalFlowStep.
+		// FlowStar(src, dst) :- AdditionalFlowStep(src, dst).
+		rule("FlowStar",
+			[]datalog.Term{v("src"), v("dst")},
+			pos("AdditionalFlowStep", v("src"), v("dst")),
+		),
 	}
 }
