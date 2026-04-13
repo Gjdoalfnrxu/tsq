@@ -128,4 +128,14 @@ module TaintTracking {
         or
         TaintAlert(a, b, _, _)
     }
+
+}
+
+/**
+ * Materializes user-defined additional taint steps from all
+ * TaintTracking::Configuration subclasses into the AdditionalTaintStep
+ * relation used by system taint rules (FlowStar / TaintedSym).
+ */
+predicate AdditionalTaintStep(int src, int dst) {
+    exists(TaintTracking::Configuration config | config.isAdditionalTaintStep(src, dst))
 }

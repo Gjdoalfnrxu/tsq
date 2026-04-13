@@ -344,11 +344,11 @@ func TestCompositionRulesStratify(t *testing.T) {
 	}
 }
 
-// TestCompositionRulesCount verifies we produce exactly 5 composition rules.
+// TestCompositionRulesCount verifies we produce exactly 7 composition rules.
 func TestCompositionRulesCount(t *testing.T) {
 	rules := CompositionRules()
-	if len(rules) != 5 {
-		t.Errorf("expected 5 composition rules, got %d", len(rules))
+	if len(rules) != 7 {
+		t.Errorf("expected 7 composition rules, got %d", len(rules))
 	}
 }
 
@@ -395,5 +395,107 @@ func TestEmptyRelationsNoFlowStar(t *testing.T) {
 	rs := planAndEval(t, allRulesForComposition(), query, baseRels)
 	if len(rs.Rows) != 0 {
 		t.Errorf("expected 0 FlowStar rows from empty relations, got %d: %v", len(rs.Rows), rs.Rows)
+	}
+}
+
+// TestAdditionalTaintStep_FlowStar verifies that AdditionalTaintStep facts
+// are lifted into FlowStar, enabling taint to propagate through user-defined steps.
+func TestAdditionalTaintStep_FlowStar(t *testing.T) {
+	additionalStep := eval.NewRelation("AdditionalTaintStep", 2)
+	additionalStep.Add(eval.IntVal(10), eval.IntVal(20))
+
+	baseRels := compositionBaseRels(map[string]*eval.Relation{
+		"AdditionalTaintStep": additionalStep,
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("src"), v("dst")},
+		Body:   []datalog.Literal{pos("FlowStar", v("src"), v("dst"))},
+	}
+
+	rs := planAndEval(t, allRulesForComposition(), query, baseRels)
+	if len(rs.Rows) == 0 {
+		t.Fatal("expected FlowStar rows from AdditionalTaintStep, got 0")
+	}
+	found := false
+	for _, row := range rs.Rows {
+		if row[0] == eval.IntVal(10) && row[1] == eval.IntVal(20) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("FlowStar should contain (10, 20) from AdditionalTaintStep; rows: %v", rs.Rows)
+	}
+}
+
+// TestAdditionalFlowStep_FlowStar verifies that AdditionalFlowStep facts
+// are lifted into FlowStar.
+func TestAdditionalFlowStep_FlowStar(t *testing.T) {
+	additionalStep := eval.NewRelation("AdditionalFlowStep", 2)
+	additionalStep.Add(eval.IntVal(30), eval.IntVal(40))
+
+	baseRels := compositionBaseRels(map[string]*eval.Relation{
+		"AdditionalFlowStep": additionalStep,
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("src"), v("dst")},
+		Body:   []datalog.Literal{pos("FlowStar", v("src"), v("dst"))},
+	}
+
+	rs := planAndEval(t, allRulesForComposition(), query, baseRels)
+	found := false
+	for _, row := range rs.Rows {
+		if row[0] == eval.IntVal(30) && row[1] == eval.IntVal(40) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("FlowStar should contain (30, 40) from AdditionalFlowStep; rows: %v", rs.Rows)
+	}
+}
+
+// TestAdditionalTaintStep_Transitivity verifies that AdditionalTaintStep
+// composes with LocalFlowStar for transitive FlowStar.
+func TestAdditionalTaintStep_Transitivity(t *testing.T) {
+	// LocalFlow: 10 → 20 in fn=1
+	assign := eval.NewRelation("Assign", 3)
+	assign.Add(eval.IntVal(100), eval.IntVal(200), eval.IntVal(20)) // lhsNode=100, rhsExpr=200, lhsSym=20
+	exprMayRef := eval.NewRelation("ExprMayRef", 2)
+	exprMayRef.Add(eval.IntVal(200), eval.IntVal(10)) // rhsExpr=200 refers to sym 10
+	symInFn := eval.NewRelation("SymInFunction", 2)
+	symInFn.Add(eval.IntVal(10), eval.IntVal(1))
+	symInFn.Add(eval.IntVal(20), eval.IntVal(1))
+
+	// AdditionalTaintStep: 20 → 30 (crosses function boundary via user-defined step)
+	additionalStep := eval.NewRelation("AdditionalTaintStep", 2)
+	additionalStep.Add(eval.IntVal(20), eval.IntVal(30))
+
+	baseRels := compositionBaseRels(map[string]*eval.Relation{
+		"Assign":              assign,
+		"ExprMayRef":          exprMayRef,
+		"SymInFunction":       symInFn,
+		"AdditionalTaintStep": additionalStep,
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("src"), v("dst")},
+		Body:   []datalog.Literal{pos("FlowStar", v("src"), v("dst"))},
+	}
+
+	rs := planAndEval(t, allRulesForComposition(), query, baseRels)
+	// Should have: 10→20 (local), 20→30 (additional), 10→30 (transitive)
+	flowPairs := make(map[[2]int]bool)
+	for _, row := range rs.Rows {
+		src, _ := row[0].(eval.IntVal)
+		dst, _ := row[1].(eval.IntVal)
+		flowPairs[[2]int{int(src), int(dst)}] = true
+	}
+	for _, pair := range [][2]int{{10, 20}, {20, 30}, {10, 30}} {
+		if !flowPairs[pair] {
+			t.Errorf("expected FlowStar(%d, %d) from local + additional step transitivity", pair[0], pair[1])
+		}
 	}
 }

@@ -344,6 +344,16 @@ func init() {
 		{Name: "sinkKind", Type: TypeString},
 	}})
 
+	// v2 Phase A3: additional taint/flow steps (populated by user Configuration overrides)
+	RegisterRelation(RelationDef{Name: "AdditionalTaintStep", Version: 2, Columns: []ColumnDef{
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "AdditionalFlowStep", Version: 2, Columns: []ColumnDef{
+		{Name: "srcSym", Type: TypeEntityRef},
+		{Name: "dstSym", Type: TypeEntityRef},
+	}})
+
 	// v2 Phase F: framework-derived relations
 	RegisterRelation(RelationDef{Name: "ExpressHandler", Version: 2, Columns: []ColumnDef{
 		{Name: "fnId", Type: TypeEntityRef},

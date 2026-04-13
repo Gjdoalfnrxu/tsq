@@ -149,6 +149,16 @@ module DataFlow {
     }
 
     /**
+     * Materializes user-defined additional flow steps from all Configuration
+     * subclasses into the AdditionalFlowStep base relation.  This allows
+     * the system-level flow rules (FlowStar) to propagate data through
+     * user-defined steps.
+     */
+    predicate additionalFlowStepAll(Node src, Node dst) {
+        exists(Configuration config | config.isAdditionalFlowStep(src, dst))
+    }
+
+    /**
      * A node on a data-flow path. Wraps a symbol for path queries,
      * providing the same interface as Node with path-query context.
      */
@@ -175,4 +185,12 @@ module DataFlow {
         or
         InterFlow(a, b)
     }
+}
+
+/**
+ * Top-level predicate to materialize DataFlow additional flow steps
+ * into the AdditionalFlowStep relation used by system flow rules.
+ */
+predicate AdditionalFlowStep(int src, int dst) {
+    DataFlow::additionalFlowStepAll(src, dst)
 }
