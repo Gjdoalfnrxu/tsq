@@ -147,6 +147,13 @@ func v2Manifest() *CapabilityManifest {
 			// C5: Optional chaining and nullish coalescing
 			{Name: "OptionalChain", Relation: "OptionalChain", File: "tsq_expressions.qll"},
 			{Name: "NullishCoalescing", Relation: "NullishCoalescing", File: "tsq_expressions.qll"},
+			// C3: Decorator extraction
+			{Name: "Decorator", Relation: "Decorator", File: "tsq_types.qll"},
+			// C4: Namespace/module declaration extraction
+			{Name: "NamespaceDecl", Relation: "NamespaceDecl", File: "tsq_types.qll"},
+			{Name: "NamespaceMember", Relation: "NamespaceMember", File: "tsq_types.qll"},
+			// C6: TypeScript type guards and assertion functions
+			{Name: "TypeGuard", Relation: "TypeGuard", File: "tsq_functions.qll"},
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
