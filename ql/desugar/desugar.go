@@ -279,12 +279,71 @@ func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
 // superTypeConstraints returns Literal{Foo(this)} for each supertype.
 // @-prefixed supertypes (database entity types) are skipped — they represent
 // raw DB types and have no corresponding derived relation to constrain against.
+// entityTypeRelation maps @-prefixed entity types to their backing schema
+// relation and arity. This grounds `this` for classes extending entity types.
+var entityTypeRelation = map[string]struct {
+	name  string
+	arity int
+}{
+	"@symbol":       {"Symbol", 4},
+	"@node":         {"Node", 7},
+	"@file":         {"File", 3},
+	"@function":     {"Function", 6},
+	"@call":         {"Call", 3},
+	"@parameter":    {"Parameter", 6},
+	"@taint_source": {"TaintSource", 2},
+	"@taint_sink":   {"TaintSink", 2},
+	"@taint_alert":  {"TaintAlert", 4},
+}
+
 func (d *desugarer) superTypeConstraints(cd *ast.ClassDecl, _ *freshVarGen) []datalog.Literal {
+	visited := make(map[string]bool)
+	return d.superTypeConstraintsInner(cd, false, visited)
+}
+
+func (d *desugarer) superTypeConstraintsInner(cd *ast.ClassDecl, throughAbstract bool, visited map[string]bool) []datalog.Literal {
+	qname := d.qualifiedClassName(cd)
+	if visited[qname] {
+		return nil // cycle guard: prevent infinite recursion in abstract class hierarchies
+	}
+	visited[qname] = true
+
 	var lits []datalog.Literal
 	for _, st := range cd.SuperTypes {
 		stName := st.String()
-		// Skip @-prefixed database entity types — they have no derived relation.
 		if len(stName) > 0 && stName[0] == '@' {
+			if !throughAbstract {
+				// Direct @-type extension (bridge classes): skip, the char pred grounds this.
+				continue
+			}
+			// Through an abstract supertype: we need the entity type for grounding.
+			if rel, ok := entityTypeRelation[stName]; ok {
+				args := make([]datalog.Term, rel.arity)
+				args[0] = datalog.Var{Name: "this"}
+				for i := 1; i < rel.arity; i++ {
+					args[i] = datalog.Wildcard{}
+				}
+				lits = append(lits, datalog.Literal{
+					Positive: true,
+					Atom: datalog.Atom{
+						Predicate: rel.name,
+						Args:      args,
+					},
+				})
+			} else {
+				d.errorf("unknown entity type %q in supertype constraints for %s (not in entityTypeRelation map)", stName, qname)
+			}
+			continue
+		}
+		// For abstract supertypes, substitute the abstract class's own supertype
+		// constraints instead. Using the abstract predicate directly creates a
+		// non-grounded circular dependency:
+		//   Concrete(this) :- Abstract(this) AND Abstract(this) :- Concrete(this)
+		// Instead, walk up to find the grounding constraints (entity types or
+		// concrete classes) that the abstract class transitively depends on.
+		if superCD, ok := d.env.Classes[stName]; ok && superCD.IsAbstract {
+			transitiveLits := d.superTypeConstraintsInner(superCD, true, visited)
+			lits = append(lits, transitiveLits...)
 			continue
 		}
 		lits = append(lits, datalog.Literal{

@@ -167,7 +167,7 @@ func compatTestCases() []compatTestCase {
 			projectDir: "testdata/compat/projects/basic",
 			queryFile:  "testdata/compat/custom_config.ql",
 			goldenFile: "testdata/compat/expected/custom_config.csv",
-			skip:       "Configuration.hasFlow requires LocalFlowStar which doesn't cover FieldRead-based sources yet",
+			// A2: Configuration override dispatch works; hasFlow method pending disjunction desugarer fix
 		},
 		{
 			name:       "dataflow_predicates",

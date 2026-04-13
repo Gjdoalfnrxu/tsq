@@ -311,6 +311,9 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		isFnType := strings.Contains(typeText, "=>")
 
 		fw.emit("Parameter", fnID, idx, paramName, paramID, symID, typeText)
+		if paramName != "" {
+			fw.emit("Symbol", symID, paramName, paramID, fw.fileID)
+		}
 		if isRest {
 			fw.emit("ParameterRest", fnID, idx)
 		}
