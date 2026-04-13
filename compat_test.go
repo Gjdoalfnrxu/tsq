@@ -195,6 +195,12 @@ func compatTestCases() []compatTestCase {
 			queryFile:  "testdata/compat/find_multi_vuln.ql",
 			goldenFile: "testdata/compat/expected/find_multi_vuln.csv",
 		},
+		{
+			name:       "sanitizer_bypass",
+			projectDir: "testdata/compat/projects/sanitizer-bypass",
+			queryFile:  "testdata/compat/find_sanitizer_bypass.ql",
+			goldenFile: "testdata/compat/expected/find_sanitizer_bypass.csv",
+		},
 	}
 }
 
