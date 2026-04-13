@@ -26,11 +26,19 @@ import (
 func makeCompatImportLoader(bridgeFiles map[string][]byte) func(string) (*ast.Module, error) {
 	pathToFile := map[string]string{
 		// CodeQL-compat paths
-		"javascript":                                            "compat_javascript.qll",
-		"DataFlow::PathGraph":                                   "compat_dataflow.qll",
-		"TaintTracking::PathGraph":                              "compat_tainttracking.qll",
-		"semmle.javascript.security.dataflow.XssQuery":          "compat_security_xss.qll",
-		"semmle.javascript.security.dataflow.SqlInjectionQuery": "compat_security_sqli.qll",
+		"javascript":                                                "compat_javascript.qll",
+		"DataFlow::PathGraph":                                       "compat_dataflow.qll",
+		"TaintTracking::PathGraph":                                  "compat_tainttracking.qll",
+		"semmle.javascript.security.dataflow.XssQuery":              "compat_security_xss.qll",
+		"semmle.javascript.security.dataflow.SqlInjectionQuery":     "compat_security_sqli.qll",
+		"semmle.javascript.security.dataflow.CommandInjectionQuery": "compat_security_cmdi.qll",
+		"semmle.javascript.security.dataflow.PathTraversalQuery":    "compat_security_pathtraversal.qll",
+		"semmle.javascript.security.dataflow.DomBasedXssQuery":      "compat_dom.qll",
+		"semmle.javascript.security.CryptoLibraries":                "compat_crypto.qll",
+		"semmle.javascript.frameworks.HTTP":                         "compat_http.qll",
+		"semmle.javascript.security.dataflow.DatabaseAccess":        "compat_io.qll",
+		"semmle.javascript.security.dataflow.FileSystemAccess":      "compat_io.qll",
+		"semmle.javascript.security.dataflow.RegExpInjectionQuery":  "compat_regexp.qll",
 
 		// tsq:: internal paths
 		"tsq::base":        "tsq_base.qll",
