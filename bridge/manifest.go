@@ -119,6 +119,9 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "TaintedField", Relation: "TaintedField", File: "tsq_taint.qll"},
 			{Name: "SanitizedEdge", Relation: "SanitizedEdge", File: "tsq_taint.qll"},
 			{Name: "TaintAlert", Relation: "TaintAlert", File: "tsq_taint.qll"},
+			// v2 Phase A3: additional taint/flow step materializers
+			{Name: "AdditionalTaintStep", Relation: "AdditionalTaintStep", File: "compat_tainttracking.qll"},
+			{Name: "AdditionalFlowStep", Relation: "AdditionalFlowStep", File: "compat_dataflow.qll"},
 			// v3: tsgo-resolved type relations
 			{Name: "ResolvedType", Relation: "ResolvedType", File: "tsq_types.qll"},
 			{Name: "SymbolType", Relation: "SymbolType", File: "tsq_types.qll"},
