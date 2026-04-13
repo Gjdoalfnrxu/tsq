@@ -103,13 +103,29 @@ module TaintTracking {
     }
 
     /**
+     * A node on a taint-tracking path. Wraps a symbol for path queries.
+     */
+    class PathNode extends @symbol {
+        PathNode() { Symbol(this, _, _, _) }
+
+        /** Gets a textual representation. */
+        string toString() { Symbol(this, result, _, _) }
+
+        /** Gets the file containing this node. */
+        File getLocation() { Symbol(this, _, _, result) }
+    }
+
+    /**
      * Holds if there is a single-step taint-flow edge from `a` to `b`.
      * Provides the path graph edges for taint-tracking path queries.
-     * Individual LocalFlow and InterFlow steps.
+     * Includes data-flow edges (LocalFlow, InterFlow) and taint-specific
+     * edges (TaintAlert) to capture all taint propagation paths.
      */
     predicate edges(int a, int b) {
         exists(int fn | LocalFlow(fn, a, b))
         or
         InterFlow(a, b)
+        or
+        TaintAlert(a, b, _, _)
     }
 }
