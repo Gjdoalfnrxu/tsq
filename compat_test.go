@@ -200,6 +200,12 @@ func compatTestCases() []compatTestCase {
 			projectDir: "testdata/compat/projects/sanitizer-bypass",
 			queryFile:  "testdata/compat/find_sanitizer_bypass.ql",
 			goldenFile: "testdata/compat/expected/find_sanitizer_bypass.csv",
+			// NOTE: Golden reflects current behavior where sanitizers do NOT block
+			// taint — FunctionSymbol is not emitted for import bindings, so the
+			// Sanitizer relation is never populated. Routes 2 and 5 (correct-kind
+			// sanitizers) alert when they should not. When FunctionSymbol is
+			// extended to imports, regenerate this golden: rows for routes 2 and 5
+			// should disappear.
 		},
 	}
 }
