@@ -171,10 +171,9 @@ func compatTestCases() []compatTestCase {
 		},
 		{
 			name:       "dataflow_predicates",
-			projectDir: "testdata/compat/projects/basic",
+			projectDir: "testdata/compat/projects/dataflow",
 			queryFile:  "testdata/compat/dataflow_predicates.ql",
 			goldenFile: "testdata/compat/expected/dataflow_predicates.csv",
-			skip:       "LocalFlow empty for basic fixture — needs fixture with explicit assignment chains",
 		},
 	}
 }
