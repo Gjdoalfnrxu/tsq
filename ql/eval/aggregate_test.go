@@ -279,6 +279,39 @@ func TestComputeRankAllTied(t *testing.T) {
 	}
 }
 
+func TestAggUniqueSingle(t *testing.T) {
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42})
+	rels := RelsOf(rel)
+	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
+	result := Aggregate(agg, rels)
+	if result.Len() != 1 {
+		t.Fatalf("expected 1 group, got %d", result.Len())
+	}
+	if result.Tuples()[0][1].(IntVal).V != 42 {
+		t.Errorf("expected unique=42, got %v", result.Tuples()[0][1])
+	}
+}
+
+func TestAggUniqueMultiple(t *testing.T) {
+	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
+	rels := RelsOf(rel)
+	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
+	result := Aggregate(agg, rels)
+	if result.Len() != 0 {
+		t.Errorf("expected 0 results for non-unique values, got %d", result.Len())
+	}
+}
+
+func TestAggUniqueEmpty(t *testing.T) {
+	rel := NewRelation("R", 2)
+	rels := RelsOf(rel)
+	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
+	result := Aggregate(agg, rels)
+	if result.Len() != 0 {
+		t.Errorf("expected 0 results for empty unique, got %d", result.Len())
+	}
+}
+
 func TestComputeRankStableOrder(t *testing.T) {
 	vals := []Value{IntVal{30}, IntVal{20}, IntVal{20}, IntVal{10}}
 	ranks := computeRank(vals)

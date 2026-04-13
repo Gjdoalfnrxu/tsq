@@ -407,6 +407,45 @@ func init() {
 		{Name: "constraintTypeId", Type: TypeEntityRef},
 	}})
 
+	// C1: Template literal extraction
+	RegisterRelation(RelationDef{Name: "TemplateLiteral", Version: 2, Columns: []ColumnDef{
+		{Name: "id", Type: TypeEntityRef},
+		{Name: "tag", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "TemplateElement", Version: 2, Columns: []ColumnDef{
+		{Name: "parentId", Type: TypeEntityRef},
+		{Name: "idx", Type: TypeInt32},
+		{Name: "rawText", Type: TypeString},
+	}})
+	RegisterRelation(RelationDef{Name: "TemplateExpression", Version: 2, Columns: []ColumnDef{
+		{Name: "parentId", Type: TypeEntityRef},
+		{Name: "idx", Type: TypeInt32},
+		{Name: "exprId", Type: TypeEntityRef},
+	}})
+
+	// C2: Enum declaration extraction
+	RegisterRelation(RelationDef{Name: "EnumDecl", Version: 2, Columns: []ColumnDef{
+		{Name: "id", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "file", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "EnumMember", Version: 2, Columns: []ColumnDef{
+		{Name: "enumId", Type: TypeEntityRef},
+		{Name: "memberName", Type: TypeString},
+		{Name: "initExpr", Type: TypeEntityRef},
+	}})
+
+	// C5: Optional chaining and nullish coalescing
+	RegisterRelation(RelationDef{Name: "OptionalChain", Version: 2, Columns: []ColumnDef{
+		{Name: "expr", Type: TypeEntityRef},
+		{Name: "baseExpr", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "NullishCoalescing", Version: 2, Columns: []ColumnDef{
+		{Name: "expr", Type: TypeEntityRef},
+		{Name: "lhs", Type: TypeEntityRef},
+		{Name: "rhs", Type: TypeEntityRef},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},

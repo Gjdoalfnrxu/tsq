@@ -76,6 +76,7 @@ const (
 	TokKwStrictcount
 	TokKwStrictsum
 	TokKwRank
+	TokKwUnique
 	TokKwForex
 	TokKwSuper
 	TokKwDeprecated
@@ -126,6 +127,7 @@ var keywords = map[string]TokenType{
 	"strictcount": TokKwStrictcount,
 	"strictsum":   TokKwStrictsum,
 	"rank":        TokKwRank,
+	"unique":      TokKwUnique,
 	"forex":       TokKwForex,
 	"super":       TokKwSuper,
 	"deprecated":  TokKwDeprecated,

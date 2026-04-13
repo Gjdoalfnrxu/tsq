@@ -13,8 +13,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// v3 Phase 3d: +1 bridge class (NonTaintableType) = 85
 	// v3 Phase 17: +7 type-fact relations = 92
 	// Phase 2: +7 DOM/crypto/framework stubs + 1 ExprInFunction = 100
-	if got := len(m.Available); got != 100 {
-		t.Errorf("expected 100 available classes, got %d", got)
+	// Batch 2 Phase 2: +3 template + 2 enum + 2 optional/nullish = 107
+	if got := len(m.Available); got != 107 {
+		t.Errorf("expected 107 available classes, got %d", got)
 	}
 }
 

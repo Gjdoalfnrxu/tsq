@@ -880,6 +880,73 @@ func (fw *FactWalker) emitJsxAttr(node ASTNode, elementID uint32) {
 	fw.emit("JsxAttribute", elementID, attrName, valueID)
 }
 
+// ---- Template Literals ----
+
+func (fw *FactWalker) emitTemplateLiteral(node ASTNode, id uint32, tagID uint32) {
+	fw.emit("TemplateLiteral", id, tagID)
+
+	// Walk children: TemplateSubstitution contains expressions,
+	// everything else is a string fragment.
+	idx := int32(0)
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		switch k {
+		case "`", "${", "}":
+			continue
+		case "TemplateSubstitution":
+			// The expression is inside the substitution
+			cc := child.ChildCount()
+			for j := 0; j < cc; j++ {
+				gc := child.Child(j)
+				if gc == nil {
+					continue
+				}
+				gk := gc.Kind()
+				if gk == "${" || gk == "}" {
+					continue
+				}
+				fw.emit("TemplateExpression", id, idx, fw.nid(gc))
+				idx++
+				break
+			}
+		default:
+			// String fragment (TemplateChars or similar)
+			fw.emit("TemplateElement", id, idx, child.Text())
+			idx++
+		}
+	}
+}
+
+func (fw *FactWalker) emitTaggedTemplate(node ASTNode, id uint32) {
+	// TaggedTemplateExpression: tag `template`
+	var tagID uint32
+	tagNode := childByField(node, "function")
+	if tagNode == nil && node.ChildCount() > 0 {
+		tagNode = node.Child(0)
+	}
+	if tagNode != nil {
+		tagID = fw.nid(tagNode)
+	}
+
+	// Find the template string child
+	templateNode := childByField(node, "arguments")
+	if templateNode == nil {
+		// Fallback: find TemplateString child
+		templateNode = childByKind(node, "TemplateString")
+	}
+	if templateNode != nil {
+		fw.emitTemplateLiteral(templateNode, fw.nid(templateNode), tagID)
+	} else {
+		// Emit the tagged template itself as a TemplateLiteral with the tag
+		fw.emit("TemplateLiteral", id, tagID)
+	}
+}
+
 // ---- utilities ----
 
 func boolInt(b bool) int32 {

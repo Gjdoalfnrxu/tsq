@@ -137,6 +137,16 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "TypeParameter", Relation: "TypeParameter", File: "tsq_types.qll"},
 			// Phase F1: expression-in-function scoping
 			{Name: "ExprInFunction", Relation: "ExprInFunction", File: "tsq_functions.qll"},
+			// C1: Template literal extraction
+			{Name: "TemplateLiteral", Relation: "TemplateLiteral", File: "tsq_expressions.qll"},
+			{Name: "TemplateElement", Relation: "TemplateElement", File: "tsq_expressions.qll"},
+			{Name: "TemplateExpression", Relation: "TemplateExpression", File: "tsq_expressions.qll"},
+			// C2: Enum declaration extraction
+			{Name: "EnumDecl", Relation: "EnumDecl", File: "tsq_types.qll"},
+			{Name: "EnumMember", Relation: "EnumMember", File: "tsq_types.qll"},
+			// C5: Optional chaining and nullish coalescing
+			{Name: "OptionalChain", Relation: "OptionalChain", File: "tsq_expressions.qll"},
+			{Name: "NullishCoalescing", Relation: "NullishCoalescing", File: "tsq_expressions.qll"},
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
