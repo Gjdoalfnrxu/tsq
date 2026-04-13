@@ -2,7 +2,7 @@ package bridge
 
 import "embed"
 
-//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll compat_dataflow.qll compat_tainttracking.qll compat_security_xss.qll compat_security_cmdi.qll compat_security_sqli.qll compat_security_pathtraversal.qll compat_dom.qll compat_crypto.qll
+//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll compat_dataflow.qll compat_tainttracking.qll compat_security_xss.qll compat_security_cmdi.qll compat_security_sqli.qll compat_security_pathtraversal.qll compat_dom.qll compat_crypto.qll compat_http.qll compat_io.qll compat_regexp.qll
 var bridgeFS embed.FS
 
 // LoadBridge returns all embedded .qll files as a map from filename to contents.
@@ -35,6 +35,9 @@ func LoadBridge() map[string][]byte {
 		"compat_security_pathtraversal.qll",
 		"compat_dom.qll",
 		"compat_crypto.qll",
+		"compat_http.qll",
+		"compat_io.qll",
+		"compat_regexp.qll",
 	}
 	result := make(map[string][]byte, len(files))
 	for _, name := range files {
@@ -87,6 +90,10 @@ func ImportLoader(bridgeFiles map[string][]byte, parseFn func(src, file string) 
 		"semmle.javascript.security.dataflow.PathTraversalQuery":    "compat_security_pathtraversal.qll",
 		"semmle.javascript.security.dataflow.DomBasedXssQuery":      "compat_dom.qll",
 		"semmle.javascript.security.CryptoLibraries":                "compat_crypto.qll",
+		"semmle.javascript.frameworks.HTTP":                         "compat_http.qll",
+		"semmle.javascript.security.dataflow.DatabaseAccess":        "compat_io.qll",
+		"semmle.javascript.security.dataflow.FileSystemAccess":      "compat_io.qll",
+		"semmle.javascript.security.dataflow.RegExpInjectionQuery":  "compat_regexp.qll",
 	}
 	return func(path string) (interface{}, bool) {
 		filename, ok := pathToFile[path]

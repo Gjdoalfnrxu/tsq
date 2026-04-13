@@ -132,6 +132,19 @@ var stdlibCoverageAllowlist = map[string]string{
 	"OptionalChain":     "optional chaining expression; not queried directly",
 	"NullishCoalescing": "nullish coalescing expression; not queried directly",
 
+	// HTTP abstraction layer stubs — framework-agnostic HTTP classes.
+	"HTTP::RequestHandler": "abstract HTTP handler; queried via framework-specific handlers",
+	"HTTP::ServerRequest":  "server request parameter; queried via framework queries",
+	"HTTP::ResponseBody":   "response body taint sink; queried via XSS queries",
+
+	// IO stubs — database and filesystem access.
+	"DatabaseAccess":   "database access sink; queried via SQL/NoSQL injection queries",
+	"FileSystemAccess": "stub — real detection deferred; requires fs import tracking",
+
+	// RegExp stubs — regex literal and term analysis.
+	"RegExpLiteral": "stub — regex literal analysis deferred; requires AST regex parsing",
+	"RegExpTerm":    "stub — regex term analysis deferred; requires regex parse tree",
+
 	// Taint relations — some used in queries but as predicates, not class refs.
 	"TaintSink":     "internal taint plumbing",
 	"TaintSource":   "used as predicate in queries, not as class",
