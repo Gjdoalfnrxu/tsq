@@ -6,5 +6,5 @@ import javascript
 import semmle.javascript.security.dataflow.SqlInjectionQuery
 
 from SqlInjection::SqlInjectionSink sink, TaintAlert alert
-where alert.getSrcKind() = "http_input" and alert.getSinkKind() = "sql"
+where alert.getSinkKind() = "sql" and alert.getSinkExpr() = sink
 select sink, "SQL injection from user input."
