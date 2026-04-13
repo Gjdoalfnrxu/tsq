@@ -189,6 +189,12 @@ func compatTestCases() []compatTestCase {
 			queryFile:  "testdata/compat/find_sqli_express.ql",
 			goldenFile: "testdata/compat/expected/find_sqli_express.csv",
 		},
+		{
+			name:       "find_multi_vuln",
+			projectDir: "testdata/compat/projects/multi-vuln",
+			queryFile:  "testdata/compat/find_multi_vuln.ql",
+			goldenFile: "testdata/compat/expected/find_multi_vuln.csv",
+		},
 	}
 }
 
