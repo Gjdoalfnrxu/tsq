@@ -28,6 +28,12 @@ func TestAllRelationsRegistered(t *testing.T) {
 		"EnumDecl", "EnumMember",
 		// C5: Optional chaining and nullish coalescing
 		"OptionalChain", "NullishCoalescing",
+		// C3: Decorator extraction
+		"Decorator",
+		// C4: Namespace/module declaration extraction
+		"NamespaceDecl", "NamespaceMember",
+		// C6: TypeScript type guards and assertion functions
+		"TypeGuard",
 		"ExtractError", "SchemaVersion",
 	}
 	for _, name := range expected {
@@ -43,8 +49,8 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 87 {
-		t.Fatalf("expected 87 relations in registry, got %d", len(Registry))
+	if len(Registry) != 91 {
+		t.Fatalf("expected 91 relations in registry, got %d", len(Registry))
 	}
 }
 

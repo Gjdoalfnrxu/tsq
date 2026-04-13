@@ -37,6 +37,16 @@ type TypeAwareWalker struct {
 	// When false, ExprType and SymbolType relations are left empty (tsgo-dependent).
 	// Structural type relations (TypeInfo, UnionMember, etc.) are always populated from AST.
 	tsgoAvailable bool
+
+	// nsStack tracks the current namespace/module node IDs for NamespaceMember.
+	nsStack []uint32
+
+	// declStack tracks the current declaration node ID for decorator target resolution.
+	// Pushed on entering any node that can be decorated (class, method, property, accessor).
+	declStack []uint32
+
+	// fnNodeMap maps function node IDs to their ASTNode for parameter resolution.
+	fnNodeMap map[uint32]ASTNode
 }
 
 // NewTypeAwareWalker creates a TypeAwareWalker wrapping the given FactWalker.
@@ -44,6 +54,7 @@ func NewTypeAwareWalker(database *db.DB) *TypeAwareWalker {
 	return &TypeAwareWalker{
 		fw:            NewFactWalker(database),
 		tsgoAvailable: false,
+		fnNodeMap:     make(map[uint32]ASTNode),
 	}
 }
 
@@ -62,6 +73,8 @@ func (tw *TypeAwareWalker) Run(ctx context.Context, backend ExtractorBackend, cf
 func (tw *TypeAwareWalker) EnterFile(path string) error {
 	tw.fnStack = tw.fnStack[:0]
 	tw.classOrIfaceStack = tw.classOrIfaceStack[:0]
+	tw.nsStack = tw.nsStack[:0]
+	tw.declStack = tw.declStack[:0]
 	return tw.fw.EnterFile(path)
 }
 
@@ -100,6 +113,20 @@ func (tw *TypeAwareWalker) Leave(node ASTNode) error {
 		if len(tw.classOrIfaceStack) > 0 {
 			tw.classOrIfaceStack = tw.classOrIfaceStack[:len(tw.classOrIfaceStack)-1]
 		}
+	case "ModuleDeclaration", "InternalModule":
+		if len(tw.nsStack) > 0 {
+			tw.nsStack = tw.nsStack[:len(tw.nsStack)-1]
+		}
+	}
+
+	// Pop declaration stack (decorator targets)
+	switch kind {
+	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression",
+		"MethodDefinition", "PublicFieldDefinition", "PropertyDefinition",
+		"GetAccessor", "SetAccessor":
+		if len(tw.declStack) > 0 {
+			tw.declStack = tw.declStack[:len(tw.declStack)-1]
+		}
 	}
 
 	return tw.fw.Leave(node)
@@ -128,6 +155,14 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		}
 		tw.pushFunction(node, id)
 	}
+	// Track declaration-like nodes that can be decorator targets.
+	switch kind {
+	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression",
+		"MethodDefinition", "PublicFieldDefinition", "PropertyDefinition",
+		"GetAccessor", "SetAccessor":
+		tw.declStack = append(tw.declStack, id)
+	}
+
 	switch kind {
 	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression":
 		tw.emitClassDecl(node, id)
@@ -159,6 +194,12 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		tw.emitGenericType(node, id)
 	case "TypeParameter":
 		tw.emitTypeParameter(node, id)
+	case "Decorator":
+		tw.emitDecorator(node, id)
+	case "ModuleDeclaration", "InternalModule":
+		tw.emitNamespaceDecl(node, id)
+	case "TypePredicate", "PredicateType":
+		tw.emitTypeGuard(node, id)
 	}
 
 	// FunctionContains: any node inside a function body. Function nodes
@@ -324,6 +365,7 @@ func (tw *TypeAwareWalker) emitInterfaceDecl(node ASTNode, id uint32) {
 // pushFunction pushes a function onto the function stack and emits v2 Symbol-related facts.
 func (tw *TypeAwareWalker) pushFunction(node ASTNode, id uint32) {
 	tw.fnStack = append(tw.fnStack, id)
+	tw.fnNodeMap[id] = node
 
 	kind := node.Kind()
 	// Emit FunctionSymbol for named functions
@@ -764,6 +806,224 @@ func (tw *TypeAwareWalker) emitNullishCoalescing(node ASTNode, id uint32) {
 		rightID = tw.fw.nid(rightNode)
 	}
 	tw.fw.emit("NullishCoalescing", id, leftID, rightID)
+}
+
+// emitDecorator emits Decorator(targetId, decoratorExpr) for decorator nodes.
+// In tree-sitter TypeScript, Decorator nodes appear as children of class declarations,
+// method definitions, and property declarations. The decorator's parent is the target.
+func (tw *TypeAwareWalker) emitDecorator(node ASTNode, id uint32) {
+	// The decorator's expression is the first child after the '@' token.
+	var decoratorExprID uint32
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		if child.Text() == "@" {
+			continue
+		}
+		decoratorExprID = tw.fw.nid(child)
+		break
+	}
+	// The target is the decorated declaration (class, method, property).
+	// In tree-sitter, the decorator is a child of the declaration it decorates.
+	// We use declStack which tracks the enclosing declaration node.
+	var targetID uint32
+	if len(tw.declStack) > 0 {
+		targetID = tw.declStack[len(tw.declStack)-1]
+	} else {
+		// Fallback: emit with the decorator node itself as target.
+		targetID = id
+	}
+	tw.fw.emit("Decorator", targetID, decoratorExprID)
+}
+
+// emitNamespaceDecl emits NamespaceDecl and NamespaceMember for TypeScript namespace/module declarations.
+// Handles ModuleDeclaration (namespace Foo {}) and InternalModule variants.
+func (tw *TypeAwareWalker) emitNamespaceDecl(node ASTNode, id uint32) {
+	name := ""
+	if nameNode := childByField(node, "name"); nameNode != nil {
+		name = nameNode.Text()
+	} else {
+		// Fallback: find first string or identifier child
+		count := node.ChildCount()
+		for i := 0; i < count; i++ {
+			child := node.Child(i)
+			if child == nil {
+				continue
+			}
+			k := child.Kind()
+			if k == "namespace" || k == "module" || k == "declare" {
+				continue
+			}
+			if k == "Identifier" || k == "String" || k == "StringFragment" {
+				name = child.Text()
+				break
+			}
+		}
+	}
+	tw.fw.emit("NamespaceDecl", id, name, tw.fw.fileID)
+
+	// If nested inside another namespace, emit NamespaceMember
+	if len(tw.nsStack) > 0 {
+		parentNS := tw.nsStack[len(tw.nsStack)-1]
+		tw.fw.emit("NamespaceMember", parentNS, id)
+	}
+
+	// Push onto namespace stack for children
+	tw.nsStack = append(tw.nsStack, id)
+
+	// Emit NamespaceMember for direct children in the body
+	bodyNode := childByField(node, "body")
+	if bodyNode == nil {
+		bodyNode = childByKind(node, "StatementBlock")
+		if bodyNode == nil {
+			bodyNode = childByKind(node, "NamespaceBody")
+		}
+	}
+	if bodyNode != nil {
+		count := bodyNode.ChildCount()
+		for i := 0; i < count; i++ {
+			child := bodyNode.Child(i)
+			if child == nil {
+				continue
+			}
+			k := child.Kind()
+			if k == "{" || k == "}" || k == ";" {
+				continue
+			}
+			// Skip nested namespace declarations — they emit their own
+			// NamespaceMember via the nsStack check when they're visited.
+			if k == "ModuleDeclaration" || k == "InternalModule" {
+				continue
+			}
+			memberID := tw.fw.nid(child)
+			tw.fw.emit("NamespaceMember", id, memberID)
+		}
+	}
+}
+
+// emitTypeGuard emits TypeGuard(fnId, paramIdx, narrowedType) for type predicate return types.
+// Handles `x is T` (TypePredicate) and `asserts x` patterns in function return annotations.
+func (tw *TypeAwareWalker) emitTypeGuard(node ASTNode, id uint32) {
+	if len(tw.fnStack) == 0 {
+		return
+	}
+	fnID := tw.fnStack[len(tw.fnStack)-1]
+
+	// Parse the TypePredicate / PredicateType node.
+	// For `x is T`: children are [paramName, "is", type]
+	// For `asserts x`: children are ["asserts", paramName]
+	count := node.ChildCount()
+
+	// Check for "asserts" pattern
+	hasAsserts := false
+	paramName := ""
+	narrowedType := ""
+
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		text := child.Text()
+		k := child.Kind()
+		if text == "asserts" {
+			hasAsserts = true
+			continue
+		}
+		if text == "is" {
+			continue
+		}
+		if k == "Identifier" || k == "TypeIdentifier" {
+			if paramName == "" && !hasAsserts {
+				paramName = text
+			} else if paramName == "" && hasAsserts {
+				paramName = text
+			} else {
+				// This is the narrowed type
+				narrowedType = text
+			}
+		} else if k != "{" && k != "}" {
+			// Could be a complex type node
+			if narrowedType == "" && paramName != "" {
+				narrowedType = text
+			}
+		}
+	}
+
+	if hasAsserts {
+		if narrowedType != "" {
+			// asserts x is T → preserve both the assertion and the narrowed type
+			narrowedType = "asserts " + narrowedType
+		} else {
+			// asserts x (no is T) → just the assertion marker
+			narrowedType = "asserts"
+		}
+	}
+
+	// Find the parameter index by matching paramName to the enclosing function's parameters.
+	paramIdx := int32(0)
+	if paramName != "" {
+		// Walk the function node's parameters to find the matching index.
+		// fnStack holds IDs — look up the function node via the current context.
+		// We emit with index 0 as fallback if we can't resolve.
+		paramIdx = tw.resolveParamIdx(fnID, paramName)
+	}
+
+	if narrowedType != "" || hasAsserts {
+		tw.fw.emit("TypeGuard", fnID, paramIdx, narrowedType)
+	}
+}
+
+// resolveParamIdx finds the parameter index matching paramName in the
+// enclosing function by scanning the function node's formal parameters.
+// Returns 0 as fallback if the function node or parameter can't be found.
+func (tw *TypeAwareWalker) resolveParamIdx(fnID uint32, paramName string) int32 {
+	// Look up the function node from the fnNodeMap.
+	fnNode, ok := tw.fnNodeMap[fnID]
+	if !ok {
+		return 0
+	}
+	// Find FormalParameters child.
+	params := childByKind(fnNode, "FormalParameters")
+	if params == nil {
+		return 0
+	}
+	idx := int32(0)
+	count := params.ChildCount()
+	for i := 0; i < count; i++ {
+		child := params.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k == "(" || k == ")" || k == "," {
+			continue
+		}
+		// The parameter might be a RequiredParameter, OptionalParameter, or Identifier.
+		name := ""
+		if nameNode := childByField(child, "pattern"); nameNode != nil {
+			name = nameNode.Text()
+		} else if k == "Identifier" {
+			name = child.Text()
+		} else {
+			// Try first Identifier child.
+			for j := 0; j < child.ChildCount(); j++ {
+				gc := child.Child(j)
+				if gc != nil && gc.Kind() == "Identifier" {
+					name = gc.Text()
+					break
+				}
+			}
+		}
+		if name == paramName {
+			return idx
+		}
+		idx++
+	}
+	return 0
 }
 
 // emitSymInFunction emits SymInFunction when an identifier reference appears inside a function.

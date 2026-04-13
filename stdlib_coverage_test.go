@@ -132,6 +132,16 @@ var stdlibCoverageAllowlist = map[string]string{
 	"OptionalChain":     "optional chaining expression; not queried directly",
 	"NullishCoalescing": "nullish coalescing expression; not queried directly",
 
+	// C3: Decorator extraction
+	"Decorator": "decorator structural extraction; not queried directly in compat tests",
+
+	// C4: Namespace/module declaration extraction
+	"NamespaceDecl":   "namespace declaration; not queried directly in compat tests",
+	"NamespaceMember": "namespace member; not queried directly in compat tests",
+
+	// C6: TypeScript type guards and assertion functions
+	"TypeGuard": "type guard/assertion function; not queried directly in compat tests",
+
 	// HTTP abstraction layer stubs — framework-agnostic HTTP classes.
 	"HTTP::RequestHandler": "abstract HTTP handler; queried via framework-specific handlers",
 	"HTTP::ServerRequest":  "server request parameter; queried via framework queries",

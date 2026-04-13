@@ -446,6 +446,30 @@ func init() {
 		{Name: "rhs", Type: TypeEntityRef},
 	}})
 
+	// C3: Decorator extraction
+	RegisterRelation(RelationDef{Name: "Decorator", Version: 2, Columns: []ColumnDef{
+		{Name: "targetId", Type: TypeEntityRef},
+		{Name: "decoratorExpr", Type: TypeEntityRef},
+	}})
+
+	// C4: Namespace/module declaration extraction
+	RegisterRelation(RelationDef{Name: "NamespaceDecl", Version: 2, Columns: []ColumnDef{
+		{Name: "id", Type: TypeEntityRef},
+		{Name: "name", Type: TypeString},
+		{Name: "file", Type: TypeEntityRef},
+	}})
+	RegisterRelation(RelationDef{Name: "NamespaceMember", Version: 2, Columns: []ColumnDef{
+		{Name: "nsId", Type: TypeEntityRef},
+		{Name: "memberId", Type: TypeEntityRef},
+	}})
+
+	// C6: TypeScript type guards and assertion functions
+	RegisterRelation(RelationDef{Name: "TypeGuard", Version: 2, Columns: []ColumnDef{
+		{Name: "fnId", Type: TypeEntityRef},
+		{Name: "paramIdx", Type: TypeInt32},
+		{Name: "narrowedType", Type: TypeString},
+	}})
+
 	// Diagnostics
 	RegisterRelation(RelationDef{Name: "ExtractError", Version: 1, Columns: []ColumnDef{
 		{Name: "file", Type: TypeEntityRef},
