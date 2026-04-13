@@ -167,7 +167,7 @@ func compatTestCases() []compatTestCase {
 			projectDir: "testdata/compat/projects/basic",
 			queryFile:  "testdata/compat/custom_config.ql",
 			goldenFile: "testdata/compat/expected/custom_config.csv",
-			// A2: Configuration override dispatch works; hasFlow method pending disjunction desugarer fix
+			// A2: Configuration override dispatch works; hasFlow disjunction grounding fixed in A3
 		},
 		{
 			name:       "dataflow_predicates",
