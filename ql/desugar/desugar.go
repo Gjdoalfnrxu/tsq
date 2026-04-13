@@ -297,10 +297,17 @@ var entityTypeRelation = map[string]struct {
 }
 
 func (d *desugarer) superTypeConstraints(cd *ast.ClassDecl, _ *freshVarGen) []datalog.Literal {
-	return d.superTypeConstraintsInner(cd, false)
+	visited := make(map[string]bool)
+	return d.superTypeConstraintsInner(cd, false, visited)
 }
 
-func (d *desugarer) superTypeConstraintsInner(cd *ast.ClassDecl, throughAbstract bool) []datalog.Literal {
+func (d *desugarer) superTypeConstraintsInner(cd *ast.ClassDecl, throughAbstract bool, visited map[string]bool) []datalog.Literal {
+	qname := d.qualifiedClassName(cd)
+	if visited[qname] {
+		return nil // cycle guard: prevent infinite recursion in abstract class hierarchies
+	}
+	visited[qname] = true
+
 	var lits []datalog.Literal
 	for _, st := range cd.SuperTypes {
 		stName := st.String()
@@ -323,6 +330,8 @@ func (d *desugarer) superTypeConstraintsInner(cd *ast.ClassDecl, throughAbstract
 						Args:      args,
 					},
 				})
+			} else {
+				d.errorf("unknown entity type %q in supertype constraints for %s (not in entityTypeRelation map)", stName, qname)
 			}
 			continue
 		}
@@ -333,7 +342,7 @@ func (d *desugarer) superTypeConstraintsInner(cd *ast.ClassDecl, throughAbstract
 		// Instead, walk up to find the grounding constraints (entity types or
 		// concrete classes) that the abstract class transitively depends on.
 		if superCD, ok := d.env.Classes[stName]; ok && superCD.IsAbstract {
-			transitiveLits := d.superTypeConstraintsInner(superCD, true)
+			transitiveLits := d.superTypeConstraintsInner(superCD, true, visited)
 			lits = append(lits, transitiveLits...)
 			continue
 		}
