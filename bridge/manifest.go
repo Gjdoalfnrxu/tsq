@@ -135,6 +135,8 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "GenericInstantiation", Relation: "GenericInstantiation", File: "tsq_types.qll"},
 			{Name: "TypeAlias", Relation: "TypeAlias", File: "tsq_types.qll"},
 			{Name: "TypeParameter", Relation: "TypeParameter", File: "tsq_types.qll"},
+			// Phase F1: expression-in-function scoping
+			{Name: "ExprInFunction", Relation: "ExprInFunction", File: "tsq_functions.qll"},
 			// v2 Phase 2b: CodeQL-compatible DataFlow module
 			{Name: "DataFlow::Node", Relation: "Symbol", File: "compat_dataflow.qll"},
 			{Name: "DataFlow::PathNode", Relation: "Symbol", File: "compat_dataflow.qll"},
@@ -149,6 +151,15 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "SqlInjection::SqlInjectionSink", Relation: "Symbol", File: "compat_security_sqli.qll"},
 			{Name: "PathTraversal::PathTraversalSource", Relation: "Symbol", File: "compat_security_pathtraversal.qll"},
 			{Name: "PathTraversal::PathTraversalSink", Relation: "Symbol", File: "compat_security_pathtraversal.qll"},
+			// v3 Phase E2: DOM class stubs
+			{Name: "DOM::Element", Relation: "JsxElement", File: "compat_dom.qll"},
+			{Name: "DOM::InnerHtmlWrite", Relation: "FieldWrite", File: "compat_dom.qll"},
+			{Name: "DOM::DocumentWrite", Relation: "MethodCall", File: "compat_dom.qll"},
+			{Name: "DOM::AttributeWrite", Relation: "FieldWrite", File: "compat_dom.qll"},
+			// v3 Phase E3: Crypto and logging stubs
+			{Name: "CryptographicOperation", Relation: "MethodCall", File: "compat_crypto.qll"},
+			{Name: "CleartextLogging", Relation: "MethodCall", File: "compat_crypto.qll"},
+			{Name: "SensitiveDataExpr", Relation: "Symbol", File: "compat_crypto.qll"},
 		},
 		Unavailable: []UnavailableClass{},
 	}

@@ -12,8 +12,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// v3 Phase 3c: +2 bridge classes (Type, SymbolTypeBinding) = 84
 	// v3 Phase 3d: +1 bridge class (NonTaintableType) = 85
 	// v3 Phase 17: +7 type-fact relations = 92
-	if got := len(m.Available); got != 92 {
-		t.Errorf("expected 92 available classes, got %d", got)
+	// Phase 2: +7 DOM/crypto/framework stubs + 1 ExprInFunction = 100
+	if got := len(m.Available); got != 100 {
+		t.Errorf("expected 100 available classes, got %d", got)
 	}
 }
 

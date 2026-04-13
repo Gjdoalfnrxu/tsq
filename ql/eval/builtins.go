@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -29,6 +30,20 @@ var builtinRegistry = map[string]builtinFunc{
 	"__builtin_string_toInt":       builtinStringToInt,
 	"__builtin_string_toString":    builtinStringToString,
 	"__builtin_string_splitAt":     builtinStringSplitAt,
+
+	// D1: regex/string builtins
+	"__builtin_string_regexpFind":       builtinStringRegexpFind,
+	"__builtin_string_regexpReplaceAll": builtinStringRegexpReplaceAll,
+	"__builtin_string_prefix":           builtinStringPrefix,
+	"__builtin_string_suffix":           builtinStringSuffix,
+
+	// D3: integer builtins
+	"__builtin_int_abs":           builtinIntAbs,
+	"__builtin_int_bitAnd":        builtinIntBitAnd,
+	"__builtin_int_bitOr":         builtinIntBitOr,
+	"__builtin_int_bitXor":        builtinIntBitXor,
+	"__builtin_int_bitShiftLeft":  builtinIntBitShiftLeft,
+	"__builtin_int_bitShiftRight": builtinIntBitShiftRight,
 }
 
 // IsBuiltin returns true if the predicate name is a registered builtin.
@@ -393,6 +408,276 @@ func builtinStringSplitAt(atom datalog.Atom, bindings []binding) []binding {
 			continue
 		}
 		nb, ok := bindResult(atom.Args[2], b, StrVal{V: s[idx:]})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// ---- D1: String/regex builtins ----
+
+// __builtin_string_regexpFind(this, pattern, index, offset, result)
+// Find the index-th match of pattern starting at offset; return the match string.
+func builtinStringRegexpFind(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 5 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		s, ok := resolveStringArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		pattern, ok := resolveStringArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		index, ok := resolveIntArg(atom.Args[2], b)
+		if !ok {
+			continue
+		}
+		offset, ok := resolveIntArg(atom.Args[3], b)
+		if !ok {
+			continue
+		}
+		if offset < 0 || int(offset) > len(s) {
+			continue
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			continue
+		}
+		matches := re.FindAllString(s[offset:], -1)
+		if index < 0 || int(index) >= len(matches) {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[4], b, StrVal{V: matches[index]})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_string_regexpReplaceAll(this, pattern, replacement, result)
+func builtinStringRegexpReplaceAll(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 4 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		s, ok := resolveStringArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		pattern, ok := resolveStringArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		replacement, ok := resolveStringArg(atom.Args[2], b)
+		if !ok {
+			continue
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[3], b, StrVal{V: re.ReplaceAllString(s, replacement)})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_string_prefix(this, n, result) — return first n characters
+func builtinStringPrefix(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		s, ok := resolveStringArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		n, ok := resolveIntArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		if n < 0 || int(n) > len(s) {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, StrVal{V: s[:n]})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_string_suffix(this, n, result) — return last n characters
+func builtinStringSuffix(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		s, ok := resolveStringArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		n, ok := resolveIntArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		if n < 0 || int(n) > len(s) {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, StrVal{V: s[len(s)-int(n):]})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// ---- D3: Integer builtins ----
+
+// __builtin_int_abs(this, result)
+func builtinIntAbs(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 2 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		n, ok := resolveIntArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		if n < 0 {
+			if n == math.MinInt64 {
+				continue // overflow: abs(MinInt64) not representable in int64
+			}
+			n = -n
+		}
+		nb, ok := bindResult(atom.Args[1], b, IntVal{V: n})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_int_bitAnd(this, other, result)
+func builtinIntBitAnd(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		a, ok := resolveIntArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		other, ok := resolveIntArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, IntVal{V: a & other})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_int_bitOr(this, other, result)
+func builtinIntBitOr(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		a, ok := resolveIntArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		other, ok := resolveIntArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, IntVal{V: a | other})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_int_bitXor(this, other, result)
+func builtinIntBitXor(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		a, ok := resolveIntArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		other, ok := resolveIntArg(atom.Args[1], b)
+		if !ok {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, IntVal{V: a ^ other})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_int_bitShiftLeft(this, n, result)
+func builtinIntBitShiftLeft(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		a, ok := resolveIntArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		n, ok := resolveIntArg(atom.Args[1], b)
+		if !ok || n < 0 {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, IntVal{V: a << uint(n)})
+		if ok {
+			out = append(out, nb)
+		}
+	}
+	return out
+}
+
+// __builtin_int_bitShiftRight(this, n, result) — arithmetic right shift
+func builtinIntBitShiftRight(atom datalog.Atom, bindings []binding) []binding {
+	if len(atom.Args) != 3 {
+		return nil
+	}
+	var out []binding
+	for _, b := range bindings {
+		a, ok := resolveIntArg(atom.Args[0], b)
+		if !ok {
+			continue
+		}
+		n, ok := resolveIntArg(atom.Args[1], b)
+		if !ok || n < 0 {
+			continue
+		}
+		nb, ok := bindResult(atom.Args[2], b, IntVal{V: a >> uint(n)})
 		if ok {
 			out = append(out, nb)
 		}

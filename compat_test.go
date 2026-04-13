@@ -169,6 +169,13 @@ func compatTestCases() []compatTestCase {
 			goldenFile: "testdata/compat/expected/custom_config.csv",
 			skip:       "Configuration.hasFlow requires LocalFlowStar which doesn't cover FieldRead-based sources yet",
 		},
+		{
+			name:       "dataflow_predicates",
+			projectDir: "testdata/compat/projects/basic",
+			queryFile:  "testdata/compat/dataflow_predicates.ql",
+			goldenFile: "testdata/compat/expected/dataflow_predicates.csv",
+			skip:       "DataFlow predicates need golden file generation after LocalFlow is verified on basic fixture",
+		},
 	}
 }
 

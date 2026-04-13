@@ -87,6 +87,7 @@ var stdlibCoverageAllowlist = map[string]string{
 	"ReturnStmt":       "coverage_probe.ql added",
 	"FunctionContains": "coverage_probe.ql added",
 	"ReturnSym":        "coverage_probe.ql added",
+	"ExprInFunction":   "internal expression scoping for taint analysis",
 
 	// Dataflow relations — queried indirectly via DataFlow module.
 	"LocalFlow":     "internal dataflow plumbing",
@@ -106,6 +107,17 @@ var stdlibCoverageAllowlist = map[string]string{
 
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
+
+	// DOM stubs — framework-specific, not queried directly in compat tests.
+	"DOM::Element":        "DOM element class; queried via DOM security queries",
+	"DOM::InnerHtmlWrite": "DOM innerHTML sink; internal taint plumbing",
+	"DOM::DocumentWrite":  "document.write sink; internal taint plumbing",
+	"DOM::AttributeWrite": "DOM attribute write; internal taint plumbing",
+
+	// Crypto/logging stubs — not queried directly in compat tests.
+	"CryptographicOperation": "crypto operation detection; queried via security queries",
+	"CleartextLogging":       "cleartext logging sink; queried via security queries",
+	"SensitiveDataExpr":      "abstract sensitive data; user-extensible",
 
 	// Taint relations — some used in queries but as predicates, not class refs.
 	"TaintSink":     "internal taint plumbing",

@@ -222,6 +222,10 @@ func init() {
 		{Name: "sym", Type: TypeEntityRef},
 		{Name: "fnId", Type: TypeEntityRef},
 	}})
+	RegisterRelation(RelationDef{Name: "ExprInFunction", Version: 2, Columns: []ColumnDef{
+		{Name: "exprId", Type: TypeEntityRef},
+		{Name: "fnId", Type: TypeEntityRef},
+	}})
 
 	// v2 Phase C1: Return value symbol (synthetic per-function return symbol)
 	RegisterRelation(RelationDef{Name: "ReturnSym", Version: 2, Columns: []ColumnDef{

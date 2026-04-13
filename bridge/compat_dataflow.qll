@@ -26,6 +26,24 @@ module DataFlow {
 
         /** Gets the name of the symbol this node represents. */
         string getName() { Symbol(this, result, _, _) }
+
+        /** Gets a successor node via local data flow. */
+        Node getASuccessor() { exists(int fnId | LocalFlow(fnId, this, result)) }
+
+        /** Gets a predecessor node via local data flow. */
+        Node getAPredecessor() { exists(int fnId | LocalFlow(fnId, result, this)) }
+
+        /** Gets a source node that flows to this node via transitive flow. */
+        Node getASourceNode() { FlowStar(result, this) }
+
+        /** Holds if data flows from this node to `other`. */
+        predicate flowsTo(Node other) { FlowStar(this, other) }
+
+        /** Holds if data flows from `other` to this node. */
+        predicate flowsFrom(Node other) { FlowStar(other, this) }
+
+        /** Holds if this node represents a function parameter. */
+        predicate isParameter() { Parameter(_, _, _, _, this, _) }
     }
 
     /**

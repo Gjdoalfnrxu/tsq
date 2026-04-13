@@ -241,10 +241,16 @@ func TestDataFlowNodeMembers(t *testing.T) {
 	}
 
 	expectedMembers := map[string]bool{
-		"toString":    false,
-		"getLocation": false,
-		"asExpr":      false,
-		"getName":     false,
+		"toString":        false,
+		"getLocation":     false,
+		"asExpr":          false,
+		"getName":         false,
+		"getASourceNode":  false,
+		"getAPredecessor": false,
+		"getASuccessor":   false,
+		"flowsTo":         false,
+		"flowsFrom":       false,
+		"isParameter":     false,
 	}
 
 	for _, m := range nodeClass.Members {
