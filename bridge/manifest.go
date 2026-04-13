@@ -160,6 +160,16 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "CryptographicOperation", Relation: "MethodCall", File: "compat_crypto.qll"},
 			{Name: "CleartextLogging", Relation: "MethodCall", File: "compat_crypto.qll"},
 			{Name: "SensitiveDataExpr", Relation: "Symbol", File: "compat_crypto.qll"},
+			// v3 Phase E1: HTTP abstraction layer
+			{Name: "HTTP::RequestHandler", Relation: "Symbol", File: "compat_http.qll"},
+			{Name: "HTTP::ServerRequest", Relation: "Symbol", File: "compat_http.qll"},
+			{Name: "HTTP::ResponseBody", Relation: "TaintSink", File: "compat_http.qll"},
+			// v3 Phase E4: IO stubs
+			{Name: "DatabaseAccess", Relation: "TaintSink", File: "compat_io.qll"},
+			{Name: "FileSystemAccess", Relation: "Symbol", File: "compat_io.qll"},
+			// v3 Phase E5: RegExp stubs
+			{Name: "RegExpLiteral", Relation: "Symbol", File: "compat_regexp.qll"},
+			{Name: "RegExpTerm", Relation: "Symbol", File: "compat_regexp.qll"},
 		},
 		Unavailable: []UnavailableClass{},
 	}
