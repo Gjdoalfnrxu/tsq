@@ -22,6 +22,12 @@ func TestAllRelationsRegistered(t *testing.T) {
 		// v3 type-fact relations
 		"TypeInfo", "TypeMember", "UnionMember", "IntersectionMember",
 		"GenericInstantiation", "TypeAlias", "TypeParameter",
+		// C1: Template literals
+		"TemplateLiteral", "TemplateElement", "TemplateExpression",
+		// C2: Enum declarations
+		"EnumDecl", "EnumMember",
+		// C5: Optional chaining and nullish coalescing
+		"OptionalChain", "NullishCoalescing",
 		"ExtractError", "SchemaVersion",
 	}
 	for _, name := range expected {
@@ -37,8 +43,8 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 80 {
-		t.Fatalf("expected 79 relations in registry, got %d", len(Registry))
+	if len(Registry) != 87 {
+		t.Fatalf("expected 87 relations in registry, got %d", len(Registry))
 	}
 }
 

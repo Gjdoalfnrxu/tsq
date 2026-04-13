@@ -143,6 +143,12 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		tw.emitTypeDecl(node, id)
 	case "VariableDeclarator":
 		tw.emitSymbolFromVarDecl(node)
+	case "EnumDeclaration", "ConstEnumDeclaration":
+		tw.emitEnumDecl(node, id)
+	case "OptionalChainExpression":
+		tw.emitOptionalChain(node, id)
+	case "BinaryExpression":
+		tw.emitNullishCoalescing(node, id)
 	case "Identifier":
 		tw.emitSymInFunction(node)
 	case "UnionType":
@@ -161,6 +167,11 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 	// re-emitting here for function kinds to avoid the self-row.
 	if !IsFunctionKind(kind) && len(tw.fnStack) > 0 {
 		tw.fw.emit("FunctionContains", tw.fnStack[len(tw.fnStack)-1], id)
+	}
+
+	// ExprInFunction: expression nodes inside a function body.
+	if isExpressionKind(kind) && len(tw.fnStack) > 0 {
+		tw.fw.emit("ExprInFunction", id, tw.fnStack[len(tw.fnStack)-1])
 	}
 }
 
@@ -658,6 +669,101 @@ func (tw *TypeAwareWalker) emitSymbolFromVarDecl(node ASTNode) {
 			tw.fw.emit("FunctionSymbol", symID, fnID)
 		}
 	}
+}
+
+// emitEnumDecl emits EnumDecl and EnumMember tuples for TypeScript enum declarations.
+func (tw *TypeAwareWalker) emitEnumDecl(node ASTNode, id uint32) {
+	name := ""
+	if nameNode := childByField(node, "name"); nameNode != nil {
+		name = nameNode.Text()
+	}
+	tw.fw.emit("EnumDecl", id, name, tw.fw.fileID)
+
+	// Walk children for enum members
+	bodyNode := childByField(node, "body")
+	if bodyNode == nil {
+		bodyNode = childByKind(node, "EnumBody")
+	}
+	if bodyNode == nil {
+		bodyNode = node
+	}
+
+	count := bodyNode.ChildCount()
+	for i := 0; i < count; i++ {
+		child := bodyNode.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k == "{" || k == "}" || k == "," {
+			continue
+		}
+		memberName := ""
+		var initExprID uint32
+		switch k {
+		case "EnumAssignment":
+			if mn := childByField(child, "name"); mn != nil {
+				memberName = mn.Text()
+			}
+			if vn := childByField(child, "value"); vn != nil {
+				initExprID = tw.fw.nid(vn)
+			}
+		case "PropertyIdentifier", "Identifier":
+			memberName = child.Text()
+		default:
+			memberName = child.Text()
+		}
+		if memberName != "" {
+			tw.fw.emit("EnumMember", id, memberName, initExprID)
+		}
+	}
+}
+
+// emitOptionalChain emits OptionalChain for optional chaining expressions (obj?.prop).
+func (tw *TypeAwareWalker) emitOptionalChain(node ASTNode, id uint32) {
+	// OptionalChainExpression wraps the base expression
+	var baseID uint32
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k != "?." && k != "?.[" {
+			baseID = tw.fw.nid(child)
+			break
+		}
+	}
+	tw.fw.emit("OptionalChain", id, baseID)
+}
+
+// emitNullishCoalescing emits NullishCoalescing for ?? binary expressions.
+func (tw *TypeAwareWalker) emitNullishCoalescing(node ASTNode, id uint32) {
+	// Check if this is a ?? operator
+	hasNullish := false
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child != nil && child.Text() == "??" {
+			hasNullish = true
+			break
+		}
+	}
+	if !hasNullish {
+		return
+	}
+
+	leftNode := childByField(node, "left")
+	rightNode := childByField(node, "right")
+	var leftID, rightID uint32
+	if leftNode != nil {
+		leftID = tw.fw.nid(leftNode)
+	}
+	if rightNode != nil {
+		rightID = tw.fw.nid(rightNode)
+	}
+	tw.fw.emit("NullishCoalescing", id, leftID, rightID)
 }
 
 // emitSymInFunction emits SymInFunction when an identifier reference appears inside a function.

@@ -481,6 +481,51 @@ class C implements A, B {
 	}
 }
 
+// TestV2ExprInFunction verifies ExprInFunction tuples are emitted for expressions inside functions.
+func TestV2ExprInFunction(t *testing.T) {
+	src := `
+function foo() {
+  const x = 1;
+  const y = x + 2;
+  return y;
+}
+`
+	database := v2WalkerTestDB(t, src)
+	r := rel(t, database, "ExprInFunction")
+	if r.Tuples() == 0 {
+		t.Fatal("ExprInFunction: expected tuples for expressions inside foo()")
+	}
+	// Should contain multiple expression nodes (identifiers, binary expressions, numbers)
+	if r.Tuples() < 3 {
+		t.Errorf("ExprInFunction: expected >= 3 tuples, got %d", r.Tuples())
+	}
+}
+
+// TestV2EnumDecl verifies EnumDecl and EnumMember tuples.
+func TestV2EnumDecl(t *testing.T) {
+	src := `
+enum Direction {
+  Up,
+  Down,
+  Left,
+  Right
+}
+`
+	database := v2WalkerTestDB(t, src)
+	r := rel(t, database, "EnumDecl")
+	if r.Tuples() == 0 {
+		t.Fatal("EnumDecl: expected tuples for Direction enum")
+	}
+	if !hasString(t, database, r, 1, "Direction") {
+		t.Error("EnumDecl: expected name='Direction'")
+	}
+
+	mr := rel(t, database, "EnumMember")
+	if mr.Tuples() < 4 {
+		t.Errorf("EnumMember: expected >= 4 tuples (Up, Down, Left, Right), got %d", mr.Tuples())
+	}
+}
+
 // TestV2InterfaceExtends verifies interface extends interface.
 func TestV2InterfaceExtends(t *testing.T) {
 	src := `

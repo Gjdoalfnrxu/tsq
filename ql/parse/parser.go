@@ -1243,7 +1243,7 @@ func (p *Parser) parsePrimary() (ast.Expr, error) {
 		}, nil
 
 	case TokKwCount, TokKwMin, TokKwMax, TokKwSum, TokKwAvg,
-		TokKwConcat, TokKwStrictcount, TokKwStrictsum, TokKwRank:
+		TokKwConcat, TokKwStrictcount, TokKwStrictsum, TokKwRank, TokKwUnique:
 		return p.parseAggregate()
 
 	case TokKwSuper:

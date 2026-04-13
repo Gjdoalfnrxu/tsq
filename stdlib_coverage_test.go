@@ -119,6 +119,19 @@ var stdlibCoverageAllowlist = map[string]string{
 	"CleartextLogging":       "cleartext logging sink; queried via security queries",
 	"SensitiveDataExpr":      "abstract sensitive data; user-extensible",
 
+	// C1: Template literal extraction
+	"TemplateLiteral":    "template literal structural extraction; not queried directly",
+	"TemplateElement":    "template string fragment; not queried directly",
+	"TemplateExpression": "template interpolation; not queried directly",
+
+	// C2: Enum declaration extraction
+	"EnumDecl":   "enum declaration; not queried directly in compat tests",
+	"EnumMember": "enum member; not queried directly in compat tests",
+
+	// C5: Optional chaining and nullish coalescing
+	"OptionalChain":     "optional chaining expression; not queried directly",
+	"NullishCoalescing": "nullish coalescing expression; not queried directly",
+
 	// HTTP abstraction layer stubs — framework-agnostic HTTP classes.
 	"HTTP::RequestHandler": "abstract HTTP handler; queried via framework-specific handlers",
 	"HTTP::ServerRequest":  "server request parameter; queried via framework queries",

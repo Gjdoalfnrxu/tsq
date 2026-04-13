@@ -114,23 +114,23 @@ func TaintRules() []datalog.Rule {
 		// exist for it. This rule uses the VarDecl linkage to connect the
 		// source to a tainted symbol, then checks that the symbol is actually
 		// tainted (which respects sanitization via Rule 2's negation).
-		//
-		// Known precision limitation: the sink side is not constrained to
-		// the same function scope as the source, because we lack an
-		// ExprInFunction relation for sink expressions. In programs with
-		// multiple independent source/sink pairs across different functions,
-		// this produces cross-product false positives. Fix by adding an
-		// ExprInFunction relation to the schema (future work).
-		// TaintAlert(srcExpr, sinkExpr, srcKind, sinkKind) :-
-		//     TaintSource(srcExpr, srcKind),
-		//     VarDecl(_, sym, srcExpr, _),
-		//     TaintedSym(sym, srcKind),
-		//     TaintSink(sinkExpr, sinkKind).
+		// The sink side is scoped by requiring a tainted symbol exists in
+		// the same function as the sink expression (via SymInFunction and
+		// ExprInFunction). This is an intentional over-approximation: we
+		// can't require ExprMayRef(sinkExpr, sinkSym) because the sink expr
+		// is typically a compound expression (e.g. concatenation) where
+		// the tainted identifier is a sub-expression, not the expr itself.
+		// Function-scoping prevents cross-function false positives while
+		// accepting intra-function over-approximation — the correct tradeoff
+		// for security analysis (false positives > false negatives).
 		rule("TaintAlert",
 			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
 			pos("TaintSource", v("srcExpr"), v("srcKind")),
 			pos("VarDecl", w(), v("sym"), v("srcExpr"), w()),
 			pos("TaintedSym", v("sym"), v("srcKind")),
+			pos("TaintedSym", v("sinkSym"), v("srcKind")),
+			pos("SymInFunction", v("sinkSym"), v("fnId")),
+			pos("ExprInFunction", v("sinkExpr"), v("fnId")),
 			pos("TaintSink", v("sinkExpr"), v("sinkKind")),
 		),
 	}

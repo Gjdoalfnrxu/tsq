@@ -46,6 +46,8 @@ func taintBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relatio
 		// v3 Phase 3d: type-based sanitization
 		"SymbolType":       eval.NewRelation("SymbolType", 2),
 		"NonTaintableType": eval.NewRelation("NonTaintableType", 1),
+		// Expression-in-function scoping for Rule 6b
+		"ExprInFunction": eval.NewRelation("ExprInFunction", 2),
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -474,12 +476,14 @@ func TestTaintedSym_VarDeclInit(t *testing.T) {
 // when the source expression is a FieldRead without ExprMayRef.
 func TestTaintAlert_VarDeclSource(t *testing.T) {
 	// Source: TaintSource(100, "http_input") with VarDecl(_, 10, 100, _)
-	// Sink: TaintSink(200, "xss")
+	// Sink: TaintSink(200, "xss") in the same function (fn=1) as tainted sym 10.
 	// Rule 1b gives TaintedSym(10, "http_input"), Rule 6b gives TaintAlert.
 	baseRels := taintBaseRels(map[string]*eval.Relation{
-		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
-		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
-		"TaintSink":   makeRel("TaintSink", 2, iv(200), sv("xss")),
+		"TaintSource":    makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":        makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		"TaintSink":      makeRel("TaintSink", 2, iv(200), sv("xss")),
+		"SymInFunction":  makeRel("SymInFunction", 2, iv(10), iv(1)),
+		"ExprInFunction": makeRel("ExprInFunction", 2, iv(200), iv(1)),
 	})
 
 	query := &datalog.Query{
@@ -493,19 +497,26 @@ func TestTaintAlert_VarDeclSource(t *testing.T) {
 	}
 }
 
-// TestTaintAlert_VarDeclSource_CrossProduct documents the known precision
-// limitation of Rule 6b: independent source/sink pairs across functions
-// produce cross-product false positives because the sink side lacks function
-// scope constraints (no ExprInFunction relation exists yet).
+// TestTaintAlert_VarDeclSource_CrossProduct verifies that Rule 6b does not
+// produce cross-product false positives across functions. Sinks in different
+// functions are excluded by SymInFunction/ExprInFunction scoping.
 func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
-	// Source: TaintSource(100, "http_input") → VarDecl sym 10, sink 200 (xss)
-	// Unrelated sink 300 (sql) in a different part of the program
+	// Source: TaintSource(100, "http_input") -> VarDecl sym 10 in fn 1
+	// Connected sink 200 (xss) is in fn 1 (same function as tainted sym)
+	// Unrelated sink 300 (sql) is in fn 2 (different function)
 	baseRels := taintBaseRels(map[string]*eval.Relation{
 		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
 		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
 		"TaintSink": makeRel("TaintSink", 2,
 			iv(200), sv("xss"),
-			iv(300), sv("sql"), // unrelated sink
+			iv(300), sv("sql"),
+		),
+		"SymInFunction": makeRel("SymInFunction", 2,
+			iv(10), iv(1),
+		),
+		"ExprInFunction": makeRel("ExprInFunction", 2,
+			iv(200), iv(1),
+			iv(300), iv(2),
 		),
 	})
 
@@ -516,19 +527,14 @@ func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
 
 	rs := planAndEval(t, AllSystemRules(), query, baseRels)
 
-	// Known limitation: Rule 6b produces alerts for BOTH sinks, even though
-	// sink 300 is unrelated. This cross-product false positive will be fixed
-	// when ExprInFunction is added to the schema.
 	gotXss := resultContains(rs, iv(100), iv(200), sv("http_input"), sv("xss"))
 	gotSql := resultContains(rs, iv(100), iv(300), sv("http_input"), sv("sql"))
 
 	if !gotXss {
 		t.Errorf("expected TaintAlert for connected sink 200, got %v", rs.Rows)
 	}
-	if !gotSql {
-		// When this starts failing, the cross-product fix has landed —
-		// update this test to assert !gotSql instead.
-		t.Log("cross-product false positive for sink 300 is expected (known Rule 6b limitation)")
+	if gotSql {
+		t.Errorf("cross-product false positive: got TaintAlert for unrelated sink 300 in different function, got %v", rs.Rows)
 	}
 }
 

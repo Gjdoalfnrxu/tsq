@@ -205,6 +205,22 @@ func computeAggregate(fn string, vals []Value, separator string) (Value, error) 
 	case "concat":
 		return concatValues(vals, separator), nil
 
+	case "unique":
+		seen := make(map[string]Value)
+		for _, val := range vals {
+			if val == nil {
+				continue
+			}
+			k := fmt.Sprintf("%v", val)
+			seen[k] = val
+		}
+		if len(seen) == 1 {
+			for _, val := range seen {
+				return val, nil
+			}
+		}
+		return nil, fmt.Errorf("unique: %d distinct values (need exactly 1)", len(seen))
+
 	case "rank":
 		// Rank is handled as a multi-tuple aggregate in Aggregate().
 		// This path should not be reached; if it is, return an error.
