@@ -40,6 +40,13 @@ type TypeAwareWalker struct {
 
 	// nsStack tracks the current namespace/module node IDs for NamespaceMember.
 	nsStack []uint32
+
+	// declStack tracks the current declaration node ID for decorator target resolution.
+	// Pushed on entering any node that can be decorated (class, method, property, accessor).
+	declStack []uint32
+
+	// fnNodeMap maps function node IDs to their ASTNode for parameter resolution.
+	fnNodeMap map[uint32]ASTNode
 }
 
 // NewTypeAwareWalker creates a TypeAwareWalker wrapping the given FactWalker.
@@ -47,6 +54,7 @@ func NewTypeAwareWalker(database *db.DB) *TypeAwareWalker {
 	return &TypeAwareWalker{
 		fw:            NewFactWalker(database),
 		tsgoAvailable: false,
+		fnNodeMap:     make(map[uint32]ASTNode),
 	}
 }
 
@@ -66,6 +74,7 @@ func (tw *TypeAwareWalker) EnterFile(path string) error {
 	tw.fnStack = tw.fnStack[:0]
 	tw.classOrIfaceStack = tw.classOrIfaceStack[:0]
 	tw.nsStack = tw.nsStack[:0]
+	tw.declStack = tw.declStack[:0]
 	return tw.fw.EnterFile(path)
 }
 
@@ -110,6 +119,16 @@ func (tw *TypeAwareWalker) Leave(node ASTNode) error {
 		}
 	}
 
+	// Pop declaration stack (decorator targets)
+	switch kind {
+	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression",
+		"MethodDefinition", "PublicFieldDefinition", "PropertyDefinition",
+		"GetAccessor", "SetAccessor":
+		if len(tw.declStack) > 0 {
+			tw.declStack = tw.declStack[:len(tw.declStack)-1]
+		}
+	}
+
 	return tw.fw.Leave(node)
 }
 
@@ -136,6 +155,14 @@ func (tw *TypeAwareWalker) emitV2Facts(node ASTNode) {
 		}
 		tw.pushFunction(node, id)
 	}
+	// Track declaration-like nodes that can be decorator targets.
+	switch kind {
+	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression",
+		"MethodDefinition", "PublicFieldDefinition", "PropertyDefinition",
+		"GetAccessor", "SetAccessor":
+		tw.declStack = append(tw.declStack, id)
+	}
+
 	switch kind {
 	case "ClassDeclaration", "AbstractClassDeclaration", "ClassExpression":
 		tw.emitClassDecl(node, id)
@@ -338,6 +365,7 @@ func (tw *TypeAwareWalker) emitInterfaceDecl(node ASTNode, id uint32) {
 // pushFunction pushes a function onto the function stack and emits v2 Symbol-related facts.
 func (tw *TypeAwareWalker) pushFunction(node ASTNode, id uint32) {
 	tw.fnStack = append(tw.fnStack, id)
+	tw.fnNodeMap[id] = node
 
 	kind := node.Kind()
 	// Emit FunctionSymbol for named functions
@@ -798,13 +826,14 @@ func (tw *TypeAwareWalker) emitDecorator(node ASTNode, id uint32) {
 		decoratorExprID = tw.fw.nid(child)
 		break
 	}
-	// The target is the class/interface/method that contains this decorator;
-	// use the top of the class stack if available, otherwise use parent context.
+	// The target is the decorated declaration (class, method, property).
+	// In tree-sitter, the decorator is a child of the declaration it decorates.
+	// We use declStack which tracks the enclosing declaration node.
 	var targetID uint32
-	if len(tw.classOrIfaceStack) > 0 {
-		targetID = tw.classOrIfaceStack[len(tw.classOrIfaceStack)-1]
+	if len(tw.declStack) > 0 {
+		targetID = tw.declStack[len(tw.declStack)-1]
 	} else {
-		// Fallback: emit with the decorator node itself as target so the row is still useful.
+		// Fallback: emit with the decorator node itself as target.
 		targetID = id
 	}
 	tw.fw.emit("Decorator", targetID, decoratorExprID)
@@ -864,6 +893,11 @@ func (tw *TypeAwareWalker) emitNamespaceDecl(node ASTNode, id uint32) {
 			if k == "{" || k == "}" || k == ";" {
 				continue
 			}
+			// Skip nested namespace declarations — they emit their own
+			// NamespaceMember via the nsStack check when they're visited.
+			if k == "ModuleDeclaration" || k == "InternalModule" {
+				continue
+			}
 			memberID := tw.fw.nid(child)
 			tw.fw.emit("NamespaceMember", id, memberID)
 		}
@@ -920,7 +954,13 @@ func (tw *TypeAwareWalker) emitTypeGuard(node ASTNode, id uint32) {
 	}
 
 	if hasAsserts {
-		narrowedType = "asserts"
+		if narrowedType != "" {
+			// asserts x is T → preserve both the assertion and the narrowed type
+			narrowedType = "asserts " + narrowedType
+		} else {
+			// asserts x (no is T) → just the assertion marker
+			narrowedType = "asserts"
+		}
 	}
 
 	// Find the parameter index by matching paramName to the enclosing function's parameters.
@@ -937,12 +977,52 @@ func (tw *TypeAwareWalker) emitTypeGuard(node ASTNode, id uint32) {
 	}
 }
 
-// resolveParamIdx attempts to find the parameter index matching paramName
-// in the enclosing function by scanning the scope. Returns 0 as fallback.
-func (tw *TypeAwareWalker) resolveParamIdx(_ uint32, _ string) int32 {
-	// Structural resolution without a full parameter map is complex.
-	// Return 0 as a conservative fallback — the TypeGuard row is still
-	// emitted with the correct narrowedType, which is the primary value.
+// resolveParamIdx finds the parameter index matching paramName in the
+// enclosing function by scanning the function node's formal parameters.
+// Returns 0 as fallback if the function node or parameter can't be found.
+func (tw *TypeAwareWalker) resolveParamIdx(fnID uint32, paramName string) int32 {
+	// Look up the function node from the fnNodeMap.
+	fnNode, ok := tw.fnNodeMap[fnID]
+	if !ok {
+		return 0
+	}
+	// Find FormalParameters child.
+	params := childByKind(fnNode, "FormalParameters")
+	if params == nil {
+		return 0
+	}
+	idx := int32(0)
+	count := params.ChildCount()
+	for i := 0; i < count; i++ {
+		child := params.Child(i)
+		if child == nil {
+			continue
+		}
+		k := child.Kind()
+		if k == "(" || k == ")" || k == "," {
+			continue
+		}
+		// The parameter might be a RequiredParameter, OptionalParameter, or Identifier.
+		name := ""
+		if nameNode := childByField(child, "pattern"); nameNode != nil {
+			name = nameNode.Text()
+		} else if k == "Identifier" {
+			name = child.Text()
+		} else {
+			// Try first Identifier child.
+			for j := 0; j < child.ChildCount(); j++ {
+				gc := child.Child(j)
+				if gc != nil && gc.Kind() == "Identifier" {
+					name = gc.Text()
+					break
+				}
+			}
+		}
+		if name == paramName {
+			return idx
+		}
+		idx++
+	}
 	return 0
 }
 
