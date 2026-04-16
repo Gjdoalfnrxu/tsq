@@ -33,7 +33,11 @@ func SummaryRules() []datalog.Rule {
 			[]datalog.Term{v("fn"), v("paramIdx"), v("calleeSym"), v("argIdx")},
 			pos("Parameter", v("fn"), v("paramIdx"), w(), w(), v("paramSym"), w()),
 			pos("FunctionContains", v("fn"), v("call")),
-			pos("CallArg", v("call"), v("argIdx"), v("argExpr")),
+			mustNamedLiteral("CallArg", map[string]datalog.Term{
+				"call":    v("call"),
+				"idx":     v("argIdx"),
+				"argNode": v("argExpr"),
+			}),
 			pos("ExprMayRef", v("argExpr"), v("argSym")),
 			pos("LocalFlowStar", v("fn"), v("paramSym"), v("argSym")),
 			pos("CallCalleeSym", v("call"), v("calleeSym")),

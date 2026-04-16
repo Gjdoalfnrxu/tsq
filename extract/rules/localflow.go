@@ -7,6 +7,10 @@ import (
 // LocalFlowRules returns the system Datalog rules for intra-procedural dataflow.
 // These compute LocalFlow(fn, srcSym, dstSym) edges within a single function,
 // and LocalFlowStar(fn, srcSym, dstSym) as the transitive closure.
+//
+// Body literals for Assign, Call, CallArg, LocalFlow, and TaintAlert use
+// mustNamedLiteral so column ordering is validated against the schema registry
+// at startup rather than silently breaking on a schema column reorder.
 func LocalFlowRules() []datalog.Rule {
 	return []datalog.Rule{
 		// Rule 1: Assignment flow.
@@ -17,7 +21,10 @@ func LocalFlowRules() []datalog.Rule {
 		//   SymInFunction(rhsSym, fn).
 		rule("LocalFlow",
 			[]datalog.Term{v("fn"), v("rhsSym"), v("lhsSym")},
-			pos("Assign", w(), v("rhsExpr"), v("lhsSym")),
+			mustNamedLiteral("Assign", map[string]datalog.Term{
+				"rhsExpr": v("rhsExpr"),
+				"lhsSym":  v("lhsSym"),
+			}),
 			pos("ExprMayRef", v("rhsExpr"), v("rhsSym")),
 			pos("SymInFunction", v("lhsSym"), v("fn")),
 			pos("SymInFunction", v("rhsSym"), v("fn")),
@@ -99,7 +106,11 @@ func LocalFlowRules() []datalog.Rule {
 		// LocalFlowStar(fn, src, dst) :- LocalFlow(fn, src, dst).
 		rule("LocalFlowStar",
 			[]datalog.Term{v("fn"), v("src"), v("dst")},
-			pos("LocalFlow", v("fn"), v("src"), v("dst")),
+			mustNamedLiteral("LocalFlow", map[string]datalog.Term{
+				"fnId":   v("fn"),
+				"srcSym": v("src"),
+				"dstSym": v("dst"),
+			}),
 		),
 
 		// Rule 8: Transitive closure recursive step.
@@ -107,7 +118,11 @@ func LocalFlowRules() []datalog.Rule {
 		rule("LocalFlowStar",
 			[]datalog.Term{v("fn"), v("src"), v("dst")},
 			pos("LocalFlowStar", v("fn"), v("src"), v("mid")),
-			pos("LocalFlow", v("fn"), v("mid"), v("dst")),
+			mustNamedLiteral("LocalFlow", map[string]datalog.Term{
+				"fnId":   v("fn"),
+				"srcSym": v("mid"),
+				"dstSym": v("dst"),
+			}),
 		),
 	}
 }
