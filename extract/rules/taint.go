@@ -12,14 +12,18 @@ import (
 // TaintPath is deferred to Phase E — it requires arithmetic (step+1, step < 50)
 // which is not supported in standard Datalog. The current rules cover correctness:
 // TaintedSym, SanitizedEdge, TaintedField, and TaintAlert.
+//
+// Body literals for schema-registered relations use posLit/negLit (named-column
+// builder) so that column reordering in schema/relations.go is caught at startup
+// rather than producing silent wrong results.
 func TaintRules() []datalog.Rule {
 	return []datalog.Rule{
 		// Rule 1: Taint propagation — base case (identifier sources).
 		// TaintedSym(srcSym, kind) :- TaintSource(srcExpr, kind), ExprMayRef(srcExpr, srcSym).
 		rule("TaintedSym",
 			[]datalog.Term{v("srcSym"), v("kind")},
-			pos("TaintSource", v("srcExpr"), v("kind")),
-			pos("ExprMayRef", v("srcExpr"), v("srcSym")),
+			posLit("TaintSource", cols{"srcExpr": v("srcExpr"), "sourceKind": v("kind")}),
+			posLit("ExprMayRef", cols{"expr": v("srcExpr"), "sym": v("srcSym")}),
 		),
 
 		// Rule 1b: Taint propagation — VarDecl init is a taint source (handles
@@ -27,8 +31,8 @@ func TaintRules() []datalog.Rule {
 		// TaintedSym(sym, kind) :- VarDecl(_, sym, initExpr, _), TaintSource(initExpr, kind).
 		rule("TaintedSym",
 			[]datalog.Term{v("sym"), v("kind")},
-			pos("VarDecl", w(), v("sym"), v("initExpr"), w()),
-			pos("TaintSource", v("initExpr"), v("kind")),
+			posLit("VarDecl", cols{"sym": v("sym"), "initExpr": v("initExpr")}),
+			posLit("TaintSource", cols{"srcExpr": v("initExpr"), "sourceKind": v("kind")}),
 		),
 
 		// Rule 2: Taint propagation — transitive via FlowStar, blocked by sanitizers.
@@ -71,7 +75,7 @@ func TaintRules() []datalog.Rule {
 			pos("FlowStar", v("srcSym"), v("dstSym")),
 			pos("SymbolType", v("dstSym"), v("typeId")),
 			pos("NonTaintableType", v("typeId")),
-			pos("TaintSource", w(), v("kind")),
+			posLit("TaintSource", cols{"sourceKind": v("kind")}),
 		),
 
 		// Rule 4: Field-sensitive taint — writing tainted value to a field.
@@ -80,7 +84,7 @@ func TaintRules() []datalog.Rule {
 		rule("TaintedField",
 			[]datalog.Term{v("baseSym"), v("fieldName"), v("kind")},
 			pos("FieldWrite", w(), v("baseSym"), v("fieldName"), v("rhsExpr")),
-			pos("ExprMayRef", v("rhsExpr"), v("rhsSym")),
+			posLit("ExprMayRef", cols{"expr": v("rhsExpr"), "sym": v("rhsSym")}),
 			pos("TaintedSym", v("rhsSym"), v("kind")),
 		),
 
@@ -90,7 +94,7 @@ func TaintRules() []datalog.Rule {
 		rule("TaintedSym",
 			[]datalog.Term{v("readSym"), v("kind")},
 			pos("FieldRead", v("expr"), v("baseSym"), v("fieldName")),
-			pos("ExprMayRef", v("expr"), v("readSym")),
+			posLit("ExprMayRef", cols{"expr": v("expr"), "sym": v("readSym")}),
 			pos("TaintedField", v("baseSym"), v("fieldName"), v("kind")),
 		),
 
@@ -101,11 +105,11 @@ func TaintRules() []datalog.Rule {
 		//     TaintSink(sinkExpr, sinkKind).
 		rule("TaintAlert",
 			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
-			pos("TaintSource", v("srcExpr"), v("srcKind")),
-			pos("ExprMayRef", v("srcExpr"), v("srcSym")),
+			posLit("TaintSource", cols{"srcExpr": v("srcExpr"), "sourceKind": v("srcKind")}),
+			posLit("ExprMayRef", cols{"expr": v("srcExpr"), "sym": v("srcSym")}),
 			pos("TaintedSym", v("sinkSym"), v("srcKind")),
-			pos("ExprMayRef", v("sinkExpr"), v("sinkSym")),
-			pos("TaintSink", v("sinkExpr"), v("sinkKind")),
+			posLit("ExprMayRef", cols{"expr": v("sinkExpr"), "sym": v("sinkSym")}),
+			posLit("TaintSink", cols{"sinkExpr": v("sinkExpr"), "sinkKind": v("sinkKind")}),
 		),
 
 		// Rule 6b: Taint alert for VarDecl-init-based sources.
@@ -125,13 +129,13 @@ func TaintRules() []datalog.Rule {
 		// for security analysis (false positives > false negatives).
 		rule("TaintAlert",
 			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
-			pos("TaintSource", v("srcExpr"), v("srcKind")),
-			pos("VarDecl", w(), v("sym"), v("srcExpr"), w()),
+			posLit("TaintSource", cols{"srcExpr": v("srcExpr"), "sourceKind": v("srcKind")}),
+			posLit("VarDecl", cols{"sym": v("sym"), "initExpr": v("srcExpr")}),
 			pos("TaintedSym", v("sym"), v("srcKind")),
 			pos("TaintedSym", v("sinkSym"), v("srcKind")),
 			pos("SymInFunction", v("sinkSym"), v("fnId")),
 			pos("ExprInFunction", v("sinkExpr"), v("fnId")),
-			pos("TaintSink", v("sinkExpr"), v("sinkKind")),
+			posLit("TaintSink", cols{"sinkExpr": v("sinkExpr"), "sinkKind": v("sinkKind")}),
 		),
 	}
 }
