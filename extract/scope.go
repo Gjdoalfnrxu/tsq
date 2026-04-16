@@ -115,7 +115,7 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 		// Hoist the function name into the *enclosing* function scope (not block scope)
 		// for function declarations.
 		if kind == "FunctionDeclaration" || kind == "GeneratorFunctionDeclaration" {
-			nameNode := sa.childByField(n, "name")
+			nameNode := childByField(n, "name")
 			if nameNode != nil && nameNode.Text() != "" {
 				fnScope.declare(nameNode.Text(), sa.makeDecl(nameNode, false))
 			}
@@ -123,7 +123,7 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 		// Process parameters into the new function scope
 		sa.processParams(n, newFnScope)
 		// Process body
-		body := sa.childByField(n, "body")
+		body := childByField(n, "body")
 		if body != nil {
 			sa.buildScope(body, newFnScope, newFnScope)
 		}
@@ -155,11 +155,11 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 	case "CatchClause":
 		// catch (e) { } introduces e into a new scope
 		newBlock := newScope(blockScope)
-		param := sa.childByField(n, "parameter")
+		param := childByField(n, "parameter")
 		if param != nil && sa.nodeText(param) != "" {
 			newBlock.declare(sa.nodeText(param), sa.makeDecl(param, false))
 		}
-		body := sa.childByField(n, "body")
+		body := childByField(n, "body")
 		if body != nil {
 			sa.buildScope(body, newBlock, fnScope)
 		}
@@ -208,7 +208,7 @@ func (sa *ScopeAnalyzer) processVariableDeclarators(n ASTNode, scope *Scope, isT
 			continue
 		}
 		if child.Kind() == "VariableDeclarator" {
-			nameNode := sa.childByField(child, "name")
+			nameNode := childByField(child, "name")
 			if nameNode != nil {
 				sa.declarePattern(nameNode, scope, isTDZ)
 			}
@@ -244,18 +244,18 @@ func (sa *ScopeAnalyzer) declarePattern(n ASTNode, scope *Scope, isTDZ bool) {
 				}
 			case "Pair", "ObjectAssignmentPattern":
 				// { key: value } or { key: value = default }
-				val := sa.childByField(child, "value")
+				val := childByField(child, "value")
 				if val != nil {
 					sa.declarePattern(val, scope, isTDZ)
 				}
 			case "RestPattern":
 				// ...rest
-				inner := sa.firstChildByKind(child, "Identifier")
+				inner := childByKind(child, "Identifier")
 				if inner != nil && inner.Text() != "" {
 					scope.declare(inner.Text(), sa.makeDecl(inner, isTDZ))
 				}
 			case "AssignmentPattern":
-				left := sa.childByField(child, "left")
+				left := childByField(child, "left")
 				if left != nil {
 					sa.declarePattern(left, scope, isTDZ)
 				}
@@ -272,12 +272,12 @@ func (sa *ScopeAnalyzer) declarePattern(n ASTNode, scope *Scope, isTDZ bool) {
 			sa.declarePattern(child, scope, isTDZ)
 		}
 	case "AssignmentPattern":
-		left := sa.childByField(n, "left")
+		left := childByField(n, "left")
 		if left != nil {
 			sa.declarePattern(left, scope, isTDZ)
 		}
 	case "RestPattern":
-		inner := sa.firstChildByKind(n, "Identifier")
+		inner := childByKind(n, "Identifier")
 		if inner != nil && inner.Text() != "" {
 			scope.declare(inner.Text(), sa.makeDecl(inner, isTDZ))
 		}
@@ -319,9 +319,9 @@ func (sa *ScopeAnalyzer) extractParams(params ASTNode, fnScope *Scope) {
 			// Extract the name from the "pattern" or "name" child field.
 			// Use the wrapper node's position for the declaration so the SymID matches
 			// what emitParameters computes (which uses param.StartLine/StartCol).
-			nameNode := sa.childByField(param, "pattern")
+			nameNode := childByField(param, "pattern")
 			if nameNode == nil {
-				nameNode = sa.childByField(param, "name")
+				nameNode = childByField(param, "name")
 			}
 			if nameNode != nil && nameNode.Kind() == "Identifier" && nameNode.Text() != "" {
 				fnScope.declare(nameNode.Text(), &Declaration{
@@ -335,12 +335,12 @@ func (sa *ScopeAnalyzer) extractParams(params ASTNode, fnScope *Scope) {
 				sa.declarePattern(nameNode, fnScope, false)
 			}
 		case "AssignmentPattern":
-			left := sa.childByField(param, "left")
+			left := childByField(param, "left")
 			if left != nil {
 				sa.declarePattern(left, fnScope, false)
 			}
 		case "RestPattern":
-			inner := sa.firstChildByKind(param, "Identifier")
+			inner := childByKind(param, "Identifier")
 			if inner != nil && inner.Text() != "" {
 				fnScope.declare(inner.Text(), sa.makeDecl(inner, false))
 			}
@@ -386,7 +386,7 @@ func (sa *ScopeAnalyzer) processImportClause(n ASTNode, scope *Scope) {
 			sa.processNamedImports(child, scope)
 		case "NamespaceImport":
 			// import * as ns from '...'
-			ident := sa.firstChildByKind(child, "Identifier")
+			ident := childByKind(child, "Identifier")
 			if ident != nil && ident.Text() != "" {
 				scope.declare(ident.Text(), sa.makeDecl(ident, false))
 			}
@@ -404,14 +404,14 @@ func (sa *ScopeAnalyzer) processNamedImports(n ASTNode, scope *Scope) {
 		}
 		if child.Kind() == "ImportSpecifier" {
 			// import specifier: name or alias
-			alias := sa.childByField(child, "alias")
+			alias := childByField(child, "alias")
 			if alias != nil {
 				if alias.Text() != "" {
 					scope.declare(alias.Text(), sa.makeDecl(alias, false))
 				}
 			} else {
 				// No alias — the local name is the imported name
-				nameNode := sa.childByField(child, "name")
+				nameNode := childByField(child, "name")
 				if nameNode != nil && nameNode.Text() != "" {
 					scope.declare(nameNode.Text(), sa.makeDecl(nameNode, false))
 				}
@@ -493,30 +493,6 @@ func (sa *ScopeAnalyzer) makeDecl(n ASTNode, isTDZ bool) *Declaration {
 		StartCol:  n.StartCol(),
 		isTDZ:     isTDZ,
 	}
-}
-
-// childByField returns the first child of n with the given field name.
-func (sa *ScopeAnalyzer) childByField(n ASTNode, field string) ASTNode {
-	count := n.ChildCount()
-	for i := 0; i < count; i++ {
-		child := n.Child(i)
-		if child != nil && child.FieldName() == field {
-			return child
-		}
-	}
-	return nil
-}
-
-// firstChildByKind returns the first direct child with the given normalised kind.
-func (sa *ScopeAnalyzer) firstChildByKind(n ASTNode, kind string) ASTNode {
-	count := n.ChildCount()
-	for i := 0; i < count; i++ {
-		child := n.Child(i)
-		if child != nil && child.Kind() == kind {
-			return child
-		}
-	}
-	return nil
 }
 
 // nodeText returns the text of a node.
