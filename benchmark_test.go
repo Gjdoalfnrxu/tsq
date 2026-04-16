@@ -176,8 +176,8 @@ select f.getName() as "name"
 
 	b.Run("with_magic_set", func(b *testing.B) {
 		// Magic set benefits are more visible on larger programs with targeted queries.
-		// For this benchmark, we just verify both paths work.
-		benchmarkQuery(b, factDB, query, false)
+		// Pass true to actually exercise the magic-set code path.
+		benchmarkQuery(b, factDB, query, true)
 	})
 }
 

@@ -82,8 +82,10 @@ func TestWriteSARIF_SingleResultWithLocation(t *testing.T) {
 	if pl.Region.StartLine != 42 {
 		t.Errorf("startLine = %d, want 42", pl.Region.StartLine)
 	}
-	if pl.Region.StartColumn != 10 {
-		t.Errorf("startColumn = %d, want 10", pl.Region.StartColumn)
+	// SARIF 2.1.0 requires 1-based columns; the schema stores 0-based (value 10),
+	// so we expect 11 after the +1 correction.
+	if pl.Region.StartColumn != 11 {
+		t.Errorf("startColumn = %d, want 11", pl.Region.StartColumn)
 	}
 }
 
