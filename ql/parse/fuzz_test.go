@@ -68,16 +68,16 @@ func FuzzLexer(f *testing.F) {
 	f.Fuzz(func(t *testing.T, src string) {
 		l := parse.NewLexer(src, "fuzz.ql")
 		// Drain all tokens — the lexer must terminate on all inputs.
+		maxTokens := len(src)*2 + 100
+		count := 0
 		for {
 			tok := l.Next()
 			if tok.Type == parse.TokEOF {
 				break
 			}
-			// Safety: avoid infinite loops on lexers that never reach EOF.
-			// Use a generous upper bound relative to input length.
-			if len(src)+1024 < 0 {
-				// This branch is unreachable but documents the bound intent.
-				t.Fatal("unreachable")
+			count++
+			if count > maxTokens {
+				t.Fatalf("lexer produced %d tokens without EOF on input of length %d", count, len(src))
 			}
 		}
 	})
