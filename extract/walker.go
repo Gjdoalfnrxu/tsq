@@ -215,15 +215,9 @@ func (fw *FactWalker) detectConst(n ASTNode) int32 {
 }
 
 // childByField returns the first child of n with the given field name.
+// Delegates to the package-level ChildByField helper in tree.go.
 func childByField(n ASTNode, field string) ASTNode {
-	count := n.ChildCount()
-	for i := 0; i < count; i++ {
-		child := n.Child(i)
-		if child != nil && child.FieldName() == field {
-			return child
-		}
-	}
-	return nil
+	return ChildByField(n, field)
 }
 
 // childByKind returns the first direct child with the given normalised kind.
