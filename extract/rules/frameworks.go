@@ -32,7 +32,11 @@ func FrameworkRules() []datalog.Rule {
 		pos("CallCalleeSym", v("call"), v("execSym")),
 		pos("FunctionSymbol", v("execSym"), v("execFn")),
 		pos("Function", v("execFn"), s("exec"), w(), w(), w(), w()),
-		pos("CallArg", v("call"), intc(0), v("argExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"idx":     intc(0),
+			"argNode": v("argExpr"),
+		}),
 	))
 
 	// ─── React XSS: dangerouslySetInnerHTML ─────────────────────────
@@ -45,7 +49,11 @@ func FrameworkRules() []datalog.Rule {
 	rules = append(rules, rule("TaintSink",
 		[]datalog.Term{v("argExpr"), s("sql")},
 		pos("MethodCall", v("call"), w(), s("query")),
-		pos("CallArg", v("call"), intc(0), v("argExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"idx":     intc(0),
+			"argNode": v("argExpr"),
+		}),
 	))
 
 	return rules
@@ -75,7 +83,11 @@ func expressRules() []datalog.Rule {
 		pos("ExprMayRef", v("recv"), v("resSym")),
 		pos("Parameter", v("fn"), intc(1), w(), w(), v("resSym"), w()),
 		pos("ExpressHandler", v("fn")),
-		pos("CallArg", v("call"), intc(0), v("argExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"idx":     intc(0),
+			"argNode": v("argExpr"),
+		}),
 	))
 
 	return rules
@@ -85,7 +97,10 @@ func expressHandlerRule(methodName string) datalog.Rule {
 	return rule("ExpressHandler",
 		[]datalog.Term{v("fn")},
 		pos("MethodCall", v("call"), w(), s(methodName)),
-		pos("CallArg", v("call"), w(), v("cbExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"argNode": v("cbExpr"),
+		}),
 		pos("ExprMayRef", v("cbExpr"), v("cbSym")),
 		pos("FunctionSymbol", v("cbSym"), v("fn")),
 	)
@@ -101,7 +116,10 @@ func httpHandlerRules() []datalog.Rule {
 			[]datalog.Term{v("fn")},
 			pos("CallCalleeSym", v("call"), v("calleeSym")),
 			pos("ImportBinding", v("calleeSym"), s(mod), s("createServer")),
-			pos("CallArg", v("call"), w(), v("cbExpr")),
+			mustNamedLiteral("CallArg", map[string]datalog.Term{
+				"call":    v("call"),
+				"argNode": v("cbExpr"),
+			}),
 			pos("ExprMayRef", v("cbExpr"), v("cbSym")),
 			pos("FunctionSymbol", v("cbSym"), v("fn")),
 		))
@@ -123,7 +141,11 @@ func httpHandlerRules() []datalog.Rule {
 			pos("ExprMayRef", v("recv"), v("resSym")),
 			pos("Parameter", v("fn"), intc(1), w(), w(), v("resSym"), w()),
 			pos("HttpHandler", v("fn")),
-			pos("CallArg", v("call"), intc(0), v("argExpr")),
+			mustNamedLiteral("CallArg", map[string]datalog.Term{
+				"call":    v("call"),
+				"idx":     intc(0),
+				"argNode": v("argExpr"),
+			}),
 		))
 	}
 
@@ -138,7 +160,10 @@ func koaRules() []datalog.Rule {
 	rules = append(rules, rule("KoaHandler",
 		[]datalog.Term{v("fn")},
 		pos("MethodCall", v("call"), w(), s("use")),
-		pos("CallArg", v("call"), w(), v("cbExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"argNode": v("cbExpr"),
+		}),
 		pos("ExprMayRef", v("cbExpr"), v("cbSym")),
 		pos("FunctionSymbol", v("cbSym"), v("fn")),
 	))
@@ -183,7 +208,10 @@ func fastifyRules() []datalog.Rule {
 		rules = append(rules, rule("FastifyHandler",
 			[]datalog.Term{v("fn")},
 			pos("MethodCall", v("call"), w(), s(method)),
-			pos("CallArg", v("call"), w(), v("cbExpr")),
+			mustNamedLiteral("CallArg", map[string]datalog.Term{
+				"call":    v("call"),
+				"argNode": v("cbExpr"),
+			}),
 			pos("ExprMayRef", v("cbExpr"), v("cbSym")),
 			pos("FunctionSymbol", v("cbSym"), v("fn")),
 		))
@@ -204,7 +232,11 @@ func fastifyRules() []datalog.Rule {
 		pos("ExprMayRef", v("recv"), v("replySym")),
 		pos("Parameter", v("fn"), intc(1), w(), w(), v("replySym"), w()),
 		pos("FastifyHandler", v("fn")),
-		pos("CallArg", v("call"), intc(0), v("argExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"idx":     intc(0),
+			"argNode": v("argExpr"),
+		}),
 	))
 
 	return rules
@@ -258,7 +290,11 @@ func nextjsRules() []datalog.Rule {
 			pos("ExprMayRef", v("recv"), v("resSym")),
 			pos("Parameter", v("fn"), intc(1), w(), w(), v("resSym"), w()),
 			pos("NextjsHandler", v("fn")),
-			pos("CallArg", v("call"), intc(0), v("argExpr")),
+			mustNamedLiteral("CallArg", map[string]datalog.Term{
+				"call":    v("call"),
+				"idx":     intc(0),
+				"argNode": v("argExpr"),
+			}),
 		))
 	}
 
@@ -277,7 +313,11 @@ func databaseRules() []datalog.Rule {
 				pos("ImportBinding", v("dbSym"), s(mod), w()),
 				pos("MethodCall", v("call"), v("recv"), s(method)),
 				pos("ExprMayRef", v("recv"), v("dbSym")),
-				pos("CallArg", v("call"), intc(0), v("argExpr")),
+				mustNamedLiteral("CallArg", map[string]datalog.Term{
+					"call":    v("call"),
+					"idx":     intc(0),
+					"argNode": v("argExpr"),
+				}),
 			))
 		}
 	}
@@ -290,7 +330,11 @@ func databaseRules() []datalog.Rule {
 		rules = append(rules, rule("TaintSink",
 			[]datalog.Term{v("argExpr"), s("nosql")},
 			pos("MethodCall", v("call"), w(), s(method)),
-			pos("CallArg", v("call"), intc(0), v("argExpr")),
+			mustNamedLiteral("CallArg", map[string]datalog.Term{
+				"call":    v("call"),
+				"idx":     intc(0),
+				"argNode": v("argExpr"),
+			}),
 		))
 	}
 
@@ -299,7 +343,11 @@ func databaseRules() []datalog.Rule {
 		pos("ImportBinding", v("dbSym"), s("sequelize"), w()),
 		pos("MethodCall", v("call"), v("recv"), s("query")),
 		pos("ExprMayRef", v("recv"), v("dbSym")),
-		pos("CallArg", v("call"), intc(0), v("argExpr")),
+		mustNamedLiteral("CallArg", map[string]datalog.Term{
+			"call":    v("call"),
+			"idx":     intc(0),
+			"argNode": v("argExpr"),
+		}),
 	))
 
 	return rules
