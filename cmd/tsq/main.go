@@ -17,6 +17,8 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/bridge"
 	"github.com/Gjdoalfnrxu/tsq/extract"
 	"github.com/Gjdoalfnrxu/tsq/extract/db"
+	"github.com/Gjdoalfnrxu/tsq/extract/rules"
+	"github.com/Gjdoalfnrxu/tsq/extract/schema"
 	"github.com/Gjdoalfnrxu/tsq/extract/typecheck"
 	"github.com/Gjdoalfnrxu/tsq/output"
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
@@ -53,18 +55,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Parse global flags that appear before the subcommand.
-	var verbose, quiet bool
+	// verbose and quiet are accepted for forward compatibility but not yet wired up.
 	var timeout time.Duration
 
 	// Find the subcommand: skip global flags.
 	subcmdIdx := -1
 	for i, arg := range args {
-		if arg == "--verbose" || arg == "-verbose" {
-			verbose = true
-			continue
-		}
-		if arg == "--quiet" || arg == "-quiet" {
-			quiet = true
+		if arg == "--verbose" || arg == "-verbose" || arg == "--quiet" || arg == "-quiet" {
 			continue
 		}
 		if strings.HasPrefix(arg, "--timeout=") || strings.HasPrefix(arg, "-timeout=") {
@@ -109,9 +106,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ctx, tcancel = context.WithTimeout(ctx, timeout)
 		defer tcancel()
 	}
-
-	_ = verbose // available for future use
-	_ = quiet
 
 	switch subcmd {
 	case "version":
@@ -531,17 +525,11 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 		return nil, fmt.Errorf("desugar errors:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
-	// Plan.
-	execPlan, planErrors := plan.Plan(prog, nil)
-	if len(planErrors) > 0 {
-		var msgs []string
-		for _, e := range planErrors {
-			msgs = append(msgs, e.Error())
-		}
-		return nil, fmt.Errorf("plan errors:\n  %s", strings.Join(msgs, "\n  "))
-	}
+	// Inject system rules so derived relations (CallTarget, LocalFlow, TaintAlert, etc.)
+	// are available for evaluation.
+	prog = rules.MergeSystemRules(prog, rules.AllSystemRules())
 
-	// Load fact DB.
+	// Load fact DB before planning so we can pass actual tuple counts as size hints.
 	f, err := os.Open(dbFile)
 	if err != nil {
 		return nil, fmt.Errorf("open fact DB: %w", err)
@@ -558,6 +546,20 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 		return nil, fmt.Errorf("read fact DB: %w", err)
 	}
 
+	// Build size hints from actual tuple counts in the DB so the planner can
+	// order joins by true relation size rather than a uniform default of 1000.
+	sizeHints := buildSizeHints(factDB)
+
+	// Plan.
+	execPlan, planErrors := plan.Plan(prog, sizeHints)
+	if len(planErrors) > 0 {
+		var msgs []string
+		for _, e := range planErrors {
+			msgs = append(msgs, e.Error())
+		}
+		return nil, fmt.Errorf("plan errors:\n  %s", strings.Join(msgs, "\n  "))
+	}
+
 	// Evaluate.
 	evaluator := eval.NewEvaluator(execPlan, factDB)
 	rs, err := evaluator.Evaluate(ctx)
@@ -568,42 +570,10 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 }
 
 // makeBridgeImportLoader creates an import loader that parses bridge .qll files.
+// It uses bridge.ImportPathToFile as the single source of truth for the path→filename map.
 func makeBridgeImportLoader(bridgeFiles map[string][]byte) func(path string) (*ast.Module, error) {
-	pathToFile := map[string]string{
-		"tsq::base":           "tsq_base.qll",
-		"tsq::functions":      "tsq_functions.qll",
-		"tsq::calls":          "tsq_calls.qll",
-		"tsq::variables":      "tsq_variables.qll",
-		"tsq::expressions":    "tsq_expressions.qll",
-		"tsq::jsx":            "tsq_jsx.qll",
-		"tsq::imports":        "tsq_imports.qll",
-		"tsq::errors":         "tsq_errors.qll",
-		"tsq::types":          "tsq_types.qll",
-		"tsq::symbols":        "tsq_symbols.qll",
-		"tsq::callgraph":      "tsq_callgraph.qll",
-		"tsq::dataflow":       "tsq_dataflow.qll",
-		"tsq::summaries":      "tsq_summaries.qll",
-		"tsq::composition":    "tsq_composition.qll",
-		"tsq::taint":          "tsq_taint.qll",
-		"tsq::express":        "tsq_express.qll",
-		"tsq::react":          "tsq_react.qll",
-		"tsq::node":           "tsq_node.qll",
-		"javascript":          "compat_javascript.qll",
-		"DataFlow::PathGraph": "compat_dataflow.qll",
-		"TaintTracking":       "compat_tainttracking.qll",
-		"semmle.javascript.security.dataflow.XssQuery":              "compat_security_xss.qll",
-		"semmle.javascript.security.dataflow.CommandInjectionQuery": "compat_security_cmdi.qll",
-		"semmle.javascript.security.dataflow.SqlInjectionQuery":     "compat_security_sqli.qll",
-		"semmle.javascript.security.dataflow.PathTraversalQuery":    "compat_security_pathtraversal.qll",
-		"semmle.javascript.security.dataflow.DomBasedXssQuery":      "compat_dom.qll",
-		"semmle.javascript.security.CryptoLibraries":                "compat_crypto.qll",
-		"semmle.javascript.frameworks.HTTP":                         "compat_http.qll",
-		"semmle.javascript.security.dataflow.DatabaseAccess":        "compat_io.qll",
-		"semmle.javascript.security.dataflow.FileSystemAccess":      "compat_io.qll",
-		"semmle.javascript.security.dataflow.RegExpInjectionQuery":  "compat_regexp.qll",
-	}
 	return func(path string) (*ast.Module, error) {
-		filename, ok := pathToFile[path]
+		filename, ok := bridge.ImportPathToFile[path]
 		if !ok {
 			return nil, fmt.Errorf("unknown import: %s", path)
 		}
@@ -614,6 +584,17 @@ func makeBridgeImportLoader(bridgeFiles map[string][]byte) func(path string) (*a
 		p := parse.NewParser(string(data), filename)
 		return p.Parse()
 	}
+}
+
+// buildSizeHints constructs a relation-name→tuple-count map from the loaded factDB.
+// This gives the planner real cardinality data for join ordering instead of the
+// uniform default of 1000.
+func buildSizeHints(factDB *db.DB) map[string]int {
+	hints := make(map[string]int, len(schema.Registry))
+	for _, def := range schema.Registry {
+		hints[def.Name] = factDB.Relation(def.Name).Tuples()
+	}
+	return hints
 }
 
 func main() {

@@ -179,7 +179,8 @@ func tryBuildLocation(colIdx map[string]int, row []eval.Value) *sarifLocation {
 		}
 		if colCol >= 0 && colCol < len(row) {
 			if iv, ok := row[colCol].(eval.IntVal); ok {
-				region.StartColumn = int(iv.V)
+				// SARIF 2.1.0 requires 1-based column numbers; schema stores 0-based.
+				region.StartColumn = int(iv.V) + 1
 			}
 		}
 		if region.StartLine > 0 || region.StartColumn > 0 {

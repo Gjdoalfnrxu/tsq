@@ -1,6 +1,9 @@
 package extract
 
+import "sort"
+
 // scope.go implements in-file scope analysis on top of the ASTNode interface.
+// It uses a sorted slice of (startByte, *Scope) pairs for O(log n) findScope lookups.
 // It handles:
 //   - var declarations (function-scoped)
 //   - let/const declarations (block-scoped)
@@ -56,21 +59,27 @@ func (s *Scope) Resolve(name string, atByte int) (*Declaration, bool) {
 	return nil, false
 }
 
+// scopeEntry associates a byte offset with the innermost scope at that position.
+type scopeEntry struct {
+	startByte int
+	scope     *Scope
+}
+
 // ScopeAnalyzer builds a scope tree from an ASTNode CST and answers
 // in-file resolution queries.
 type ScopeAnalyzer struct {
 	filePath string
-	// nodeScope maps a node's start byte to the scope that contains it.
-	// We store the innermost scope at each function/block entry.
-	nodeScope map[int]*Scope
-	root      *Scope
+	// scopeEntries is a sorted (by startByte) list of scope assignments recorded
+	// during buildScope. Keeping it sorted lets findScope use binary search
+	// instead of a linear scan over the map.
+	scopeEntries []scopeEntry
+	root         *Scope
 }
 
 // NewScopeAnalyzer creates a ScopeAnalyzer for filePath.
 func NewScopeAnalyzer(filePath string) *ScopeAnalyzer {
 	return &ScopeAnalyzer{
-		filePath:  filePath,
-		nodeScope: make(map[int]*Scope),
+		filePath: filePath,
 	}
 }
 
@@ -95,7 +104,8 @@ func (sa *ScopeAnalyzer) buildScope(n ASTNode, blockScope, fnScope *Scope) {
 	startByte := sa.nodeStartByte(n)
 
 	// Record the scope for this node so Resolve can find it later.
-	sa.nodeScope[startByte] = blockScope
+	// Insert in sorted order for O(log n) findScope lookups.
+	sa.insertScopeEntry(startByte, blockScope)
 
 	switch kind {
 	case "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDefinition",
@@ -424,20 +434,40 @@ func (sa *ScopeAnalyzer) Resolve(name string, atNode ASTNode) (*Declaration, boo
 	return scope.Resolve(name, startByte)
 }
 
-// findScope finds the innermost scope recorded for a byte offset.
-// It uses the closest recorded entry <= startByte.
-func (sa *ScopeAnalyzer) findScope(startByte int) *Scope {
-	// We stored scope entries at the start byte of each node that opens/is in a scope.
-	// Use the closest one <= startByte.
-	best := -1
-	var bestScope *Scope
-	for k, s := range sa.nodeScope {
-		if k <= startByte && k > best {
-			best = k
-			bestScope = s
-		}
+// insertScopeEntry inserts (startByte, scope) into the sorted scopeEntries slice.
+// Entries with duplicate startByte keys are overwritten (last write wins, matching
+// the previous map semantics where later buildScope calls for the same offset
+// would overwrite the earlier entry).
+func (sa *ScopeAnalyzer) insertScopeEntry(startByte int, scope *Scope) {
+	i := sort.Search(len(sa.scopeEntries), func(i int) bool {
+		return sa.scopeEntries[i].startByte >= startByte
+	})
+	if i < len(sa.scopeEntries) && sa.scopeEntries[i].startByte == startByte {
+		sa.scopeEntries[i].scope = scope
+		return
 	}
-	return bestScope
+	// Insert at position i.
+	sa.scopeEntries = append(sa.scopeEntries, scopeEntry{})
+	copy(sa.scopeEntries[i+1:], sa.scopeEntries[i:])
+	sa.scopeEntries[i] = scopeEntry{startByte: startByte, scope: scope}
+}
+
+// findScope finds the innermost scope recorded for a byte offset.
+// Uses binary search for O(log n) lookup — the closest entry <= startByte.
+func (sa *ScopeAnalyzer) findScope(startByte int) *Scope {
+	entries := sa.scopeEntries
+	if len(entries) == 0 {
+		return nil
+	}
+	// Find the rightmost entry with startByte <= target.
+	i := sort.Search(len(entries), func(i int) bool {
+		return entries[i].startByte > startByte
+	})
+	// i is the first index where startByte > target; the entry before it is <= target.
+	if i == 0 {
+		return nil
+	}
+	return entries[i-1].scope
 }
 
 // nodeStartByte returns the start byte of a node by summing line/col info.
