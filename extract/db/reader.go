@@ -137,6 +137,9 @@ func ReadDB(r io.ReaderAt, size int64) (*DB, error) {
 }
 
 func readStringTable(r io.ReaderAt, fileSize int64, strCount uint32, strTableStart int64, le binary.ByteOrder) ([]string, error) {
+	if strTableStart < 0 || strTableStart > fileSize {
+		return nil, fmt.Errorf("string table offset %d out of file bounds (size %d)", strTableStart, fileSize)
+	}
 	strData := make([]byte, fileSize-strTableStart)
 	if _, err := r.ReadAt(strData, strTableStart); err != nil {
 		return nil, err
