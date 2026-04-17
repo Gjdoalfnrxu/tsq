@@ -18,8 +18,15 @@ type Stratum struct {
 }
 
 // PlannedRule is a rule with a determined join order.
+//
+// Body holds the original rule body (in source order) so that the rule can be
+// re-planned later with updated size hints — e.g. between strata, once a
+// derived (IDB) predicate's true tuple count is known. Without Body the
+// evaluator would have no way to recover the literals to reorder; JoinOrder
+// alone is the post-greedy result and not equivalent to the input.
 type PlannedRule struct {
 	Head      datalog.Atom
+	Body      []datalog.Literal
 	JoinOrder []JoinStep
 }
 
@@ -87,6 +94,7 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 			order := orderJoins(rule.Body, sizeHints)
 			ps.Rules = append(ps.Rules, PlannedRule{
 				Head:      rule.Head,
+				Body:      rule.Body,
 				JoinOrder: order,
 			})
 			// Collect aggregates from rule body.
@@ -113,6 +121,50 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 	}
 
 	return ep, nil
+}
+
+// RePlanStratum recomputes the JoinOrder of every rule in the given stratum
+// using the supplied sizeHints. It mutates the stratum in place. Aggregates
+// and head atoms are left untouched. Use this after a prior stratum's fixpoint
+// has materialised a derived relation, so that subsequent strata are planned
+// with that relation's true cardinality instead of defaultSizeHint.
+//
+// If a rule's Body is nil (i.e. the stratum was constructed by code that did
+// not populate Body — pre-#88 callers) the rule is skipped so behaviour is
+// unchanged for legacy callers.
+func RePlanStratum(s *Stratum, sizeHints map[string]int) {
+	if s == nil {
+		return
+	}
+	if sizeHints == nil {
+		sizeHints = map[string]int{}
+	}
+	for i := range s.Rules {
+		body := s.Rules[i].Body
+		if body == nil {
+			continue
+		}
+		s.Rules[i].JoinOrder = orderJoins(body, sizeHints)
+	}
+}
+
+// RePlanQuery recomputes the JoinOrder of the planned query with updated
+// sizeHints. The query body is reconstructed from the existing JoinOrder
+// (since we kept the literals there). Unlike rules, queries have no separate
+// Body field — the JoinOrder literals ARE the body in some order. Reordering
+// is invariant to input order because orderJoins is greedy on the literal set.
+func RePlanQuery(q *PlannedQuery, sizeHints map[string]int) {
+	if q == nil {
+		return
+	}
+	if sizeHints == nil {
+		sizeHints = map[string]int{}
+	}
+	body := make([]datalog.Literal, len(q.JoinOrder))
+	for i, step := range q.JoinOrder {
+		body[i] = step.Literal
+	}
+	q.JoinOrder = orderJoins(body, sizeHints)
 }
 
 // collectGroupByVars returns the head variables that are not the aggregate result variable.

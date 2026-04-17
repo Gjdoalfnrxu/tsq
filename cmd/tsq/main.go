@@ -22,6 +22,7 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/extract/typecheck"
 	"github.com/Gjdoalfnrxu/tsq/output"
 	"github.com/Gjdoalfnrxu/tsq/ql/ast"
+	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/desugar"
 	"github.com/Gjdoalfnrxu/tsq/ql/eval"
 	"github.com/Gjdoalfnrxu/tsq/ql/parse"
@@ -564,21 +565,28 @@ type buildOptions struct {
 }
 
 func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
-	return buildProgramWithOpts(src, file, importLoader, sizeHints, buildOptions{})
+	execPlan, _, mod, warnings, errs := buildProgramWithProg(src, file, importLoader, sizeHints, buildOptions{})
+	return execPlan, mod, warnings, errs
 }
 
-func buildProgramWithOpts(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int, opts buildOptions) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
+// buildProgramWithProg is buildProgram with the post-merge *datalog.Program
+// also returned. It is used by `query` so the compileAndEval pipeline can run
+// the trivial-IDB pre-pass (eval.EstimateNonRecursiveIDBSizes) over the same
+// rule graph the planner sees, populate sizeHints with real derived-relation
+// counts, and re-plan. `check` does not need prog (no eval), so it keeps the
+// narrower buildProgram wrapper.
+func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int, opts buildOptions) (*plan.ExecutionPlan, *datalog.Program, *ast.Module, []resolve.Warning, []error) {
 	// Parse.
 	p := parse.NewParser(src, file)
 	mod, err := p.Parse()
 	if err != nil {
-		return nil, nil, nil, []error{fmt.Errorf("parse: %w", err)}
+		return nil, nil, nil, nil, []error{fmt.Errorf("parse: %w", err)}
 	}
 
 	// Resolve.
 	resolved, err := resolve.Resolve(mod, importLoader)
 	if err != nil {
-		return nil, mod, nil, []error{fmt.Errorf("resolve: %w", err)}
+		return nil, nil, mod, nil, []error{fmt.Errorf("resolve: %w", err)}
 	}
 	warnings := resolved.Warnings
 	if len(resolved.Errors) > 0 {
@@ -586,7 +594,7 @@ func buildProgramWithOpts(src, file string, importLoader func(string) (*ast.Modu
 		for _, e := range resolved.Errors {
 			errs = append(errs, fmt.Errorf("resolve: %w", e))
 		}
-		return nil, mod, warnings, errs
+		return nil, nil, mod, warnings, errs
 	}
 
 	// Desugar.
@@ -596,7 +604,7 @@ func buildProgramWithOpts(src, file string, importLoader func(string) (*ast.Modu
 		for _, e := range dsErrors {
 			errs = append(errs, fmt.Errorf("desugar: %w", e))
 		}
-		return nil, mod, warnings, errs
+		return nil, nil, mod, warnings, errs
 	}
 
 	// Inject system rules so derived relations (CallTarget, LocalFlow,
@@ -625,10 +633,10 @@ func buildProgramWithOpts(src, file string, importLoader func(string) (*ast.Modu
 		for _, e := range planErrors {
 			errs = append(errs, fmt.Errorf("plan: %w", e))
 		}
-		return nil, mod, warnings, errs
+		return nil, prog, mod, warnings, errs
 	}
 
-	return execPlan, mod, warnings, nil
+	return execPlan, prog, mod, warnings, nil
 }
 
 // compileAndEval reads a .ql file, compiles it, loads a fact DB, and evaluates.
@@ -669,7 +677,7 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// rule graph (parse → resolve → desugar → MergeSystemRules → plan).
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
-	execPlan, _, _, buildErrs := buildProgramWithOpts(string(src), queryFile, importLoader, sizeHints, opts)
+	execPlan, prog, _, _, buildErrs := buildProgramWithProg(string(src), queryFile, importLoader, sizeHints, opts)
 	if len(buildErrs) > 0 {
 		// Reproduce the prior multi-error formatting of compileAndEval: group
 		// by phase and join with newline-indented messages so callers see one
@@ -677,15 +685,52 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 		return nil, joinPhaseErrors(buildErrs)
 	}
 
+	// Issue #88 (co-stratified seed case): pre-compute the cardinality of
+	// every "trivial" derived predicate — non-recursive, body uses only
+	// positive base atoms and comparisons — and feed the real counts back
+	// into the planner. This catches the case where a tiny IDB seed (e.g.
+	// isUseStateSetterCall, 7 tuples) and the explody rule that uses it
+	// (setStateUpdaterCallsFn) land in the same stratum, which the
+	// between-strata refresh in eval.Evaluate cannot fix on its own (the
+	// seed is not yet materialised when its sibling rule is planned).
+	//
+	// Load base relations once and reuse them for both the pre-pass and the
+	// main Evaluate call (loadBaseRelations is the dominant cost for small
+	// fact DBs and we'd rather not pay it twice).
+	baseRels, err := eval.LoadBaseRelations(factDB)
+	if err != nil {
+		return nil, fmt.Errorf("load base relations: %w", err)
+	}
+	updates := eval.EstimateNonRecursiveIDBSizes(prog, baseRels, sizeHints)
+	if len(updates) > 0 {
+		// Re-plan every stratum and the final query with the refreshed hints
+		// before evaluation begins. Without this the original execPlan
+		// (planned with default-1000 hints for every IDB) would still drive
+		// the evaluator; the between-strata refresh in eval.Evaluate would
+		// only help strata > 0, missing the co-stratified case entirely.
+		for i := range execPlan.Strata {
+			plan.RePlanStratum(&execPlan.Strata[i], sizeHints)
+		}
+		if execPlan.Query != nil {
+			plan.RePlanQuery(execPlan.Query, sizeHints)
+		}
+	}
+
 	// Evaluate.
-	evaluator := eval.NewEvaluator(
+	rs, err := eval.Evaluate(
+		ctx,
 		execPlan,
-		factDB,
+		baseRels,
 		eval.WithMaxBindingsPerRule(maxBindingsPerRule),
 		eval.WithMaxIterations(maxIterations),
 		eval.WithAllowPartial(allowPartial),
+		// Hand the planner's hints map to the evaluator so it can refresh
+		// derived-relation cardinalities between strata and re-plan the
+		// remaining strata + final query. Issue #88. The map already
+		// contains the trivial-IDB pre-pass results from above; the
+		// between-strata refresh covers the non-trivial IDBs.
+		eval.WithSizeHints(sizeHints),
 	)
-	rs, err := evaluator.Evaluate(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate: %w", err)
 	}
