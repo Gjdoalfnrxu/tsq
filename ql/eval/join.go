@@ -301,27 +301,39 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 			}
 
 			// Extend binding with free variables.
-			nb := b.clone()
-			consistent := true
-			for _, fv := range freeVars {
-				if fv.col < len(t) {
-					if existing, ok := nb[fv.name]; ok {
-						// Variable already bound (from earlier column in same atom).
-						// Must be equal for the binding to be consistent.
-						eq, err := Compare("=", existing, t[fv.col])
-						if err != nil || !eq {
-							consistent = false
-							break
+			//
+			// Fast path: when this step has no free variables, it is acting
+			// as a pure filter — no new variable bindings are introduced.
+			// All downstream steps that mutate a binding (applyPositive
+			// itself, bindResult in builtins) clone before writing, so it
+			// is safe to share the same binding map across multiple output
+			// rows. This avoids O(matches × cols) map allocation on the
+			// hot filter path.
+			if len(freeVars) == 0 {
+				out = append(out, b)
+			} else {
+				nb := b.clone()
+				consistent := true
+				for _, fv := range freeVars {
+					if fv.col < len(t) {
+						if existing, ok := nb[fv.name]; ok {
+							// Variable already bound (from earlier column in same atom).
+							// Must be equal for the binding to be consistent.
+							eq, err := Compare("=", existing, t[fv.col])
+							if err != nil || !eq {
+								consistent = false
+								break
+							}
+						} else {
+							nb[fv.name] = t[fv.col]
 						}
-					} else {
-						nb[fv.name] = t[fv.col]
 					}
 				}
+				if !consistent {
+					continue
+				}
+				out = append(out, nb)
 			}
-			if !consistent {
-				continue
-			}
-			out = append(out, nb)
 			// Early cap check inside the inner loop. Without this, a single
 			// blown literal can still allocate gigabytes of bindings before
 			// the per-step check at the call site fires (issue #80).
