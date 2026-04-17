@@ -2,28 +2,42 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
-// firstError returns the first non-nil error from a slice, or nil if all are nil.
+// firstError returns the first error from a slice that best diagnoses the
+// failure, preferring originating (non-ctx) errors over the ctx-wrapped
+// errors that siblings produce when they observe sibling-cancellation
+// (issue #100).
 //
-// This returns the positionally-first non-nil error, NOT the temporally-first.
-// Temporal ordering is provided separately by the (childCtx, cancelOnce)
-// pattern in parallelBootstrap/parallelDelta: the first failing worker
-// cancels the shared child ctx, which causes sibling workers to bail with a
-// ctx-error variant. The positional-first error is then a deterministic,
-// reproducible representative of the failure, while the cancellation gives
-// us the bounded latency on errored runs.
+// The (childCtx, cancel) pattern in parallelBootstrap/parallelDelta means
+// that when one worker fails (e.g. with BindingCapError), siblings bail at
+// their next throttled ctx check and return context.Canceled wrapped with
+// rule context. The positionally-first non-nil error in errs may therefore
+// be the ctx-wrapped sibling — which masks the originating diagnostic.
+//
+// We prefer the first error that does NOT wrap context.Canceled or
+// context.DeadlineExceeded; failing that we fall back to the
+// positionally-first error (preserving outer-ctx-cancellation behaviour
+// when the caller really did cancel from the outside).
 func firstError(errs []error) error {
+	var fallback error
 	for _, e := range errs {
-		if e != nil {
+		if e == nil {
+			continue
+		}
+		if fallback == nil {
+			fallback = e
+		}
+		if !errors.Is(e, context.Canceled) && !errors.Is(e, context.DeadlineExceeded) {
 			return e
 		}
 	}
-	return nil
+	return fallback
 }
 
 // parallelBootstrap evaluates rules concurrently, grouping by head predicate.
