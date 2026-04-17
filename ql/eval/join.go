@@ -285,21 +285,18 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 		tuples := rel.Tuples()
 		for _, ti := range matchingIdxs {
 			t := tuples[ti]
-			// Verify bound columns match (index lookup already filters, but
-			// for multi-col with partial hash we re-check).
-			match := true
-			for j, col := range boundCols {
-				if col >= len(t) {
-					match = false
-					break
-				}
-				eq, err := Compare("=", t[col], boundVals[j])
-				if err != nil || !eq {
-					match = false
-					break
-				}
-			}
-			if !match {
+			// Index.Lookup keys are canonical (partialKey over sorted cols),
+			// and applyPositive builds boundCols in ascending order by
+			// iterating atom.Args left-to-right, so a hit here IS a match.
+			// The full-equality re-check that used to live here is dead
+			// work — see TestPartialKeyCanonicality_* and
+			// TestIndexLookupAgreement_* in partialkey_canonicality_test.go.
+			//
+			// Defensive arity guard only: if the relation contains a tuple
+			// shorter than expected, skip rather than panic. Should be
+			// impossible given Relation.Add's arity-mismatch panic, but
+			// kept as a belt-and-braces check.
+			if len(boundCols) > 0 && boundCols[len(boundCols)-1] >= len(t) {
 				continue
 			}
 
