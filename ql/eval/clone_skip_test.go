@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -47,7 +48,7 @@ func TestApplyPositive_CloneSkip_NoVarLeak(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestApplyPositive_CloneSkip_PureFilterEquality(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestApplyPositive_CloneSkip_RepeatedConstFilter(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -41,7 +42,7 @@ func BenchmarkApplyPositive_Filter(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := Rule(rule, rels, 0)
+		_, err := Rule(context.Background(), rule, rels, 0)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -71,7 +72,7 @@ func BenchmarkApplyPositive_Join(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := Rule(rule, rels, 0)
+		_, err := Rule(context.Background(), rule, rels, 0)
 		if err != nil {
 			b.Fatal(err)
 		}
