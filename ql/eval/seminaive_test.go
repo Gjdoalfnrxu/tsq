@@ -378,8 +378,11 @@ func TestSeminaiveMaxIterations(t *testing.T) {
 		},
 	}
 
-	// With maxIterations=1, the fixpoint should stop early (not compute all transitive pairs).
-	rs, err := Evaluate(context.Background(), ep, baseRels, WithMaxIterations(1))
+	// With maxIterations=1, the fixpoint should stop early (not compute all
+	// transitive pairs). Pass WithAllowPartial(true) to opt into the legacy
+	// "warn and return partial results" behaviour — without it the cap is an
+	// error (issue #79).
+	rs, err := Evaluate(context.Background(), ep, baseRels, WithMaxIterations(1), WithAllowPartial(true))
 	if err != nil {
 		t.Fatalf("Evaluate failed: %v", err)
 	}

@@ -339,6 +339,8 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	dbFile := fs.String("db", "tsq.db", "fact database file")
 	format := fs.String("format", "json", "output format: sarif, json, csv")
 	maxBindingsPerRule := fs.Int("max-bindings-per-rule", eval.DefaultMaxBindingsPerRule, "per-rule cap on intermediate join binding cardinality (0 = unlimited; prevents OOM on weak joins, see issue #80)")
+	maxIterations := fs.Int("max-iterations", eval.DefaultMaxIterations, "max semi-naive fixpoint iterations per stratum before erroring (0 = unlimited; see issue #79)")
+	allowPartial := fs.Bool("allow-partial", false, "if --max-iterations is hit, log a warning and return partial results instead of erroring (legacy behaviour)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -363,7 +365,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	// Read and compile the query.
-	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule)
+	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule, *maxIterations, *allowPartial)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -530,7 +532,11 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 // compileAndEval reads a .ql file, compiles it, loads a fact DB, and evaluates.
 // maxBindingsPerRule caps intermediate join cardinality per rule to prevent
 // OOM on queries with weak join constraints (issue #80). Pass 0 to disable.
-func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPerRule int) (*eval.ResultSet, error) {
+// maxIterations caps semi-naive fixpoint iterations per stratum (issue #79).
+// allowPartial restores legacy "warn and return partial results" behaviour
+// when the iteration cap is hit; default false errors out so non-converging
+// queries cannot silently return wrong answers.
+func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPerRule, maxIterations int, allowPartial bool) (*eval.ResultSet, error) {
 	src, err := os.ReadFile(queryFile)
 	if err != nil {
 		return nil, fmt.Errorf("read query file: %w", err)
@@ -570,7 +576,13 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	}
 
 	// Evaluate.
-	evaluator := eval.NewEvaluator(execPlan, factDB, eval.WithMaxBindingsPerRule(maxBindingsPerRule))
+	evaluator := eval.NewEvaluator(
+		execPlan,
+		factDB,
+		eval.WithMaxBindingsPerRule(maxBindingsPerRule),
+		eval.WithMaxIterations(maxIterations),
+		eval.WithAllowPartial(allowPartial),
+	)
 	rs, err := evaluator.Evaluate(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate: %w", err)
