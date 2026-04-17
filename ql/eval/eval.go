@@ -37,6 +37,16 @@ func (e *Evaluator) Evaluate(ctx context.Context) (*ResultSet, error) {
 	return Evaluate(ctx, e.execPlan, baseRels, e.opts...)
 }
 
+// LoadBaseRelations is the exported alias for loadBaseRelations. It is used
+// by the trivial-IDB pre-pass (see EstimateNonRecursiveIDBSizes and its
+// caller in cmd/tsq/main.go) which needs base relations BEFORE the main
+// Evaluate() call. The pre-pass and Evaluate() then share the same loaded
+// map; loading is idempotent but duplicating the work would needlessly read
+// the fact DB twice.
+func LoadBaseRelations(factDB *db.DB) (map[string]*Relation, error) {
+	return loadBaseRelations(factDB)
+}
+
 // loadBaseRelations converts a db.DB into a map of eval.Relation objects.
 // It iterates all registered schema relations and loads any that are present
 // in the DB.
