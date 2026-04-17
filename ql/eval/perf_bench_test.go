@@ -79,6 +79,49 @@ func BenchmarkApplyPositive_Join(b *testing.B) {
 	}
 }
 
+// BenchmarkApplyNegative_AntiJoin measures the anti-join hot path that
+// issue #97 / PR-mirror-of-#94 targets. Setup gives applyNegative many
+// candidate matches per probe — exactly the shape where the dropped
+// per-tuple Compare("=", ...) re-check was wasting work.
+//
+// A(x) has N rows; B(x,y) has K rows for each x in A (K candidates per
+// probe). The rule H(x) :- A(x), not B(x, _) rejects every binding —
+// every probe hits and the inner loop takes the first-match break.
+// Without the optimisation each break still costs len(boundCols) Compare
+// calls per matching tuple before; with the optimisation it's a no-op.
+func BenchmarkApplyNegative_AntiJoin(b *testing.B) {
+	const N = 200
+	const K = 32
+	A := NewRelation("A", 1)
+	for i := 0; i < N; i++ {
+		A.Add(Tuple{IntVal{int64(i)}})
+	}
+	B := NewRelation("B", 2)
+	for i := 0; i < N; i++ {
+		for j := 0; j < K; j++ {
+			B.Add(Tuple{IntVal{int64(i)}, IntVal{int64(j)}})
+		}
+	}
+	rels := RelsOf(A, B)
+
+	rule := plan.PlannedRule{
+		Head: datalog.Atom{Predicate: "H", Args: []datalog.Term{datalog.Var{Name: "x"}}},
+		JoinOrder: []plan.JoinStep{
+			{Literal: datalog.Literal{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "x"}}}}},
+			{Literal: datalog.Literal{Positive: false, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Wildcard{}}}}},
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := Rule(context.Background(), rule, rels, 0)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkRegexBuiltin_FirstUse measures the cost of first-use per
 // iteration: the cache is reset, then ApplyBuiltin runs across N
 // bindings sharing one constant pattern. That is "1 cache miss + (N-1)

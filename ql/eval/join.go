@@ -429,27 +429,31 @@ func applyNegative(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 			continue
 		}
 
-		// Verify matches exist.
+		// Index.Lookup keys are canonical (partialKey over sorted cols),
+		// and applyNegative builds boundCols in ascending order by
+		// iterating atom.Args left-to-right, so a hit here IS a match.
+		// The full-equality re-check that used to live here is dead
+		// work on the anti-join hot path — see TestPartialKeyCanonicality_*
+		// and TestIndexLookupAgreement_* in partialkey_canonicality_test.go,
+		// plus TestApplyNegative_FastPath_NoRedundantReequality below.
+		//
+		// Defensive arity guard only: if the relation contains a tuple
+		// shorter than expected, treat it as a non-match. Should be
+		// impossible given Relation.Add's arity-mismatch panic, but kept
+		// as a belt-and-braces check.
 		hasMatch := false
 		tuples := rel.Tuples()
+		lastCol := -1
+		if len(boundCols) > 0 {
+			lastCol = boundCols[len(boundCols)-1]
+		}
 		for _, ti := range matchingIdxs {
 			t := tuples[ti]
-			match := true
-			for j, col := range boundCols {
-				if col >= len(t) {
-					match = false
-					break
-				}
-				eq, err := Compare("=", t[col], boundVals[j])
-				if err != nil || !eq {
-					match = false
-					break
-				}
+			if lastCol >= len(t) {
+				continue
 			}
-			if match {
-				hasMatch = true
-				break
-			}
+			hasMatch = true
+			break
 		}
 
 		if !hasMatch {
