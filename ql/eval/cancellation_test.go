@@ -3,8 +3,12 @@ package eval
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
+	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
 // Issue #81: the semi-naive fixpoint loop must check ctx.Err() after each
@@ -178,19 +182,138 @@ func TestCtxErrorMessageHasContext(t *testing.T) {
 	msg := err.Error()
 	// Must mention "stratum" — the per-stratum context wrapper at minimum.
 	// Per-rule cancellations also include "rule" and "iteration".
-	if !contains(msg, "stratum") {
+	if !strings.Contains(msg, "stratum") {
 		t.Errorf("error message %q should mention 'stratum' for diagnostics", msg)
 	}
-	if !contains(msg, "cancelled") {
+	if !strings.Contains(msg, "cancelled") {
 		t.Errorf("error message %q should mention 'cancelled'", msg)
 	}
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
+// heavyCartesianPlan builds a plan with a single rule whose one Rule() call
+// dominates the entire evaluation cost: a 2-way unconstrained Cartesian
+// product over an N-row base relation. The rule materialises ~N*N
+// intermediate bindings in one Rule() call — the precise scenario the
+// per-rule / inner-loop ctx checks were added for. The chain-TC fixture
+// used by the original tests has ~1ms per-rule cost, so cancellation
+// between rules is easy; here, cancellation must happen *inside* one
+// rule or the test hangs.
+//
+// Plan shape:
+//
+//	Bad(a, b) :- R(a), R(b).
+//	?- Bad(a, b).
+//
+// N is kept modest (a few hundred) so the test fits in ~3GB even under
+// -race shadow memory. The applyPositive output-growth ctx check fires
+// every 8192 outputs, so even N=600 (360K outputs) gives the throttled
+// check ~40 opportunities to fire — plenty to exercise promptness.
+func heavyCartesianPlan(n int) (*plan.ExecutionPlan, map[string]*Relation) {
+	vals := make([]Value, 0, n)
+	for i := 0; i < n; i++ {
+		vals = append(vals, IntVal{V: int64(i)})
 	}
-	return false
+	r := makeRelation("R", 1, vals...)
+	baseRels := map[string]*Relation{"R": r}
+
+	ep := &plan.ExecutionPlan{
+		Strata: []plan.Stratum{
+			{
+				Rules: []plan.PlannedRule{
+					{
+						Head: datalog.Atom{Predicate: "Bad", Args: []datalog.Term{v("a"), v("b")}},
+						JoinOrder: []plan.JoinStep{
+							positiveStep("R", v("a")),
+							positiveStep("R", v("b")),
+						},
+					},
+				},
+			},
+		},
+		Query: &plan.PlannedQuery{
+			Select: []datalog.Term{v("a"), v("b")},
+			JoinOrder: []plan.JoinStep{
+				positiveStep("Bad", v("a"), v("b")),
+			},
+		},
+	}
+	return ep, baseRels
+}
+
+// TestCtxTimeoutPromptness_HeavyRule is the white-box guard for the
+// per-rule / inner-loop ctx check that the chain-TC fixture cannot guard.
+// The fixture's single rule produces ~N*N bindings inside one Rule() call.
+// With a tight timeout and a generous-but-bounded ceiling, the test must
+// finish promptly only if ctx is checked *inside* Rule() (i.e. inside
+// applyPositive's inner loop). Without the inner check, the call runs to
+// completion before the per-iteration check at the top of the next
+// fixpoint iteration fires.
+//
+// Adversarial use: delete both ctx checks in applyPositive (per-input and
+// per-output growth). Without them, on slow hardware this test must hang
+// past the ceiling and fail. With them, it returns within the ceiling.
+//
+// Skip strategy: if the cancellation completes inside the timeout, the
+// fixture is too small to be a meaningful guard on this hardware — skip
+// rather than flake. We do NOT run a baseline (full) evaluation here:
+// under -race the 4M+ binding shadow memory OOMs ~3GB hosts.
+func TestCtxTimeoutPromptness_HeavyRule(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy-rule promptness test in -short mode")
+	}
+	const n = 600 // 360K cartesian outputs; ~30MB raw, fits under -race
+	ep, baseRels := heavyCartesianPlan(n)
+
+	const timeout = 5 * time.Millisecond
+	const ceiling = 250 * time.Millisecond // bound: ~30 binding-batches × throttled check
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	t0 := time.Now()
+	_, err := Evaluate(ctx, ep, baseRels, WithMaxIterations(0))
+	elapsed := time.Since(t0)
+
+	if err == nil {
+		t.Skipf("heavy fixture (n=%d) completed inside timeout=%v on this hardware (elapsed=%v); cannot exercise per-rule ctx check. Increase n.", n, timeout, elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected error wrapping context.DeadlineExceeded, got: %v", err)
+	}
+	if elapsed > ceiling {
+		t.Errorf("heavy-rule timeout=%v elapsed=%v > ceiling=%v. Per-rule / inner-loop ctx check likely regressed.", timeout, elapsed, ceiling)
+	}
+	t.Logf("heavy-rule: n=%d timeout=%v elapsed=%v err=%v", n, timeout, elapsed, err)
+}
+
+// TestCtxTimeoutPromptness_HeavyRule_RuleNameInError is the white-box
+// guard for the per-rule diagnostic path: when the inner-loop ctx check
+// fires inside Rule(), the wrapping error must include the rule name so
+// operators can identify the offending rule. Without the per-rule wrap
+// (i.e. if we just `return ctx.Err()` raw), this test fails.
+func TestCtxTimeoutPromptness_HeavyRule_RuleNameInError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy-rule promptness test in -short mode")
+	}
+	const n = 600
+	ep, baseRels := heavyCartesianPlan(n)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	_, err := Evaluate(ctx, ep, baseRels, WithMaxIterations(0))
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	msg := err.Error()
+	// The per-rule wrap ("rule \"Bad\" cancelled at join step ...") OR the
+	// per-bootstrap-rule wrap ("evaluation cancelled at stratum 0,
+	// bootstrap rule Bad: ...") must include the rule name "Bad".
+	if !strings.Contains(msg, "Bad") {
+		t.Errorf("error message %q should mention the offending rule name 'Bad' for diagnostics", msg)
+	}
+	if !strings.Contains(msg, "cancelled") {
+		t.Errorf("error message %q should mention 'cancelled'", msg)
+	}
+	t.Logf("err=%v", err)
 }

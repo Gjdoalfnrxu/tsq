@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"errors"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -47,9 +48,17 @@ func lookupTerm(t datalog.Term, b binding) (Value, bool) {
 // intermediate join cardinality exceeds it during evaluation, Rule returns
 // a *BindingCapError (wraps ErrBindingCapExceeded) and stops early to
 // prevent OOM (issue #80).
-func Rule(rule plan.PlannedRule, rels map[string]*Relation, maxBindings int) ([]Tuple, error) {
+//
+// ctx is checked between join steps and periodically inside the inner
+// per-binding loop, so a long-running Rule() call honors --timeout
+// promptly (issue #81 follow-up). A nil ctx is treated as
+// context.Background().
+func Rule(ctx context.Context, rule plan.PlannedRule, rels map[string]*Relation, maxBindings int) ([]Tuple, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	initial := []binding{make(binding)}
-	limits := &joinLimits{maxBindings: maxBindings, ruleName: rule.Head.Predicate}
+	limits := &joinLimits{ctx: ctx, maxBindings: maxBindings, ruleName: rule.Head.Predicate}
 	bindings, err := evalJoinSteps(rule.JoinOrder, rels, initial, limits)
 	if err != nil {
 		return nil, err
@@ -70,12 +79,19 @@ func Rule(rule plan.PlannedRule, rels map[string]*Relation, maxBindings int) ([]
 // When di=1, only the second Path literal uses delta; the first uses full.
 // This avoids the delta×delta over-counting that a global predicate replacement
 // would produce.
-func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[string]*Relation, maxBindings int) ([]Tuple, error) {
+func RuleDelta(ctx context.Context, rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[string]*Relation, maxBindings int) ([]Tuple, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	seen := make(map[string]struct{})
 	var results []Tuple
-	limits := &joinLimits{maxBindings: maxBindings, ruleName: rule.Head.Predicate}
+	limits := &joinLimits{ctx: ctx, maxBindings: maxBindings, ruleName: rule.Head.Predicate}
 
 	for di, step := range rule.JoinOrder {
+		// Honor cancellation between delta variants of the same rule.
+		if err := limits.ctxErr(di); err != nil {
+			return nil, err
+		}
 		// Only positive atom steps with a delta can be "delta variants".
 		if step.Literal.Cmp != nil || step.Literal.Agg != nil {
 			continue
@@ -247,7 +263,17 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 	}
 
 	var out []binding
-	for _, b := range bindings {
+	// Throttled ctx check inside the per-input-binding loop. Checking on
+	// every binding adds non-trivial overhead; checking every 4096 strikes a
+	// balance: at ~10ns/binding the worst-case latency between checks is
+	// ~40µs of CPU work, well below any realistic --timeout slack budget.
+	const ctxCheckMask = 4095
+	for bi, b := range bindings {
+		if bi&ctxCheckMask == 0 {
+			if err := limits.ctxErr(0); err != nil {
+				return nil, err
+			}
+		}
 		// Determine which columns are bound and which are free variables.
 		boundCols := make([]int, 0, len(atom.Args))
 		boundVals := make([]Value, 0, len(atom.Args))
@@ -333,6 +359,17 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 					Rule:        limits.ruleName,
 					Cap:         limits.maxBindings,
 					Cardinality: len(out),
+				}
+			}
+			// Throttled ctx check on the output growth path. A single
+			// cartesian-explosion step can produce millions of output
+			// bindings inside one input-binding's iteration, dwarfing the
+			// per-input-binding check above. Checking every 8192 outputs
+			// keeps overhead well under 1% while bounding cancellation
+			// latency to a few hundred µs of CPU work (issue #81 follow-up).
+			if limits != nil && limits.ctx != nil && len(out)&8191 == 0 {
+				if err := limits.ctxErr(0); err != nil {
+					return nil, err
 				}
 			}
 		}

@@ -77,19 +77,49 @@ func (e *IterationCapError) Error() string {
 
 func (e *IterationCapError) Unwrap() error { return ErrIterationCapExceeded }
 
-// joinLimits carries the per-rule binding cap and identifying context
-// down through the join evaluation call chain. A nil receiver means no cap.
+// joinLimits carries the per-rule binding cap, cancellation context, and
+// identifying context down through the join evaluation call chain.
+// A nil receiver means no cap and no ctx check.
+//
+// ctx is checked between join steps and inside the per-binding inner loop of
+// applyPositive. Without that, a single Rule()/RuleDelta() call building a
+// 10M-binding intermediate could ignore --timeout for many seconds (issue
+// #81 follow-up: per-iteration ctx checks at the seminaive level only fire
+// between rules, not within them).
 type joinLimits struct {
+	ctx         context.Context
 	maxBindings int    // 0 == unlimited
 	ruleName    string // for error messages; may be empty (e.g. final query)
 }
 
 func (l *joinLimits) check(stepIndex, n int) error {
-	if l == nil || l.maxBindings <= 0 {
+	if l == nil {
+		return nil
+	}
+	if l.ctx != nil {
+		if err := l.ctx.Err(); err != nil {
+			return fmt.Errorf("rule %q cancelled at join step %d: %w", l.ruleName, stepIndex, err)
+		}
+	}
+	if l.maxBindings <= 0 {
 		return nil
 	}
 	if n > l.maxBindings {
 		return &BindingCapError{Rule: l.ruleName, StepIndex: stepIndex, Cap: l.maxBindings, Cardinality: n}
+	}
+	return nil
+}
+
+// ctxErr returns a wrapped ctx error if the limits' context is cancelled,
+// or nil otherwise. Used inside the per-binding inner loops of applyPositive
+// where checking ctx every binding would be too expensive — callers throttle
+// to every Nth iteration.
+func (l *joinLimits) ctxErr(stepIndex int) error {
+	if l == nil || l.ctx == nil {
+		return nil
+	}
+	if err := l.ctx.Err(); err != nil {
+		return fmt.Errorf("rule %q cancelled at join step %d: %w", l.ruleName, stepIndex, err)
 	}
 	return nil
 }
@@ -181,6 +211,9 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 			var perr error
 			deltaRels, perr = parallelBootstrap(ctx, stratum.Rules, allRels, cfg.maxBindingsPerRule)
 			if perr != nil {
+				if errors.Is(perr, context.Canceled) || errors.Is(perr, context.DeadlineExceeded) {
+					return nil, fmt.Errorf("evaluation cancelled at stratum %d, %w", si, perr)
+				}
 				return nil, perr
 			}
 		} else {
@@ -191,8 +224,13 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				hk := relKey(headName, headArity)
 				headRel := allRels[hk]
 
-				newTuples, rerr := Rule(rule, allRels, cfg.maxBindingsPerRule)
+				newTuples, rerr := Rule(ctx, rule, allRels, cfg.maxBindingsPerRule)
 				if rerr != nil {
+					// Add stratum context to ctx-cancellation errors so operators
+					// can localise WHERE the cancellation hit, not just WHICH rule.
+					if errors.Is(rerr, context.Canceled) || errors.Is(rerr, context.DeadlineExceeded) {
+						return nil, fmt.Errorf("evaluation cancelled at stratum %d, bootstrap %w", si, rerr)
+					}
 					return nil, rerr
 				}
 				// Per-rule cancellation check (issue #81): a single rule's
@@ -273,6 +311,9 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				var perr error
 				deltaRels, perr = parallelDelta(ctx, stratum.Rules, allRels, deltaRels, cfg.maxBindingsPerRule)
 				if perr != nil {
+					if errors.Is(perr, context.Canceled) || errors.Is(perr, context.DeadlineExceeded) {
+						return nil, fmt.Errorf("evaluation cancelled at stratum %d, iteration %d, %w", si, iteration, perr)
+					}
 					return nil, perr
 				}
 				// Per-iteration cancellation check on the parallel path —
@@ -291,8 +332,11 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 					hk := relKey(headName, headArity)
 					headRel := allRels[hk]
 
-					newTuples, rerr := RuleDelta(rule, allRels, deltaRels, cfg.maxBindingsPerRule)
+					newTuples, rerr := RuleDelta(ctx, rule, allRels, deltaRels, cfg.maxBindingsPerRule)
 					if rerr != nil {
+						if errors.Is(rerr, context.Canceled) || errors.Is(rerr, context.DeadlineExceeded) {
+							return nil, fmt.Errorf("evaluation cancelled at stratum %d, iteration %d, %w", si, iteration, rerr)
+						}
 						return nil, rerr
 					}
 					// Per-rule cancellation check (issue #81). A single
@@ -320,7 +364,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 
 		// Evaluate aggregates after fixpoint.
 		for _, agg := range stratum.Aggregates {
-			resultRel, aerr := Aggregate(agg, allRels, cfg.maxBindingsPerRule)
+			resultRel, aerr := Aggregate(ctx, agg, allRels, cfg.maxBindingsPerRule)
 			if aerr != nil {
 				return nil, aerr
 			}
@@ -333,13 +377,13 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		return &ResultSet{}, nil
 	}
 
-	return evalQuery(execPlan.Query, allRels, cfg.maxBindingsPerRule)
+	return evalQuery(ctx, execPlan.Query, allRels, cfg.maxBindingsPerRule)
 }
 
 // evalQuery evaluates the planned query and returns a ResultSet.
-func evalQuery(q *plan.PlannedQuery, allRels map[string]*Relation, maxBindings int) (*ResultSet, error) {
+func evalQuery(ctx context.Context, q *plan.PlannedQuery, allRels map[string]*Relation, maxBindings int) (*ResultSet, error) {
 	initial := []binding{make(binding)}
-	limits := &joinLimits{maxBindings: maxBindings, ruleName: "<query>"}
+	limits := &joinLimits{ctx: ctx, maxBindings: maxBindings, ruleName: "<query>"}
 	bindings, err := evalJoinSteps(q.JoinOrder, allRels, initial, limits)
 	if err != nil {
 		return nil, err
