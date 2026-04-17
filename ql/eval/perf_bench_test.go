@@ -78,11 +78,17 @@ func BenchmarkApplyPositive_Join(b *testing.B) {
 	}
 }
 
-// BenchmarkRegexBuiltin_Cold measures regex builtin throughput when the
-// cache is empty on every iteration — i.e. forces a fresh
-// regexp.Compile each time. This is the worst case for the cache (it
-// adds a sync.Map miss + LoadOrStore overhead on top of the compile).
-func BenchmarkRegexBuiltin_Cold(b *testing.B) {
+// BenchmarkRegexBuiltin_FirstUse measures the cost of first-use per
+// iteration: the cache is reset, then ApplyBuiltin runs across N
+// bindings sharing one constant pattern. That is "1 cache miss + (N-1)
+// hits" per iteration — the realistic cost of the FIRST query call
+// hitting a cold cache, amortised across the binding rows of that call.
+//
+// Despite the name of the previous incarnation ("_Cold"), this is NOT
+// per-call cold — it shares the pattern across all N bindings. For the
+// true per-call worst case (every call a miss, distinct pattern each
+// time, cache effectively useless) see BenchmarkRegexBuiltin_AllMisses.
+func BenchmarkRegexBuiltin_FirstUse(b *testing.B) {
 	const N = 100
 	bindings := make([]binding, N)
 	for i := 0; i < N; i++ {
@@ -99,7 +105,39 @@ func BenchmarkRegexBuiltin_Cold(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		regexCache = sync.Map{} // reset so every iteration is cold
+		regexCache = sync.Map{} // reset so first row of each call is a miss
+		_ = ApplyBuiltin(atom, bindings)
+	}
+}
+
+// BenchmarkRegexBuiltin_AllMisses measures the absolute worst case for
+// the cache: every binding row uses a distinct pattern, so every single
+// inner-loop iteration is a fresh regexp.Compile. The pattern arg is a
+// Var resolved per-row from the binding, which routes through
+// regexp.Compile directly (no cache insert) — see compileRegexp in
+// builtins.go. This is the path a query takes when patterns come from
+// data, not from the query text.
+func BenchmarkRegexBuiltin_AllMisses(b *testing.B) {
+	const N = 100
+	bindings := make([]binding, N)
+	for i := 0; i < N; i++ {
+		bindings[i] = binding{
+			"x": StrVal{V: fmt.Sprintf("foobar-%d", i)},
+			// Distinct pattern per row — pattern is data, not query text.
+			"p": StrVal{V: fmt.Sprintf("^foo-%d$", i)},
+		}
+	}
+	atom := datalog.Atom{
+		Predicate: "__builtin_string_regexpMatch",
+		Args: []datalog.Term{
+			datalog.Var{Name: "x"},
+			datalog.Var{Name: "p"}, // Var, not StringConst — bypasses cache.
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
 		_ = ApplyBuiltin(atom, bindings)
 	}
 }

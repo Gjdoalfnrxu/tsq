@@ -309,6 +309,12 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 			// is safe to share the same binding map across multiple output
 			// rows. This avoids O(matches × cols) map allocation on the
 			// hot filter path.
+			//
+			// INVARIANT: callers must never mutate a binding map they don't
+			// own — clone first. The shared-map output below depends on
+			// every downstream writer honouring this contract. If you add
+			// a new builtin or join helper that writes into a binding,
+			// clone before the first write. See bindResult in builtins.go.
 			if len(freeVars) == 0 {
 				out = append(out, b)
 			} else {

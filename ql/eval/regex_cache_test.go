@@ -1,7 +1,7 @@
 package eval
 
 import (
-	"reflect"
+	"regexp"
 	"sync"
 	"testing"
 
@@ -62,7 +62,7 @@ func TestCachedRegexp_ConcurrentSamePattern(t *testing.T) {
 	regexCache = sync.Map{}
 	const G = 64
 	var wg sync.WaitGroup
-	results := make([]uintptr, G)
+	results := make([]*regexp.Regexp, G)
 	wg.Add(G)
 	for i := 0; i < G; i++ {
 		i := i
@@ -73,8 +73,7 @@ func TestCachedRegexp_ConcurrentSamePattern(t *testing.T) {
 				t.Errorf("goroutine %d: unexpected err %v", i, err)
 				return
 			}
-			// Cast to uintptr for comparison; we just need them all equal.
-			results[i] = uintptrOf(re)
+			results[i] = re
 		}()
 	}
 	wg.Wait()
@@ -131,10 +130,4 @@ func TestRegexpMatch_BehaviourUnchanged(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("expected 2 matches, got %d: %v", len(out), out)
 	}
-}
-
-// uintptrOf returns the underlying pointer address of an interface holding
-// a *regexp.Regexp. Used only in tests to assert "same pointer."
-func uintptrOf(p any) uintptr {
-	return reflect.ValueOf(p).Pointer()
 }
