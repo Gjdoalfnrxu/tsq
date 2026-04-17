@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/Gjdoalfnrxu/tsq/bridge"
 )
 
 func TestVersion(t *testing.T) {
@@ -153,6 +155,86 @@ func TestUsageErrorExitCode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Regression for issue #82: cmdCheck must run the same compilation pipeline
+// as cmdQuery, including rules.MergeSystemRules. Before the fix, `check`
+// stopped at user-program planning and would green-light a query that later
+// failed (or hung / OOM'd) inside `query` because the system-rule-augmented
+// rule graph differed.
+//
+// We assert two things:
+//  1. buildProgram's resulting plan contains rules whose head names come
+//     from the system-rule set (e.g. "CallTarget"). This proves
+//     MergeSystemRules ran during the shared pipeline, which both `check`
+//     and `query` now go through.
+//  2. The plans built with sizeHints=nil (the `check` configuration) and
+//     sizeHints=non-nil (the `query` configuration with real DB cardinality)
+//     contain the same set of rule head predicates — i.e. the rule graph is
+//     identical, only join ordering may differ. This is the exact
+//     equivalence that issue #82 required.
+func TestBuildProgramMergesSystemRulesForCheck(t *testing.T) {
+	src := `import tsq::base
+from int x
+where x = 1
+select x
+`
+	loader := makeBridgeImportLoader(bridgeLoadForTest())
+
+	checkPlan, _, errs := buildProgram(src, "test.ql", loader, nil)
+	if len(errs) > 0 {
+		t.Fatalf("buildProgram (check config) returned errors: %v", errs)
+	}
+	if checkPlan == nil {
+		t.Fatal("buildProgram (check config) returned nil plan")
+	}
+
+	// Collect head predicate names from every stratum.
+	heads := make(map[string]bool)
+	for _, stratum := range checkPlan.Strata {
+		for _, r := range stratum.Rules {
+			heads[r.Head.Predicate] = true
+		}
+	}
+
+	// CallTarget is defined in extract/rules/callgraph.go (CallGraphRules).
+	// Its presence proves MergeSystemRules ran inside buildProgram.
+	if !heads["CallTarget"] {
+		t.Errorf("expected CallTarget rule head in plan (proof of MergeSystemRules), got heads: %v", heads)
+	}
+
+	// Now build a second plan with size hints, simulating the `query` path.
+	queryPlan, _, errs := buildProgram(src, "test.ql", loader, map[string]int{"Node": 100, "Call": 50})
+	if len(errs) > 0 {
+		t.Fatalf("buildProgram (query config) returned errors: %v", errs)
+	}
+	queryHeads := make(map[string]bool)
+	for _, stratum := range queryPlan.Strata {
+		for _, r := range stratum.Rules {
+			queryHeads[r.Head.Predicate] = true
+		}
+	}
+
+	// Plan rule-set must be identical between the two configurations: the
+	// only difference allowed is join ordering driven by size hints.
+	if len(heads) != len(queryHeads) {
+		t.Errorf("plan rule-head count differs: check=%d query=%d", len(heads), len(queryHeads))
+	}
+	for h := range heads {
+		if !queryHeads[h] {
+			t.Errorf("head %q present in check plan but absent in query plan", h)
+		}
+	}
+	for h := range queryHeads {
+		if !heads[h] {
+			t.Errorf("head %q present in query plan but absent in check plan", h)
+		}
+	}
+}
+
+// bridgeLoadForTest wraps bridge.LoadBridge so the test reads clearly.
+func bridgeLoadForTest() map[string][]byte {
+	return bridge.LoadBridge()
 }
 
 // Regression: global flags followed by a valid subcommand should work.
