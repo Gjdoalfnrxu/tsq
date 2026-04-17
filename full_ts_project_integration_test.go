@@ -36,6 +36,11 @@ import (
 
 // fullTSProjectDir returns the absolute path to the fixture. tsgo enrichment
 // requires absolute paths end-to-end (see file header).
+//
+// TODO(#110): remove the filepath.Abs workaround once tsq absolutises *dir in
+// cmdExtract. Today, passing a relative --dir produces relative entries in the
+// File relation, which tsgo's DocumentIdentifier resolution rejects with
+// "source file not found" for every position query.
 func fullTSProjectDir(t *testing.T) string {
 	t.Helper()
 	root := cliRepoRoot(t)
@@ -108,6 +113,21 @@ func hasRowWith(rows [][]string, needle string) bool {
 	for _, row := range rows {
 		for _, cell := range row {
 			if strings.Contains(cell, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasRowWithExact reports whether any row contains a cell that exactly equals
+// needle. Used for type-pass assertions where substring matches would let
+// "User" pass on rows like "UserList", "UserListProps", "UserId" — defeating
+// the point of pinning the type to confirm tsgo resolved it.
+func hasRowWithExact(rows [][]string, needle string) bool {
+	for _, row := range rows {
+		for _, cell := range row {
+			if cell == needle {
 				return true
 			}
 		}
@@ -198,6 +218,14 @@ func TestCLI_FullTSProject_EndToEnd(t *testing.T) {
 	// --------------------------------------------------------------
 	tsgoPath := detectTsgoForTest()
 	if tsgoPath == "" {
+		// On CI the type-enrichment regression guard MUST run. Silently
+		// skipping (the local-dev convenience) would hide PR #84 regressions
+		// from the gate that's supposed to catch them. Until CI installs
+		// tsgo / sets TSGO_PATH, fail loud so the gap is visible rather than
+		// papered over.
+		if os.Getenv("CI") != "" {
+			t.Fatal("tsgo not available in CI: install tsgo or set TSGO_PATH so the type-enrichment regression guard (PR #84 / issue #91) actually runs; refusing to silently skip in CI")
+		}
 		t.Log("tsgo not available (set TSGO_PATH or install `tsgo` in PATH); structural passes already validated, skipping type-info pass")
 		return
 	}
@@ -233,20 +261,23 @@ func TestCLI_FullTSProject_EndToEnd(t *testing.T) {
 	if len(rows3) == 0 {
 		t.Fatalf("type query returned zero rows on tsgo-enriched DB; PR #84 regression?\nstderr from extract:\n%s\nquery output:\n%s", stderr, out3)
 	}
-	// Pin specific type displays. These are facts that can ONLY be derived
-	// by tsgo resolving the project: User comes from the type-only module,
-	// UserRole is a union, T is a generic parameter resolved across files.
-	// At least two of these must appear (we don't hard-pin all three because
-	// tsgo's exact display rendering can vary across upstream versions).
-	wantTypes := []string{"User", "UserRole", "string"}
-	hits := 0
-	for _, want := range wantTypes {
-		if hasRowWith(rows3, want) {
-			hits++
+	// Pin specific type displays. User and UserRole are project-defined types
+	// that can ONLY appear if tsgo actually resolved the fixture's tsconfig
+	// and walked the type-only modules — so they're both REQUIRED, with exact
+	// cell matches (substring would let "User" pass on "UserList",
+	// "UserListProps", "UserId" — none of which prove tsgo enrichment).
+	//
+	// `string` is a primitive sanity check: tsgo emits it for nearly every
+	// literal, so its presence alone proves nothing. We assert it separately
+	// as a sanity hit, never as a substitute for the project-defined pins.
+	requiredExact := []string{"User", "UserRole"}
+	for _, want := range requiredExact {
+		if !hasRowWithExact(rows3, want) {
+			t.Errorf("expected exact-cell type %q in tsgo-derived types (substring matches like UserList do not count); rows: %v", want, rows3)
 		}
 	}
-	if hits < 2 {
-		t.Errorf("expected >=2 of %v in tsgo-derived types; rows: %v", wantTypes, rows3)
+	if !hasRowWith(rows3, "string") {
+		t.Errorf("expected primitive sanity hit %q in tsgo-derived types; rows: %v", "string", rows3)
 	}
 }
 
