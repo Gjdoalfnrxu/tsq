@@ -798,6 +798,87 @@ func TestMagicSetAuto_EquivalenceParametric(t *testing.T) {
 	}
 }
 
+// TestMagicSetAuto_EquivalenceCyclic exercises the recursive transitive-closure
+// rule on a graph that contains a cycle (1→2, 2→3, 3→1, 3→4). Without the
+// cycle, the parametric DAG fixture only exercises a single recursion-depth
+// pass; the cycle forces the semi-naive evaluator to iterate to fixpoint, so
+// any divergence between plain Plan and the magic-set rewrite (e.g. a magic
+// predicate that mis-prunes a back-edge tuple) shows up as a row delta.
+// Addresses adversarial-review MINOR 4.
+func TestMagicSetAuto_EquivalenceCyclic(t *testing.T) {
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "z"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "y"}, datalog.Var{Name: "z"}}}},
+			},
+		},
+	}
+
+	edgeRel := eval.NewRelation("Edge", 2)
+	for _, e := range [][2]int64{{1, 2}, {2, 3}, {3, 1}, {3, 4}} {
+		edgeRel.Add(eval.Tuple{eval.IntVal{V: e[0]}, eval.IntVal{V: e[1]}})
+	}
+
+	// Bound first arg = 1; closure over the cycle reaches {1,2,3,4}.
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "b"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+
+	rowsToSortedSet := func(rs *eval.ResultSet) []string {
+		out := make([]string, 0, len(rs.Rows))
+		for _, row := range rs.Rows {
+			out = append(out, fmt.Sprintf("%v", row))
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	ep1, errs := plan.Plan(prog, nil)
+	if len(errs) > 0 {
+		t.Fatalf("plain plan errors: %v", errs)
+	}
+	rs1, err := eval.Evaluate(context.Background(), ep1, map[string]*eval.Relation{"Edge": edgeRel})
+	if err != nil {
+		t.Fatalf("plain eval: %v", err)
+	}
+
+	ep2, inf, errs := plan.WithMagicSetAuto(prog, nil)
+	if len(errs) > 0 {
+		t.Fatalf("magic-set plan errors: %v", errs)
+	}
+	if len(inf.Bindings) == 0 {
+		t.Fatalf("expected magic-set transform to fire (bound col 0); inference returned empty")
+	}
+	rs2, err := eval.Evaluate(context.Background(), ep2, map[string]*eval.Relation{"Edge": edgeRel})
+	if err != nil {
+		t.Fatalf("magic-set eval: %v", err)
+	}
+
+	set1 := rowsToSortedSet(rs1)
+	set2 := rowsToSortedSet(rs2)
+	if !equalStringSlices(set1, set2) {
+		t.Fatalf("cyclic equivalence violated:\n  plain     = %v\n  magic-set = %v", set1, set2)
+	}
+	// Sanity: closure from node 1 in the cycle reaches every node.
+	if len(set1) != 4 {
+		t.Fatalf("expected 4 reachable nodes from 1 in cyclic graph, got %d (%v)", len(set1), set1)
+	}
+}
+
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

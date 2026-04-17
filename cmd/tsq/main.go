@@ -341,7 +341,11 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	maxBindingsPerRule := fs.Int("max-bindings-per-rule", eval.DefaultMaxBindingsPerRule, "per-rule cap on intermediate join binding cardinality (0 = unlimited; prevents OOM on weak joins, see issue #80)")
 	maxIterations := fs.Int("max-iterations", eval.DefaultMaxIterations, "max semi-naive fixpoint iterations per stratum before erroring (0 = unlimited; see issue #79)")
 	allowPartial := fs.Bool("allow-partial", false, "if --max-iterations is hit, log a warning and return partial results instead of erroring (legacy behaviour)")
-	noMagicSets := fs.Bool("no-magic-sets", false, "disable the magic-set query rewrite (default: enabled). Magic sets prune irrelevant tuples on selective queries against recursive predicates (e.g. taint with a constant source), often 10-1000x speedup. Use this flag if a query regresses or returns wrong answers under magic sets (please file an issue).")
+	magicSets := fs.Bool("magic-sets", false, "enable the magic-set query rewrite (default: disabled, opt-in for one release). Magic sets prune irrelevant tuples on selective queries against recursive predicates (e.g. taint with a constant source), often 10-1000x speedup when bindings are inferable. Default-off until we have benchmark evidence that the transform fires on real workloads without regression (issue #87).")
+	// Deprecated alias: --no-magic-sets used to gate the default-on behaviour.
+	// Kept as a no-op flag so existing scripts don't break; it has no effect now
+	// that magic sets are opt-in. Will be removed once a release has shipped.
+	_ = fs.Bool("no-magic-sets", false, "deprecated, no-op (magic sets are now opt-in via --magic-sets)")
 	verbose := fs.Bool("verbose", false, "log diagnostic info to stderr (e.g. magic-set transform application)")
 
 	if err := fs.Parse(args); err != nil {
@@ -367,7 +371,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	// Read and compile the query.
-	bopts := buildOptions{useMagicSets: !*noMagicSets}
+	bopts := buildOptions{useMagicSets: *magicSets}
 	if *verbose {
 		bopts.verboseOut = stderr
 	}

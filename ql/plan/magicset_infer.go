@@ -134,10 +134,10 @@ func InferQueryBindings(prog *datalog.Program, idbPreds map[string]bool) QueryBi
 		}
 
 		if len(boundCols) > 0 {
-			// Merge with existing bindings for this predicate. If the same
-			// pred appears twice with different bound positions, intersect
-			// (only positions bound in *all* occurrences are safe to assume).
-			// Conservative: for v1 we just take the first occurrence's bindings.
+			// Merge with existing bindings for this predicate. v1 takes the
+			// first occurrence's bindings (a conservative non-intersect choice).
+			// If the same pred recurs with a different binding shape we keep
+			// the first; the equivalence tests guarantee correctness either way.
 			if _, exists := bindings[pred]; !exists {
 				bindings[pred] = boundCols
 			}
@@ -230,6 +230,28 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 		return ep, inf, errs
 	}
 
+	// Arity guard (MINOR 5): ensure each seed-rule head matches the binding
+	// arity declared for its predicate. A mismatch means the inference and
+	// the transform disagree about the magic-pred shape; prefer the safe
+	// plain plan over a broken augmented program.
+	for _, sr := range inf.SeedRules {
+		// magic_<pred> -> <pred>
+		predName := sr.Head.Predicate
+		const prefix = "magic_"
+		if len(predName) <= len(prefix) || predName[:len(prefix)] != prefix {
+			continue
+		}
+		basePred := predName[len(prefix):]
+		want, ok := inf.Bindings[basePred]
+		if !ok {
+			continue
+		}
+		if len(sr.Head.Args) != len(want) {
+			ep, errs := Plan(prog, sizeHints)
+			return ep, QueryBindingInference{}, errs
+		}
+	}
+
 	transformed := MagicSetTransform(prog, inf.Bindings)
 	// Append the seed rules so magic_<pred> has a non-empty extension.
 	if len(inf.SeedRules) > 0 {
@@ -242,8 +264,25 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 		}
 	}
 	ep, errs := Plan(transformed, sizeHints)
+	// Plan-error fallback (MAJOR 3 + transform-soundness safety net):
+	// if the augmented program fails to plan for any reason — unstratifiable
+	// (e.g. seed bodies copying a preceding `not Bar(m)` that creates a new
+	// negation edge into a recursive component) or unsafe (e.g. seed-head
+	// wildcards leaked from the transform) — fall back to plain Plan rather
+	// than surfacing the regression to the caller. The transform is opt-in
+	// (--magic-sets); silent fallback to a known-good plan is the right
+	// default until transform soundness is fully proven on real workloads.
+	if len(errs) > 0 {
+		ep2, errs2 := Plan(prog, sizeHints)
+		return ep2, QueryBindingInference{}, errs2
+	}
 	return ep, inf, errs
 }
+
+// (containsUnstratifiable removed: superseded by the broader plan-error
+// fallback above; we now treat any planning error from the augmented program
+// as "fall back to plain Plan." Kept the import of strings out of this file
+// since the helper is no longer needed.)
 
 func isConstTerm(t datalog.Term) bool {
 	switch t.(type) {

@@ -147,6 +147,86 @@ func TestInferQueryBindings_BaseLiteralWithConstantBindsVar(t *testing.T) {
 	}
 }
 
+// TestWithMagicSetAuto_StratificationFallback exercises the safety net for
+// adversarial-review MAJOR 3: a query body with a negated literal preceding
+// the IDB literal copies that negation into the magic-seed body, which can
+// introduce a new neg-edge into a recursive component and break
+// stratification. Plain Plan succeeds (the program's rules alone are
+// stratifiable); the magic-augmented program is not. WithMagicSetAuto must
+// detect this and fall back to plain Plan rather than surfacing the error.
+func TestWithMagicSetAuto_StratificationFallback(t *testing.T) {
+	// Rules:
+	//   P(x,y) :- Edge(x,y).
+	//   P(x,z) :- Edge(x,y), P(y,z).
+	//   Bar(z) :- P(z,z).
+	// Plain dep graph: Bar -> P (pos), P -> P (pos via self-recursion).
+	// Stratifiable (no neg cycle).
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "z"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "y"}, datalog.Var{Name: "z"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "Bar", Args: []datalog.Term{datalog.Var{Name: "z"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "z"}, datalog.Var{Name: "z"}}}},
+			},
+		},
+	}
+	// Query: from Edge(1, m), not Bar(m), P(m, b)
+	// Magic-seed for P would be: magic_P(m) :- Edge(1, m), not Bar(m).
+	// That introduces magic_P -> Bar (neg). Augmented P also gains
+	// P -> magic_P (pos) from the rewrite. Cycle:
+	//   P -> magic_P -> Bar -> P     contains a negative edge => unstratifiable.
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "b"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "m"}}}},
+				{Positive: false, Atom: datalog.Atom{Predicate: "Bar", Args: []datalog.Term{datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+
+	// Sanity: plain Plan must succeed (preconditions of the regression test).
+	if _, errs := Plan(prog, nil); len(errs) > 0 {
+		t.Fatalf("plain Plan unexpectedly failed: %v", errs)
+	}
+
+	ep, inf, errs := WithMagicSetAuto(prog, nil)
+	if len(errs) > 0 {
+		t.Fatalf("WithMagicSetAuto must fall back to plain Plan when augmented program is unstratifiable, got errors: %v", errs)
+	}
+	if ep == nil {
+		t.Fatalf("expected non-nil ExecutionPlan from fallback path")
+	}
+	// On fallback, Bindings must be reset to empty so callers don't claim the
+	// transform fired.
+	if len(inf.Bindings) != 0 {
+		t.Fatalf("on stratification fallback, expected empty Bindings, got %v", inf.Bindings)
+	}
+	// Plan must NOT contain magic_* rules (we fell back to the original
+	// program).
+	for _, s := range ep.Strata {
+		for _, r := range s.Rules {
+			if len(r.Head.Predicate) > 6 && r.Head.Predicate[:6] == "magic_" {
+				t.Fatalf("fallback plan unexpectedly contains magic_* rule: %s", r.Head.Predicate)
+			}
+		}
+	}
+}
+
 func TestWithMagicSetAuto_AppliesTransformWhenInferable(t *testing.T) {
 	prog := progPathClosure([]datalog.Literal{
 		{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "b"}}}},
