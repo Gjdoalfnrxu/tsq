@@ -199,6 +199,188 @@ func TestJoinOrderAggregateAfterPositives(t *testing.T) {
 	}
 }
 
+// posLitConst creates a positive literal whose first arg is a string
+// constant, with the rest being variables. Used by tiny-seed tests that need
+// to model "literal grounded by a constant on an indexed col."
+func posLitConst(pred string, constVal string, vars ...string) datalog.Literal {
+	args := make([]datalog.Term, 0, 1+len(vars))
+	args = append(args, datalog.StringConst{Value: constVal})
+	for _, v := range vars {
+		args = append(args, datalog.Var{Name: v})
+	}
+	return datalog.Literal{
+		Positive: true,
+		Atom:     datalog.Atom{Predicate: pred, Args: args},
+	}
+}
+
+// TestJoinTinySeedWinsOverSharedVarLargerLiteral is the load-bearing
+// mutation-killable test for issue #98.
+//
+// The heuristic must override standard greedy scoring. Standard scoring
+// prefers more-bound-vars first (-boundCount), then smaller-relation. So the
+// discriminating case is: a tiny known-size literal with NO shared vars
+// (negBound=0) versus a larger literal that DOES have shared vars
+// (negBound=-1). Standard picks the larger one because of the bound-count
+// preference; the tiny-seed heuristic flips it.
+//
+// Body shape:
+//
+//	P(c, f, n) :- TinySeed(f), Big(f, n), TinyIDB(c).
+//	    TinySeed: size 3   — wins slot 0 (smallest, both tiny by hint).
+//	    Big:      size 200 — shares f with TinySeed (slot 1 candidate).
+//	    TinyIDB:  size 7   — NO shared vars (slot 1 candidate).
+//
+// At slot 1 (after TinySeed bound f):
+//   - Big:     (negBound=-1, size=200) — standard prefers (more bound vars).
+//   - TinyIDB: (negBound=0,  size=7)   — standard puts last.
+//
+// Without the heuristic, slot 1 = Big and slot 2 = TinyIDB. With the
+// heuristic, TinyIDB qualifies as tiny (sizeHint=7 ≤ tinySeedThreshold=32)
+// and wins slot 1.
+//
+// Mutation kill: disabling the tiny-seed pass causes Big to win slot 1 and
+// TinyIDB to land at slot 2 — `JoinOrder[1] == "TinyIDB"` then fails.
+func TestJoinTinySeedWinsOverSharedVarLargerLiteral(t *testing.T) {
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: atom("P", "c", "f", "n"),
+				Body: []datalog.Literal{
+					posLit("TinySeed", "f"),
+					posLit("Big", "f", "n"),
+					posLit("TinyIDB", "c"),
+				},
+			},
+		},
+	}
+	hints := map[string]int{"TinySeed": 3, "Big": 200, "TinyIDB": 7}
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	r := ep.Strata[0].Rules[0]
+	if len(r.JoinOrder) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(r.JoinOrder))
+	}
+	got := []string{
+		r.JoinOrder[0].Literal.Atom.Predicate,
+		r.JoinOrder[1].Literal.Atom.Predicate,
+		r.JoinOrder[2].Literal.Atom.Predicate,
+	}
+	// Slot 0: TinySeed (size 3) wins on both standard and heuristic.
+	if got[0] != "TinySeed" {
+		t.Fatalf("slot 0: expected TinySeed (size 3), got %s; full order: %v", got[0], got)
+	}
+	// Slot 1 (load-bearing): TinyIDB must win despite no shared vars.
+	if got[1] != "TinyIDB" {
+		t.Errorf("slot 1: expected TinyIDB (tiny-seed override beating Big's shared-var bonus), got %s; full order: %v",
+			got[1], got)
+	}
+	// Slot 2: Big lands last.
+	if got[2] != "Big" {
+		t.Errorf("slot 2: expected Big, got %s; full order: %v", got[2], got)
+	}
+}
+
+// TestJoinTinySeedNoSizeHintNoSharedVarNotPicked is the anti-false-positive
+// guard from issue #98. A literal with NO sizeHint AND NO shared variables
+// AND no constant args must NOT be classified as tiny — we have no evidence
+// the output is small. If we treated unhinted literals as tiny by default
+// we would invert the bug: instead of placing actually-large IDBs last we
+// would place actually-large IDBs first.
+//
+// Setup: at slot 1, after Seed binds x, the candidates are:
+//   - Big(x, y): shared var x, has known sizeHint=200 (NOT tiny by hint).
+//     Standard scoring: (negBound=-1, size=200).
+//   - UnknownIDB(y): NO shared vars with the prefix, NO sizeHint, NO
+//     constants. Standard scoring: (negBound=0, size=1000).
+//
+// Standard scoring picks Big at slot 1 (better bound count). The tiny-seed
+// heuristic must NOT classify UnknownIDB as tiny — otherwise it would
+// override the bound-count preference and pick UnknownIDB (the canonical
+// false positive). UnknownIDB must end up at slot 2.
+//
+// Mutation: replacing the no-hint branch of isTinySeed with `return true`
+// (i.e. dropping the anti-false-positive guard) would classify UnknownIDB
+// as tiny, and it would win slot 1 over Big — this assertion then fails.
+func TestJoinTinySeedNoSizeHintNoSharedVarNotPicked(t *testing.T) {
+	// P(x, y) :- Seed(x), Big(x, y), UnknownIDB(z).
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: atom("P", "x", "y"),
+				Body: []datalog.Literal{
+					posLit("Seed", "x"),
+					posLit("Big", "x", "y"),
+					posLit("UnknownIDB", "z"),
+				},
+			},
+		},
+	}
+	// Seed=10 wins slot 0 (tiny). Big=200 (NOT tiny by hint).
+	// UnknownIDB has no hint and no shared vars at slot 1.
+	hints := map[string]int{"Seed": 10, "Big": 200}
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	r := ep.Strata[0].Rules[0]
+	if len(r.JoinOrder) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(r.JoinOrder))
+	}
+	got := []string{
+		r.JoinOrder[0].Literal.Atom.Predicate,
+		r.JoinOrder[1].Literal.Atom.Predicate,
+		r.JoinOrder[2].Literal.Atom.Predicate,
+	}
+	if got[0] != "Seed" {
+		t.Fatalf("slot 0: expected Seed (size 10, tiny), got %s; full order: %v", got[0], got)
+	}
+	if got[1] != "Big" {
+		t.Errorf("slot 1: expected Big (shared var, hint 200) — UnknownIDB must NOT be falsely classified tiny; got %s; full order: %v",
+			got[1], got)
+	}
+	if got[2] != "UnknownIDB" {
+		t.Errorf("slot 2: expected UnknownIDB last; got %s; full order: %v", got[2], got)
+	}
+}
+
+// TestJoinTinySeedConstantArgWinsWithoutHint exercises the constant-arg
+// branch of isTinySeed: a literal with a constant on an indexed col is
+// strong evidence the output is tiny, even without any sizeHint.
+//
+// Setup: TypedThing("specific", x) competes against Big (size 100). Without
+// the constant-arg branch, TypedThing scores as defaultSizeHint=1000 and
+// loses to Big. With it, TypedThing wins as a tiny seed.
+//
+// Mutation kill: deleting the `hasConstantArg(lit)` clause from isTinySeed
+// causes TypedThing to lose and this test fails.
+func TestJoinTinySeedConstantArgWinsWithoutHint(t *testing.T) {
+	// P(x) :- Big(x), TypedThing("specific", x).
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: atom("P", "x"),
+				Body: []datalog.Literal{
+					posLit("Big", "x"),
+					posLitConst("TypedThing", "specific", "x"),
+				},
+			},
+		},
+	}
+	hints := map[string]int{"Big": 100} // TypedThing intentionally unhinted.
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	r := ep.Strata[0].Rules[0]
+	if r.JoinOrder[0].Literal.Atom.Predicate != "TypedThing" {
+		t.Errorf("expected TypedThing first (constant-arg tiny seed), got %s",
+			r.JoinOrder[0].Literal.Atom.Predicate)
+	}
+}
+
 // TestJoinNegativeLiteralPlacedAfterVarsBound.
 func TestJoinNegativeLiteralPlacedAfterVarsBound(t *testing.T) {
 	// P(x) :- A(x), not B(x).
