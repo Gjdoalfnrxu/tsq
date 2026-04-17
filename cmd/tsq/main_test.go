@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/bridge"
+	"github.com/Gjdoalfnrxu/tsq/extract/db"
 )
 
 func TestVersion(t *testing.T) {
@@ -235,6 +238,120 @@ select x
 // bridgeLoadForTest wraps bridge.LoadBridge so the test reads clearly.
 func bridgeLoadForTest() map[string][]byte {
 	return bridge.LoadBridge()
+}
+
+// TestExtractEnrichmentSmoke is the user-visible regression guard for the bug
+// PR #84 fixes: `tsq extract --tsconfig=<fixture>` against a tiny TS project
+// must produce non-empty ResolvedType / SymbolType rows in the resulting fact
+// database. Skips when no real tsgo binary is available.
+func TestExtractEnrichmentSmoke(t *testing.T) {
+	tsgoPath := os.Getenv("TSGO_PATH")
+	if tsgoPath == "" {
+		t.Skip("TSGO_PATH not set; skipping enrichment smoke test")
+	}
+	if _, err := os.Stat(tsgoPath); err != nil {
+		t.Skipf("TSGO_PATH=%q not accessible: %v", tsgoPath, err)
+	}
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(
+		`{"compilerOptions":{"target":"es2020","module":"commonjs","strict":true,"noEmit":true},"include":["src/**/*.ts"]}`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "index.ts"), []byte(
+		"const greeting: string = \"hello\";\n"+
+			"const length: number = greeting.length;\n"+
+			"function pad(s: string, n: number): string { return s.repeat(n); }\n"+
+			"const padded = pad(greeting, length);\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(dir, "tsq.db")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"extract",
+		"--dir", dir,
+		"--tsconfig", filepath.Join(dir, "tsconfig.json"),
+		"--tsgo", tsgoPath,
+		"--output", dbPath,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("extract exit code = %d; stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "tsgo type enrichment complete") {
+		t.Errorf("stderr missing enrichment-complete line:\n%s", stderr.String())
+	}
+
+	f, err := os.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbObj, err := db.ReadDB(f, st.Size())
+	if err != nil {
+		t.Fatalf("ReadDB: %v", err)
+	}
+
+	resolved := dbObj.Relation("ResolvedType").Tuples()
+	symbolType := dbObj.Relation("SymbolType").Tuples()
+	if resolved == 0 || symbolType == 0 {
+		t.Fatalf("enrichment regressed: ResolvedType=%d SymbolType=%d (want >0 each)\nstderr:\n%s", resolved, symbolType, stderr.String())
+	}
+
+	// Sanity-check display names: every ResolvedType row must have a non-empty
+	// display string (the v2 bug was facts written with empty displays because
+	// typeToString was never called), and the multiset of displays must include
+	// the primitives the fixture explicitly declares — `string` and `number`.
+	rt := dbObj.Relation("ResolvedType")
+	displays := make([]string, 0, rt.Tuples())
+	typeIDs := make(map[int32]int) // type-id -> count, asserts dedup
+	for i := 0; i < rt.Tuples(); i++ {
+		s, err := rt.GetString(dbObj, i, 1)
+		if err != nil {
+			t.Fatalf("ResolvedType row %d: read display: %v", i, err)
+		}
+		if s == "" {
+			t.Fatalf("ResolvedType row %d: empty display string (typeToString round-trip failed)", i)
+		}
+		id, err := rt.GetInt(i, 0)
+		if err != nil {
+			t.Fatalf("ResolvedType row %d: read type-id: %v", i, err)
+		}
+		typeIDs[id]++
+		displays = append(displays, s)
+	}
+	wantDisplays := []string{"string", "number"}
+	for _, want := range wantDisplays {
+		var found bool
+		for _, got := range displays {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ResolvedType displays missing %q; got: %v", want, displays)
+		}
+	}
+	// Dedup invariant: a given TypeHandle (and therefore type-id) must produce
+	// exactly one ResolvedType row across the whole extraction. Without dedup
+	// the cmd/tsq path emits one row per occurrence and primitives like
+	// "string" balloon the row count.
+	for id, n := range typeIDs {
+		if n > 1 {
+			t.Errorf("ResolvedType not deduped: type-id %d appears %d times", id, n)
+		}
+	}
+	t.Logf("smoke OK: ResolvedType=%d SymbolType=%d unique-types=%d", resolved, symbolType, len(typeIDs))
 }
 
 // Regression: global flags followed by a valid subcommand should work.

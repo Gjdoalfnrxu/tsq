@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,9 +13,12 @@ import (
 // Aggregate evaluates a planned aggregate and returns the result relation.
 // The result relation is named agg.ResultRelation and contains
 // (groupKey..., aggregatedValue) tuples.
-func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation, maxBindings int) (*Relation, error) {
+func Aggregate(ctx context.Context, agg plan.PlannedAggregate, rels map[string]*Relation, maxBindings int) (*Relation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Compute bindings over the aggregate body using raw literals (no planner ordering).
-	limits := &joinLimits{maxBindings: maxBindings, ruleName: "aggregate:" + agg.ResultRelation}
+	limits := &joinLimits{ctx: ctx, maxBindings: maxBindings, ruleName: "aggregate:" + agg.ResultRelation}
 	bindings, err := evalLiterals(agg.Agg.Body, rels, limits)
 	if err != nil {
 		return nil, err

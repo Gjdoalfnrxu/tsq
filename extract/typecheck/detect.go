@@ -3,7 +3,34 @@ package typecheck
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 )
+
+// FindTSConfig walks up from startDir looking for a tsconfig.json file.
+// Returns the absolute path to the first tsconfig.json found, or empty
+// string if none is found before reaching the filesystem root.
+//
+// Used to auto-discover the project config when --tsconfig is not given
+// explicitly. Without a tsconfig the tsgo backend has no project loaded
+// and type enrichment silently produces no facts.
+func FindTSConfig(startDir string) string {
+	abs, err := filepath.Abs(startDir)
+	if err != nil {
+		return ""
+	}
+	dir := abs
+	for {
+		candidate := filepath.Join(dir, "tsconfig.json")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
 
 // DetectTsgo attempts to find the tsgo binary. Checks:
 //  1. TSGO_PATH environment variable

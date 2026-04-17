@@ -70,7 +70,10 @@ func TestJSONRPCRequestWithParams(t *testing.T) {
 }
 
 func TestResponseParsingSuccess(t *testing.T) {
-	raw := `{"jsonrpc":"2.0","id":1,"result":{"handle":"t00001","displayName":"string","flags":0}}`
+	// Upstream TypeResponse uses `id`, not `handle`. The displayName field is
+	// not part of TypeResponse and must come from a separate typeToString
+	// call, so it should NOT appear in the result.
+	raw := `{"jsonrpc":"2.0","id":1,"result":{"id":"t00001","flags":0}}`
 	var resp jsonrpcResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -90,8 +93,8 @@ func TestResponseParsingSuccess(t *testing.T) {
 	if info.Handle != "t00001" {
 		t.Errorf("handle = %q, want %q", info.Handle, "t00001")
 	}
-	if info.DisplayName != "string" {
-		t.Errorf("displayName = %q, want %q", info.DisplayName, "string")
+	if info.DisplayName != "" {
+		t.Errorf("displayName = %q, want empty (TypeResponse has no displayName field)", info.DisplayName)
 	}
 }
 
@@ -324,55 +327,144 @@ func TestMockInitialize(t *testing.T) {
 
 func TestMockGetProjectForFile(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getDefaultProjectForFile" {
-			return map[string]string{"project": "p.abc123"}
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{
+					{"id": "p0000000000000001", "configFileName": "/abs/tsconfig.json"},
+				},
+			}
+		case "getDefaultProjectForFile":
+			// Verify the request carries snapshot but NOT project, and that
+			// `file` is sent as a plain string (the only DocumentIdentifier
+			// shape upstream actually populates).
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("missing snapshot, got %v", params["snapshot"])}
+			}
+			if _, hasProject := params["project"]; hasProject {
+				return &jsonrpcError{Code: -32602, Message: "request must not include project field"}
+			}
+			if _, isString := params["file"].(string); !isString {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("file must be a string, got %T", params["file"])}
+			}
+			return map[string]string{"id": "p0000000000000099", "configFileName": "/abs/tsconfig.json"}
 		}
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
+
+	// Must open project first so the client has a snapshot to send.
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
 
 	proj, err := c.GetProjectForFile("/src/index.ts")
 	if err != nil {
 		t.Fatalf("GetProjectForFile: %v", err)
 	}
-	if proj != "p.abc123" {
-		t.Errorf("project = %q, want %q", proj, "p.abc123")
+	if proj != "p0000000000000099" {
+		t.Errorf("project = %q, want %q", proj, "p0000000000000099")
 	}
 }
 
-func TestMockGetTypeAtPosition(t *testing.T) {
+func TestMockGetProjectForFileRequiresSnapshot(t *testing.T) {
+	// Without a prior OpenProject the client must refuse to send the request
+	// rather than silently send a malformed one.
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getTypeAtPosition" {
+		t.Errorf("server should not see any request, got %s", req.Method)
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+	if _, err := c.GetProjectForFile("/src/index.ts"); err == nil {
+		t.Fatal("expected error when no snapshot is loaded, got nil")
+	}
+}
+
+// TestMockGetTypeAtOffset verifies the live wire shape: position is a uint32
+// byte offset (NOT a {line, character} object) and `file` is a plain string.
+// The previous incarnation of this test exercised the line/col API which
+// silently produced a malformed request against real tsgo; that variant has
+// been removed entirely.
+func TestMockGetTypeAtOffset(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{
+					{"id": "p.1", "configFileName": "/abs/tsconfig.json"},
+				},
+			}
+		case "getTypeAtPosition":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("missing snapshot, got %v", params["snapshot"])}
+			}
+			if params["project"] != "p.1" {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("wrong project, got %v", params["project"])}
+			}
+			if _, isString := params["file"].(string); !isString {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("file must be a string, got %T", params["file"])}
+			}
+			pos, ok := params["position"].(float64) // JSON numbers decode as float64
+			if !ok {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("position must be a number, got %T", params["position"])}
+			}
+			if pos != 42 {
+				return &jsonrpcError{Code: -32602, Message: fmt.Sprintf("wrong position, got %v", pos)}
+			}
 			return &TypeInfo{Handle: "t00042", DisplayName: "string", Flags: 0}
 		}
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
-	info, err := c.GetTypeAtPosition("p.1", "/src/index.ts", 10, 5)
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	info, err := c.GetTypeAtOffset("p.1", "/src/index.ts", 42)
 	if err != nil {
-		t.Fatalf("GetTypeAtPosition: %v", err)
+		t.Fatalf("GetTypeAtOffset: %v", err)
 	}
 	if info.Handle != "t00042" {
 		t.Errorf("handle = %q, want %q", info.Handle, "t00042")
 	}
-	if info.DisplayName != "string" {
-		t.Errorf("displayName = %q, want %q", info.DisplayName, "string")
-	}
 }
 
-func TestMockGetSymbolAtPosition(t *testing.T) {
+func TestMockGetSymbolAtOffset(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getSymbolAtPosition" {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{
+					{"id": "p.1", "configFileName": "/abs/tsconfig.json"},
+				},
+			}
+		case "getSymbolAtPosition":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: "missing snapshot"}
+			}
+			if _, isString := params["file"].(string); !isString {
+				return &jsonrpcError{Code: -32602, Message: "file must be a string"}
+			}
 			return &SymbolInfo{Handle: "s00001", Name: "foo", Flags: 4}
 		}
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
-	info, err := c.GetSymbolAtPosition("p.1", "/src/index.ts", 1, 0)
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	info, err := c.GetSymbolAtOffset("p.1", "/src/index.ts", 0)
 	if err != nil {
-		t.Fatalf("GetSymbolAtPosition: %v", err)
+		t.Fatalf("GetSymbolAtOffset: %v", err)
 	}
 	if info.Name != "foo" {
 		t.Errorf("name = %q, want %q", info.Name, "foo")
+	}
+	if info.Handle != "s00001" {
+		t.Errorf("handle = %q, want %q (id field must populate Handle)", info.Handle, "s00001")
 	}
 }
 
@@ -392,7 +484,20 @@ func TestMockErrorResponse(t *testing.T) {
 
 func TestMockGetMembersOfSymbol(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getMembersOfSymbol" {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p.1", "configFileName": "/abs/tsconfig.json"}},
+			}
+		case "getMembersOfSymbol":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: "missing snapshot"}
+			}
+			if _, hasProject := params["project"]; hasProject {
+				return &jsonrpcError{Code: -32602, Message: "getMembersOfSymbol must not include project"}
+			}
 			return []MemberInfo{
 				{Handle: "s00010", Name: "x"},
 				{Handle: "s00011", Name: "y"},
@@ -401,6 +506,9 @@ func TestMockGetMembersOfSymbol(t *testing.T) {
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
 	members, err := c.GetMembersOfSymbol("p.1", "s00001")
 	if err != nil {
 		t.Fatalf("GetMembersOfSymbol: %v", err)
@@ -415,29 +523,83 @@ func TestMockGetMembersOfSymbol(t *testing.T) {
 
 func TestMockGetBaseTypes(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getBaseTypes" {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p.1", "configFileName": "/abs/tsconfig.json"}},
+			}
+		case "getBaseTypes":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: "missing snapshot"}
+			}
 			return []TypeInfo{{Handle: "t00099", DisplayName: "Base", Flags: 0}}
 		}
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
 	types, err := c.GetBaseTypes("p.1", "t00001")
 	if err != nil {
 		t.Fatalf("GetBaseTypes: %v", err)
 	}
-	if len(types) != 1 || types[0].DisplayName != "Base" {
+	// TypeResponse has no displayName field — only Handle (=id) is populated.
+	if len(types) != 1 || types[0].Handle != "t00099" {
 		t.Errorf("unexpected base types: %+v", types)
+	}
+}
+
+// TestMockTypeToStringBareString verifies the wire shape used by the real
+// tsgo binary: typeToString returns a bare JSON string, not an object.
+func TestMockTypeToStringBareString(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p.1", "configFileName": "/abs/tsconfig.json"}},
+			}
+		case "typeToString":
+			return "Box<string>"
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	s, err := c.TypeToString("p.1", "t00001")
+	if err != nil {
+		t.Fatalf("TypeToString: %v", err)
+	}
+	if s != "Box<string>" {
+		t.Errorf("TypeToString = %q, want %q", s, "Box<string>")
 	}
 }
 
 func TestMockTypeToString(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "typeToString" {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p.1", "configFileName": "/abs/tsconfig.json"}},
+			}
+		case "typeToString":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: "missing snapshot"}
+			}
 			return map[string]string{"displayName": "number | string"}
 		}
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
 	s, err := c.TypeToString("p.1", "t00001")
 	if err != nil {
 		t.Fatalf("TypeToString: %v", err)
@@ -449,7 +611,17 @@ func TestMockTypeToString(t *testing.T) {
 
 func TestMockGetSemanticDiagnostics(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getSemanticDiagnostics" {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p.1", "configFileName": "/abs/tsconfig.json"}},
+			}
+		case "getSemanticDiagnostics":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: "missing snapshot"}
+			}
 			return []Diagnostic{{
 				File:    "/src/index.ts",
 				Line:    5,
@@ -460,6 +632,9 @@ func TestMockGetSemanticDiagnostics(t *testing.T) {
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
 	diags, err := c.GetSemanticDiagnostics("p.1", "/src/index.ts")
 	if err != nil {
 		t.Fatalf("GetSemanticDiagnostics: %v", err)
@@ -472,14 +647,132 @@ func TestMockGetSemanticDiagnostics(t *testing.T) {
 	}
 }
 
+// TestMockOpenProjectRealWireFormat verifies OpenProject parses the actual
+// upstream UpdateSnapshotResponse shape:
+//
+//	{ "snapshot": "<handle>",
+//	  "projects": [ { "id": "<handle>", "configFileName": "/abs/tsconfig.json", ... } ] }
+//
+// (Confirmed against microsoft/typescript-go/internal/api/proto.go.)
+func TestMockOpenProjectRealWireFormat(t *testing.T) {
+	var sawParams map[string]interface{}
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		if req.Method == "updateSnapshot" {
+			sawParams, _ = req.Params.(map[string]interface{})
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{
+					{
+						"id":              "p0000000000000007",
+						"configFileName":  "/abs/path/tsconfig.json",
+						"rootFiles":       []string{"/abs/path/src/index.ts"},
+						"compilerOptions": map[string]interface{}{},
+					},
+				},
+			}
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+
+	proj, err := c.OpenProject("/abs/path/tsconfig.json")
+	if err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	if proj != "p0000000000000007" {
+		t.Errorf("project = %q, want %q", proj, "p0000000000000007")
+	}
+	if got := c.Snapshot(); got != "n0000000000000001" {
+		t.Errorf("snapshot = %q, want %q", got, "n0000000000000001")
+	}
+	if got := sawParams["openProject"]; got != "/abs/path/tsconfig.json" {
+		t.Errorf("openProject param = %v, want /abs/path/tsconfig.json", got)
+	}
+}
+
+// TestMockOpenProjectMatchesByConfigPath verifies that when multiple projects
+// are returned (uncommon for openProject but possible for fileChanges), the
+// project whose configFileName matches the requested path is preferred.
+func TestMockOpenProjectMatchesByConfigPath(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		if req.Method == "updateSnapshot" {
+			return map[string]interface{}{
+				"snapshot": "s0000000000000002",
+				"projects": []map[string]interface{}{
+					{"id": "p.other", "configFileName": "/some/other/tsconfig.json"},
+					{"id": "p.target", "configFileName": "/abs/path/tsconfig.json"},
+				},
+			}
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+	proj, err := c.OpenProject("/abs/path/tsconfig.json")
+	if err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	if proj != "p.target" {
+		t.Errorf("project = %q, want %q (match by configFileName)", proj, "p.target")
+	}
+}
+
+// TestMockOpenProjectMissingSnapshotErrors guards against a regression where
+// the parser previously fell back to using configFileName as the project
+// handle when the response was malformed — silently masking server errors.
+func TestMockOpenProjectMissingSnapshotErrors(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		if req.Method == "updateSnapshot" {
+			// Response with no snapshot field — must error, not silently succeed.
+			return map[string]interface{}{"projects": []map[string]interface{}{{"id": "p.x", "configFileName": "/x"}}}
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+	if _, err := c.OpenProject("/abs/path/tsconfig.json"); err == nil {
+		t.Fatal("expected error when snapshot field is missing, got nil")
+	}
+}
+
+func TestMockOpenProjectNoProjectsErrors(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		if req.Method == "updateSnapshot" {
+			return map[string]interface{}{"snapshot": "s.0", "projects": []map[string]interface{}{}}
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+	if _, err := c.OpenProject("/abs/path/tsconfig.json"); err == nil {
+		t.Fatal("expected error when no projects returned, got nil")
+	}
+}
+
+func TestMockOpenProjectError(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		return &jsonrpcError{Code: -32000, Message: "bad config"}
+	})
+
+	if _, err := c.OpenProject("/abs/path/tsconfig.json"); err == nil {
+		t.Fatal("expected error from OpenProject, got nil")
+	}
+}
+
 func TestMockGetTypeOfSymbol(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
-		if req.Method == "getTypeOfSymbol" {
+		switch req.Method {
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p.1", "configFileName": "/abs/tsconfig.json"}},
+			}
+		case "getTypeOfSymbol":
+			params, _ := req.Params.(map[string]interface{})
+			if params["snapshot"] != "n0000000000000001" {
+				return &jsonrpcError{Code: -32602, Message: "missing snapshot"}
+			}
 			return &TypeInfo{Handle: "t00055", DisplayName: "number", Flags: 8}
 		}
 		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
+	if _, err := c.OpenProject("/abs/tsconfig.json"); err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
 	info, err := c.GetTypeOfSymbol("p.1", "s00001")
 	if err != nil {
 		t.Fatalf("GetTypeOfSymbol: %v", err)
@@ -487,7 +780,9 @@ func TestMockGetTypeOfSymbol(t *testing.T) {
 	if info.Handle != "t00055" {
 		t.Errorf("handle = %q, want %q", info.Handle, "t00055")
 	}
-	if info.DisplayName != "number" {
-		t.Errorf("displayName = %q, want %q", info.DisplayName, "number")
+	// Upstream TypeResponse has no displayName — that comes from a
+	// separate typeToString round-trip — so the field stays empty.
+	if info.DisplayName != "" {
+		t.Errorf("displayName = %q, want empty (TypeResponse has no displayName field)", info.DisplayName)
 	}
 }

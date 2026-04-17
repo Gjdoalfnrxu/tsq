@@ -131,6 +131,7 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	outputFile := fs.String("output", "tsq.db", "output fact database file")
 	backendFlag := fs.String("backend", "treesitter", "extraction backend: treesitter or vendored")
 	tsgoFlag := fs.String("tsgo", "", "tsgo binary path (empty=auto-detect, \"off\"=disabled)")
+	tsconfigFlag := fs.String("tsconfig", "", "path to tsconfig.json for tsgo project context (empty=auto-discover by walking up from --dir)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -169,7 +170,8 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	// tsgo type enrichment phase
 	tsgoPath := resolveTsgo(*tsgoFlag)
 	if tsgoPath != "" {
-		if err := enrichWithTsgo(ctx, database, tsgoPath, *dir, stderr); err != nil {
+		tsconfigPath := resolveTSConfig(*tsconfigFlag, *dir, stderr)
+		if err := enrichWithTsgo(ctx, database, tsgoPath, *dir, tsconfigPath, stderr); err != nil {
 			fmt.Fprintf(stderr, "warning: tsgo enrichment failed: %v\n", err)
 			// Continue without type info — graceful degradation
 		}
@@ -223,55 +225,111 @@ func resolveTsgo(flag string) string {
 	return typecheck.DetectTsgo()
 }
 
+// resolveTSConfig determines the tsconfig.json path to hand to tsgo.
+// Precedence:
+//  1. Explicit --tsconfig path (validated to exist; absolutised).
+//  2. Auto-discovery by walking up from the extraction --dir.
+//  3. Empty string (caller proceeds without an explicit project; tsgo will
+//     fall back to getDefaultProjectForFile and enrichment will likely
+//     produce no facts — that's the legacy bug being papered over here).
+func resolveTSConfig(flagVal, dir string, stderr io.Writer) string {
+	if flagVal != "" {
+		abs, err := filepath.Abs(flagVal)
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: --tsconfig %q: %v\n", flagVal, err)
+			return ""
+		}
+		if info, err := os.Stat(abs); err != nil || info.IsDir() {
+			fmt.Fprintf(stderr, "warning: --tsconfig %q not found or not a file\n", abs)
+			return ""
+		}
+		return abs
+	}
+	return typecheck.FindTSConfig(dir)
+}
+
 // enrichWithTsgo runs tsgo type enrichment over extracted files in the database.
 // It queries tsgo for types at variable declaration and parameter positions,
 // then populates ResolvedType, SymbolType, and ExprType relations.
-func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir string, stderr io.Writer) error {
+func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tsconfigPath string, stderr io.Writer) error {
 	client, err := typecheck.NewClient(tsgoPath, rootDir)
 	if err != nil {
 		return fmt.Errorf("start tsgo: %w", err)
 	}
 
-	enricher, err := typecheck.NewEnricher(client, rootDir)
+	if tsconfigPath != "" {
+		fmt.Fprintf(stderr, "tsgo: using project %s\n", tsconfigPath)
+	} else {
+		fmt.Fprintf(stderr, "warning: no tsconfig.json found under %s; tsgo enrichment will likely produce no type facts\n", rootDir)
+	}
+
+	enricher, err := typecheck.NewEnricherWithConfig(client, rootDir, tsconfigPath)
 	if err != nil {
 		client.Close()
 		return fmt.Errorf("init enricher: %w", err)
 	}
 	defer enricher.Close()
 
-	// Collect extracted file paths from the File relation
+	// Collect extracted file paths from the File relation. Register them
+	// all up-front so the snapshot is opened with FileChanges.Created
+	// covering every file we plan to query — without this, the live tsgo
+	// binary returns "source file not found" for files reachable only via
+	// the tsconfig include glob.
 	fileRel := database.Relation("File")
 	numFiles := fileRel.Tuples()
+	allPaths := make([]string, 0, numFiles)
 	for i := 0; i < numFiles; i++ {
-		filePath, err := fileRel.GetString(database, i, 1) // col 1 = path
+		fp, err := fileRel.GetString(database, i, 1)
 		if err != nil {
 			continue
 		}
+		allPaths = append(allPaths, fp)
+	}
+	enricher.RegisterFiles(allPaths)
 
+	var aggSymQ, aggSymErr, aggTypQ, aggTypErr, aggFacts int
+	// Dedup ResolvedType emissions across all files: identical TypeHandles must
+	// produce a single ResolvedType row. Without this guard the same primitive
+	// (e.g. "string") is emitted once per occurrence, multiplying row counts
+	// and breaking the downstream uniqueness expectation. Mirrors the seenTypes
+	// map in extract/typecheck/enricher.go:WriteTypeFacts.
+	seenTypes := make(map[string]bool)
+	for _, filePath := range allPaths {
 		// Collect positions: variable declarations and parameters
 		positions := collectEnrichmentPositions(database, filePath)
 		if len(positions) == 0 {
 			continue
 		}
 
-		facts, err := enricher.EnrichFile(filePath, positions)
+		facts, stats, err := enricher.EnrichFile(filePath, positions)
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: tsgo enrich %s: %v\n", filePath, err)
 			continue
 		}
+		aggSymQ += stats.SymbolQueries
+		aggSymErr += stats.SymbolErrors
+		aggTypQ += stats.TypeQueries
+		aggTypErr += stats.TypeErrors
+		aggFacts += stats.FactsEmitted
 
 		// Populate ResolvedType and SymbolType/ExprType relations
 		for _, fact := range facts {
-			typeID := extract.TypeEntityID(fact.TypeHandle)
-			if err := database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay); err != nil {
-				fmt.Fprintf(stderr, "warning: add ResolvedType: %v\n", err)
+			if fact.TypeHandle == "" {
 				continue
 			}
-
-			// Phase 3d: mark non-taintable primitive types for type-based sanitization.
-			if nonTaintablePrimitives[fact.TypeDisplay] {
-				if err := database.Relation("NonTaintableType").AddTuple(database, typeID); err != nil {
-					fmt.Fprintf(stderr, "warning: add NonTaintableType: %v\n", err)
+			typeID := extract.TypeEntityID(fact.TypeHandle)
+			if !seenTypes[fact.TypeHandle] {
+				seenTypes[fact.TypeHandle] = true
+				if err := database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay); err != nil {
+					fmt.Fprintf(stderr, "warning: add ResolvedType: %v\n", err)
+					continue
+				}
+				// Phase 3d: mark non-taintable primitive types for type-based sanitization.
+				// Emitted once per type alongside the ResolvedType row.
+				if nonTaintablePrimitives[fact.TypeDisplay] {
+					if err := database.Relation("NonTaintableType").AddTuple(database, typeID); err != nil {
+						fmt.Fprintf(stderr, "warning: add NonTaintableType: %v\n", err)
+					}
 				}
 			}
 
@@ -289,7 +347,16 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir string
 		}
 	}
 
-	fmt.Fprintf(stderr, "tsgo type enrichment complete\n")
+	fmt.Fprintf(stderr,
+		"tsgo type enrichment complete: facts=%d symbolQueries=%d (errors=%d) typeQueries=%d (errors=%d)\n",
+		aggFacts, aggSymQ, aggSymErr, aggTypQ, aggTypErr,
+	)
+	if aggSymQ > 0 && aggFacts == 0 {
+		fmt.Fprintf(stderr,
+			"warning: tsgo answered %d symbol queries but produced zero type facts; downstream enrichment is not working — check tsgo binary and tsconfig\n",
+			aggSymQ,
+		)
+	}
 	return nil
 }
 
