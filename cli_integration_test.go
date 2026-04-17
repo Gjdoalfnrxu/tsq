@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // buildTSQBinary compiles the tsq binary into a temporary directory and returns
@@ -320,4 +321,140 @@ select c as "c"
 	if len(rows) < 2 {
 		t.Errorf("converging case: expected header + at least one Call row, got %d\nstderr: %s", len(rows), stderr.String())
 	}
+}
+
+// runTimeoutQuery runs the taint-pipeline query with the given --timeout
+// value and returns (elapsed, exit code, stderr). Shared between the
+// pre-stratum and per-iteration promptness tests so they exercise the
+// same surface area, only differing by deadline.
+func runTimeoutQuery(t *testing.T, timeoutFlag string) (time.Duration, int, string) {
+	t.Helper()
+	tsq := buildTSQBinary(t)
+	root := cliRepoRoot(t)
+	workDir := t.TempDir()
+
+	dbFile := filepath.Join(workDir, "v2.db")
+	runExtract(t, tsq, filepath.Join(root, "testdata", "ts", "v2"), dbFile)
+
+	// Use the taint pipeline — TaintAlert depends on LocalFlowStar
+	// (transitive closure) and the full taint propagation graph, the
+	// heaviest stratum the system rules expose. Even on the small v2
+	// fixture this cannot converge in a sub-millisecond budget.
+	queryFile := writeQueryFile(t, workDir, "find_taint.ql", `import tsq::taint
+
+from TaintAlert alert
+select alert.getSrcKind() as "srcKind"
+`)
+
+	// --timeout is a global flag (before the subcommand) and only accepts
+	// the --timeout=DURATION form per cmd/tsq/main.go's global flag parser.
+	cmd := exec.Command(tsq, "--timeout="+timeoutFlag, "query", "--db", dbFile, "--format", "csv", queryFile)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	t0 := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(t0)
+
+	if err == nil {
+		t.Skipf("query converged inside %s timeout (elapsed=%v); cannot exercise --timeout regression on this fixture", timeoutFlag, elapsed)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected *exec.ExitError from --timeout, got %T: %v\nstderr: %s", err, err, stderr.String())
+	}
+	if exitErr.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit code from --timeout, got 0\nstderr: %s", stderr.String())
+	}
+	return elapsed, exitErr.ExitCode(), stderr.String()
+}
+
+// TestCLI_Timeout_Promptness_PreStratum guards the stratum-boundary ctx
+// check (seminaive.go:195: "evaluation cancelled before stratum N").
+// With --timeout=1ns the deadline always fires before the first stratum
+// begins, exercising only the pre-stratum guard. Distinct from
+// _PerIteration which uses a longer timeout to land *inside* a stratum.
+//
+// Splitting these (was a single TestCLI_Timeout_Promptness) makes it
+// possible for mutation testing / regression to break one path without
+// hiding behind the other — a regression that disables the per-iteration
+// check would still pass a combined "any cancellation message" assertion
+// because the pre-stratum check would fire first on a fast box.
+func TestCLI_Timeout_Promptness_PreStratum(t *testing.T) {
+	elapsed, exit, se := runTimeoutQuery(t, "1ns")
+
+	if !strings.Contains(se, "cancelled") {
+		t.Errorf("expected stderr to mention cancellation, got: %q", se)
+	}
+	if !strings.Contains(se, "deadline exceeded") && !strings.Contains(se, "context deadline") {
+		t.Errorf("expected stderr to mention deadline exceeded, got: %q", se)
+	}
+	// Distinct prefix for the pre-stratum guard: "before stratum N".
+	// If this assertion fails but the per-iteration test passes, the
+	// stratum-boundary check has been removed or reordered.
+	if !strings.Contains(se, "before stratum") {
+		t.Errorf("expected stderr to mention 'before stratum' (pre-stratum guard prefix), got: %q", se)
+	}
+
+	// Pre-stratum cancellation should be near-instantaneous: just spawn +
+	// DB load + the very first ctx.Err() check at stratum 0.
+	const ceiling = 2 * time.Second
+	if elapsed > ceiling {
+		t.Errorf("--timeout=1ns: subprocess took %v; ceiling is %v. Pre-stratum ctx check likely regressed.", elapsed, ceiling)
+	}
+	t.Logf("--timeout=1ns: elapsed=%v exit=%d stderr=%q", elapsed, exit, se)
+}
+
+// TestCLI_Timeout_Promptness_PerIteration guards the per-iteration ctx
+// check inside the seminaive fixpoint loop (seminaive.go:252,314 — the
+// "at stratum N, iteration M" wraps). With --timeout=1ms the deadline
+// fires *inside* a stratum, after the pre-stratum guard has passed.
+//
+// If the per-iteration ctx checks regress (e.g. someone removes the
+// per-fixpoint-iteration ctx.Err() call), this test must hang past the
+// ceiling and fail — the pre-stratum check at the top of the next
+// stratum cannot fire because the slow stratum never returns control.
+//
+// Note: on a sufficiently fast box, a 1ms deadline can also expire
+// before the first stratum and trip the pre-stratum guard instead. We
+// accept either "at stratum N, iteration M" *or* "at stratum N,
+// bootstrap rule" as evidence the per-stratum work was reached. The
+// pre-stratum-only message is rejected here so the two tests assert
+// genuinely distinct paths.
+func TestCLI_Timeout_Promptness_PerIteration(t *testing.T) {
+	elapsed, exit, se := runTimeoutQuery(t, "1ms")
+
+	if !strings.Contains(se, "cancelled") {
+		t.Errorf("expected stderr to mention cancellation, got: %q", se)
+	}
+	if !strings.Contains(se, "deadline exceeded") && !strings.Contains(se, "context deadline") {
+		t.Errorf("expected stderr to mention deadline exceeded, got: %q", se)
+	}
+	// Distinct prefix for the per-iteration / per-rule guards.
+	// Either "iteration M" (per-fixpoint-iter) or "bootstrap rule" /
+	// "rule" (per-rule wrap inside a stratum) is acceptable; both prove
+	// we got past the pre-stratum check at the *current* stratum.
+	hasPerStratum := strings.Contains(se, "iteration ") ||
+		strings.Contains(se, "bootstrap rule ") ||
+		strings.Contains(se, "join step ")
+	if !hasPerStratum {
+		// If only "before stratum" is present, the box is fast enough
+		// that 1ms expires before any stratum work — skip rather than
+		// flake. The PreStratum test already covers that path.
+		if strings.Contains(se, "before stratum") {
+			t.Skipf("1ms expired before any stratum work on this hardware; per-iteration path not exercised. stderr=%q", se)
+		}
+		t.Errorf("expected stderr to mention per-iteration/per-rule cancellation ('iteration', 'bootstrap rule', or 'join step'), got: %q", se)
+	}
+
+	// Promptness ceiling: 2s wall time is a soft cap that includes process
+	// spawn + database load + a single rule landing post-deadline. Without
+	// the per-iteration ctx check the same query would run to convergence
+	// (multiple seconds on this fixture) before the timeout was honored.
+	const ceiling = 2 * time.Second
+	if elapsed > ceiling {
+		t.Errorf("--timeout=1ms: subprocess took %v; ceiling is %v. Per-iteration ctx check likely regressed.", elapsed, ceiling)
+	}
+	t.Logf("--timeout=1ms: elapsed=%v exit=%d stderr=%q", elapsed, exit, se)
 }

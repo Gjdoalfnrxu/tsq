@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -86,7 +87,7 @@ func TestEvalRuleTwoRelationJoin(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,7 @@ func TestEvalRuleThreeRelationJoin(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestEvalRuleNoMatch(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func TestEvalRuleComparisonFilter(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestEvalRuleSelfJoin(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +224,7 @@ func TestEvalRuleAntiJoin(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +284,7 @@ func TestRuleBindingCapTriggers(t *testing.T) {
 	}
 
 	const cap = 100
-	results, err := Rule(rule, rels, cap)
+	results, err := Rule(context.Background(), rule, rels, cap)
 	if err == nil {
 		t.Fatalf("expected ErrBindingCapExceeded, got nil error and %d results", len(results))
 	}
@@ -340,7 +341,7 @@ func TestRuleBindingCapDisabled(t *testing.T) {
 		},
 	}
 
-	results, err := Rule(rule, rels, 0)
+	results, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatalf("unexpected error with cap disabled: %v", err)
 	}

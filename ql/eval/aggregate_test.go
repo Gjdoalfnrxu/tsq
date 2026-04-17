@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestAggCount(t *testing.T) {
 	)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestAggCountNoGroup(t *testing.T) {
 	rel := makeRelation("R", 1, IntVal{1}, IntVal{2}, IntVal{3})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "x", nil, "count", "cnt")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestAggMin(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{50}, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "min", "minv")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestAggMax(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{5}, IntVal{1}, IntVal{100}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "max", "maxv")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestAggSum(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{5})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "sum", "sumv")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func TestAggAvg(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "avg", "avgv")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestAggEmptyInput(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func TestAggStrictcount(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestAggStrictcountEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +211,7 @@ func TestAggStrictsum(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestAggStrictsumEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestAggConcat(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, StrVal{"hello"}, IntVal{1}, StrVal{"world"})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "concat", "cval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestRankOrdinal(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +282,7 @@ func TestRankEmptyGroup(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +328,7 @@ func TestAggUniqueSingle(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +344,7 @@ func TestAggUniqueMultiple(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +357,7 @@ func TestAggUniqueEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result, err := Aggregate(agg, rels, 0)
+	result, err := Aggregate(context.Background(), agg, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +412,7 @@ func TestAggregateBindingCapTriggers(t *testing.T) {
 	}
 
 	const cap = 100
-	result, err := Aggregate(agg, rels, cap)
+	result, err := Aggregate(context.Background(), agg, rels, cap)
 	if err == nil {
 		t.Fatalf("expected ErrBindingCapExceeded, got nil error and result with %d rows", result.Len())
 	}

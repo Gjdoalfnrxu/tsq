@@ -44,7 +44,7 @@ func naiveEvaluate(rules []plan.PlannedRule, baseRels map[string]*Relation) map[
 			headName := rule.Head.Predicate
 			hk := relKey(headName, len(rule.Head.Args))
 			headRel := rels[hk]
-			newTuples, err := Rule(rule, rels, 0)
+			newTuples, err := Rule(context.Background(), rule, rels, 0)
 			if err != nil {
 				panic(err)
 			}
@@ -224,7 +224,7 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 			headName := rule.Head.Predicate
 			hk := relKey(headName, len(rule.Head.Args))
 			headRel := allRels2[hk]
-			newTuples, err := Rule(rule, allRels2, 0)
+			newTuples, err := Rule(context.Background(), rule, allRels2, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -257,7 +257,7 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 				headName := rule.Head.Predicate
 				hk := relKey(headName, len(rule.Head.Args))
 				headRel := allRels2[hk]
-				newTuples, err := RuleDelta(rule, allRels2, deltaRels, 0)
+				newTuples, err := RuleDelta(context.Background(), rule, allRels2, deltaRels, 0)
 				if err != nil {
 					return nil, err
 				}

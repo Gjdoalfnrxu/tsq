@@ -94,7 +94,7 @@ func TestEvalArityShadowSeparateRelations(t *testing.T) {
 		},
 	}
 
-	tuples, err := Rule(rule, rels, 0)
+	tuples, err := Rule(context.Background(), rule, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestEvalArityShadowSameName(t *testing.T) {
 			},
 		},
 	}
-	out1, err := Rule(probe1, rels, 0)
+	out1, err := Rule(context.Background(), probe1, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestEvalArityShadowSameName(t *testing.T) {
 			},
 		},
 	}
-	out3, err := Rule(probe3, rels, 0)
+	out3, err := Rule(context.Background(), probe3, rels, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
