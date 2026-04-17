@@ -180,6 +180,37 @@ func (c *Client) GetProjectForFile(filePath string) (string, error) {
 	return result.Project, nil
 }
 
+// OpenProject loads a tsconfig.json into the tsgo session and returns the
+// resulting project handle. This corresponds to typescript-go's `updateSnapshot`
+// API method with `openProject` set to the absolute path of a tsconfig.json
+// file. Without this call, tsgo has no project loaded and `getDefaultProjectForFile`
+// will fail to resolve a project for any source file — type enrichment silently
+// returns nothing.
+//
+// configFileName must be an absolute path to a tsconfig.json file.
+func (c *Client) OpenProject(configFileName string) (string, error) {
+	raw, err := c.call("updateSnapshot", map[string]interface{}{
+		"openProject": configFileName,
+	})
+	if err != nil {
+		return "", err
+	}
+	// The response shape varies by tsgo version; we accept either a bare
+	// project handle string under "project" or a snapshot object containing
+	// the project. Both are tolerated to keep the binding loose.
+	var result struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(raw, &result); err == nil && result.Project != "" {
+		return result.Project, nil
+	}
+	// Fall through: return the configFileName itself as the project handle.
+	// tsgo identifies projects by their config file path internally; subsequent
+	// per-file calls go through getDefaultProjectForFile which will now succeed
+	// because the project is loaded.
+	return configFileName, nil
+}
+
 // GetTypeAtPosition returns the type handle and type string at a position.
 func (c *Client) GetTypeAtPosition(project string, file string, line, col int) (*TypeInfo, error) {
 	raw, err := c.call("getTypeAtPosition", map[string]interface{}{

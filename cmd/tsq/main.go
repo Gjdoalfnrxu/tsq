@@ -131,6 +131,7 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	outputFile := fs.String("output", "tsq.db", "output fact database file")
 	backendFlag := fs.String("backend", "treesitter", "extraction backend: treesitter or vendored")
 	tsgoFlag := fs.String("tsgo", "", "tsgo binary path (empty=auto-detect, \"off\"=disabled)")
+	tsconfigFlag := fs.String("tsconfig", "", "path to tsconfig.json for tsgo project context (empty=auto-discover by walking up from --dir)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -169,7 +170,8 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	// tsgo type enrichment phase
 	tsgoPath := resolveTsgo(*tsgoFlag)
 	if tsgoPath != "" {
-		if err := enrichWithTsgo(ctx, database, tsgoPath, *dir, stderr); err != nil {
+		tsconfigPath := resolveTSConfig(*tsconfigFlag, *dir, stderr)
+		if err := enrichWithTsgo(ctx, database, tsgoPath, *dir, tsconfigPath, stderr); err != nil {
 			fmt.Fprintf(stderr, "warning: tsgo enrichment failed: %v\n", err)
 			// Continue without type info — graceful degradation
 		}
@@ -223,16 +225,45 @@ func resolveTsgo(flag string) string {
 	return typecheck.DetectTsgo()
 }
 
+// resolveTSConfig determines the tsconfig.json path to hand to tsgo.
+// Precedence:
+//  1. Explicit --tsconfig path (validated to exist; absolutised).
+//  2. Auto-discovery by walking up from the extraction --dir.
+//  3. Empty string (caller proceeds without an explicit project; tsgo will
+//     fall back to getDefaultProjectForFile and enrichment will likely
+//     produce no facts — that's the legacy bug being papered over here).
+func resolveTSConfig(flagVal, dir string, stderr io.Writer) string {
+	if flagVal != "" {
+		abs, err := filepath.Abs(flagVal)
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: --tsconfig %q: %v\n", flagVal, err)
+			return ""
+		}
+		if info, err := os.Stat(abs); err != nil || info.IsDir() {
+			fmt.Fprintf(stderr, "warning: --tsconfig %q not found or not a file\n", abs)
+			return ""
+		}
+		return abs
+	}
+	return typecheck.FindTSConfig(dir)
+}
+
 // enrichWithTsgo runs tsgo type enrichment over extracted files in the database.
 // It queries tsgo for types at variable declaration and parameter positions,
 // then populates ResolvedType, SymbolType, and ExprType relations.
-func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir string, stderr io.Writer) error {
+func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tsconfigPath string, stderr io.Writer) error {
 	client, err := typecheck.NewClient(tsgoPath, rootDir)
 	if err != nil {
 		return fmt.Errorf("start tsgo: %w", err)
 	}
 
-	enricher, err := typecheck.NewEnricher(client, rootDir)
+	if tsconfigPath != "" {
+		fmt.Fprintf(stderr, "tsgo: using project %s\n", tsconfigPath)
+	} else {
+		fmt.Fprintf(stderr, "warning: no tsconfig.json found under %s; tsgo enrichment will likely produce no type facts\n", rootDir)
+	}
+
+	enricher, err := typecheck.NewEnricherWithConfig(client, rootDir, tsconfigPath)
 	if err != nil {
 		client.Close()
 		return fmt.Errorf("init enricher: %w", err)

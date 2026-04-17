@@ -472,6 +472,58 @@ func TestMockGetSemanticDiagnostics(t *testing.T) {
 	}
 }
 
+func TestMockOpenProjectWithProjectField(t *testing.T) {
+	var sawParams map[string]interface{}
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		if req.Method == "updateSnapshot" {
+			sawParams, _ = req.Params.(map[string]interface{})
+			return map[string]string{"project": "p.tsconfig"}
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+
+	proj, err := c.OpenProject("/abs/path/tsconfig.json")
+	if err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	if proj != "p.tsconfig" {
+		t.Errorf("project = %q, want %q", proj, "p.tsconfig")
+	}
+	if got := sawParams["openProject"]; got != "/abs/path/tsconfig.json" {
+		t.Errorf("openProject param = %v, want /abs/path/tsconfig.json", got)
+	}
+}
+
+func TestMockOpenProjectFallsBackToConfigPath(t *testing.T) {
+	// tsgo versions whose updateSnapshot returns a snapshot object without
+	// a top-level "project" field — we should fall back to using the
+	// configFileName as the project handle.
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		if req.Method == "updateSnapshot" {
+			return map[string]interface{}{"snapshot": map[string]interface{}{"id": 1}}
+		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
+	})
+
+	proj, err := c.OpenProject("/abs/path/tsconfig.json")
+	if err != nil {
+		t.Fatalf("OpenProject: %v", err)
+	}
+	if proj != "/abs/path/tsconfig.json" {
+		t.Errorf("project = %q, want fallback to config path", proj)
+	}
+}
+
+func TestMockOpenProjectError(t *testing.T) {
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		return &jsonrpcError{Code: -32000, Message: "bad config"}
+	})
+
+	if _, err := c.OpenProject("/abs/path/tsconfig.json"); err == nil {
+		t.Fatal("expected error from OpenProject, got nil")
+	}
+}
+
 func TestMockGetTypeOfSymbol(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
 		if req.Method == "getTypeOfSymbol" {

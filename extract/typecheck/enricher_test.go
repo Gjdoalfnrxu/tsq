@@ -537,6 +537,94 @@ func TestEnricher_LiteralTypes(t *testing.T) {
 	}
 }
 
+// TestEnricherWithConfigUsesOpenProject verifies that when a tsconfig path is
+// provided, the enricher resolves the project via updateSnapshot/openProject
+// rather than getDefaultProjectForFile. This is the bug the --tsconfig
+// plumbing was added to fix: without OpenProject the tsgo session has no
+// loaded project and getDefaultProjectForFile silently returns nothing,
+// killing every downstream type query.
+func TestEnricherWithConfigUsesOpenProject(t *testing.T) {
+	var sawOpenProject bool
+	var sawDefaultProject bool
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		switch req.Method {
+		case "initialize":
+			return &InitializeResponse{UseCaseSensitiveFileNames: true, CurrentDirectory: "/project"}
+		case "updateSnapshot":
+			sawOpenProject = true
+			return map[string]string{"project": "p.fromconfig"}
+		case "getDefaultProjectForFile":
+			sawDefaultProject = true
+			return map[string]string{"project": "p.fallback"}
+		case "getSymbolAtPosition":
+			return &SymbolInfo{Handle: "s1", Name: "x"}
+		case "getTypeOfSymbol":
+			return &TypeInfo{Handle: "t1", DisplayName: "number"}
+		default:
+			return &jsonrpcError{Code: -32601, Message: "Method not found"}
+		}
+	})
+
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
+	if err != nil {
+		t.Fatalf("NewEnricherWithConfig: %v", err)
+	}
+
+	facts, err := enricher.EnrichFile("/project/src/index.ts", []Position{{Line: 1, Col: 4}})
+	if err != nil {
+		t.Fatalf("EnrichFile: %v", err)
+	}
+	if !sawOpenProject {
+		t.Error("expected updateSnapshot/openProject call, did not receive one")
+	}
+	if sawDefaultProject {
+		t.Error("did not expect getDefaultProjectForFile when tsconfig is provided")
+	}
+	if len(facts) != 1 || facts[0].TypeDisplay != "number" {
+		t.Errorf("facts = %+v, want one number fact", facts)
+	}
+}
+
+// TestEnricherWithoutConfigFallsBackToDefaultProject confirms the legacy path
+// is preserved when no tsconfig is supplied.
+func TestEnricherWithoutConfigFallsBackToDefaultProject(t *testing.T) {
+	var sawOpenProject bool
+	var sawDefaultProject bool
+	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
+		switch req.Method {
+		case "initialize":
+			return &InitializeResponse{UseCaseSensitiveFileNames: true, CurrentDirectory: "/project"}
+		case "updateSnapshot":
+			sawOpenProject = true
+			return map[string]string{"project": "p.fromconfig"}
+		case "getDefaultProjectForFile":
+			sawDefaultProject = true
+			return map[string]string{"project": "p.fallback"}
+		case "getSymbolAtPosition":
+			return &SymbolInfo{Handle: "s1", Name: "x"}
+		case "getTypeOfSymbol":
+			return &TypeInfo{Handle: "t1", DisplayName: "number"}
+		default:
+			return &jsonrpcError{Code: -32601, Message: "Method not found"}
+		}
+	})
+
+	enricher, err := NewEnricher(c, "/project")
+	if err != nil {
+		t.Fatalf("NewEnricher: %v", err)
+	}
+
+	if _, err := enricher.EnrichFile("/project/src/index.ts", []Position{{Line: 1, Col: 4}}); err != nil {
+		t.Fatalf("EnrichFile: %v", err)
+	}
+	if sawOpenProject {
+		t.Error("did not expect updateSnapshot when no tsconfig provided")
+	}
+	if !sawDefaultProject {
+		t.Error("expected getDefaultProjectForFile fallback")
+	}
+}
+
 func TestEnricherNoPositions(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
 		switch req.Method {

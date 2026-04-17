@@ -18,27 +18,50 @@ type Enricher struct {
 	client  *Client
 	project string // project handle from tsgo (cached)
 
-	projectOnce sync.Once
-	projectErr  error
-	rootDir     string
+	projectOnce  sync.Once
+	projectErr   error
+	rootDir      string
+	tsconfigPath string // optional absolute path to a tsconfig.json
 }
 
 // NewEnricher creates an enricher. It initializes tsgo and opens the project.
+//
+// Deprecated: use NewEnricherWithConfig to pass an explicit tsconfig.json
+// location. Without a tsconfig the tsgo session has no project loaded and
+// getDefaultProjectForFile will return an empty project for every file.
 func NewEnricher(client *Client, rootDir string) (*Enricher, error) {
+	return NewEnricherWithConfig(client, rootDir, "")
+}
+
+// NewEnricherWithConfig creates an enricher and, if tsconfigPath is non-empty,
+// loads the tsconfig.json into the tsgo session via OpenProject. Without the
+// tsconfig load, tsgo has no project context and getDefaultProjectForFile
+// silently returns an empty project handle, defeating the entire enrichment
+// pipeline.
+func NewEnricherWithConfig(client *Client, rootDir, tsconfigPath string) (*Enricher, error) {
 	_, err := client.Initialize()
 	if err != nil {
 		return nil, fmt.Errorf("enricher: initialize tsgo: %w", err)
 	}
 	return &Enricher{
-		client:  client,
-		rootDir: rootDir,
+		client:       client,
+		rootDir:      rootDir,
+		tsconfigPath: tsconfigPath,
 	}, nil
 }
 
-// getProject returns the cached project handle, resolving it on first call
-// using the given file path.
+// getProject returns the cached project handle, resolving it on first call.
+// If a tsconfigPath was supplied, it loads that project explicitly via
+// OpenProject. Otherwise it falls back to tsgo's default project resolution
+// for the given file path (which usually fails when no project has been
+// opened — this is the legacy behaviour preserved for callers that still
+// use NewEnricher).
 func (e *Enricher) getProject(filePath string) (string, error) {
 	e.projectOnce.Do(func() {
+		if e.tsconfigPath != "" {
+			e.project, e.projectErr = e.client.OpenProject(e.tsconfigPath)
+			return
+		}
 		e.project, e.projectErr = e.client.GetProjectForFile(filePath)
 	})
 	return e.project, e.projectErr
