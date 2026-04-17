@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -218,6 +219,121 @@ func TestWithMagicSetAuto_StratificationFallback(t *testing.T) {
 	}
 	// Plan must NOT contain magic_* rules (we fell back to the original
 	// program).
+	for _, s := range ep.Strata {
+		for _, r := range s.Rules {
+			if len(r.Head.Predicate) > 6 && r.Head.Predicate[:6] == "magic_" {
+				t.Fatalf("fallback plan unexpectedly contains magic_* rule: %s", r.Head.Predicate)
+			}
+		}
+	}
+}
+
+// TestWithMagicSetAuto_UnsafeHeadFallback exercises issue #99: the magic-set
+// transform can emit a propagation rule whose head contains a variable named
+// "_" (the desugared wildcard). isSafe inside magicset.go treats "_" as
+// always-bound and emits the rule, but the post-transform ValidateRule pass
+// (called from Plan) rejects it as an unsafe head variable. WithMagicSetAuto
+// must catch that planning error and fall back to plain Plan rather than
+// surfacing it.
+//
+// This is a unit-level regression guard for PR #95's broad
+// `if len(errs) > 0 { fall back }` clause in magicset_infer.go. Narrowing the
+// fallback (e.g. `if errors.Is(err, ErrStratification)`) would cause
+// find_dangerous_jsx.ql to silently regress; this test fails in that case.
+//
+// Construction: two IDB rules sharing predicate Q. The first binds Q col 0
+// (via the query's bound P col 0 -> x -> Q(x,y)). The second uses Q with a
+// wildcard `_` in col 0. propagateBindings stamps Q.boundCols=[0] from the
+// first occurrence; MagicSetTransform's propagation-rule generation for the
+// second occurrence emits magic_Q(_) :- magic_R(z), which is unsafe.
+func TestWithMagicSetAuto_UnsafeHeadFallback(t *testing.T) {
+	rules := []datalog.Rule{
+		// P(x) :- Q(x, y), R(y).  -- binds Q col 0 from query-bound x.
+		{
+			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+			},
+		},
+		// R(z) :- Q(_, z).  -- uses Q with `_` in col 0; magic_Q(_) leaks.
+		{
+			Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
+			},
+		},
+		// Q(a, b) :- Base(a, b).  -- Q is IDB.
+		{
+			Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	// Query: from P(1).
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "x"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+			},
+		},
+	}
+
+	// Sanity: the original program plans cleanly (the unsafe rule is purely a
+	// product of the magic-set transform, not the input).
+	if _, errs := Plan(prog, nil); len(errs) > 0 {
+		t.Fatalf("plain Plan unexpectedly failed on the original program: %v", errs)
+	}
+
+	// Sanity: the transform itself, applied directly, produces a program that
+	// fails to plan (this proves the test is actually exercising the unsafe-
+	// head failure mode rather than some other path).
+	idb := IDBPredicates(prog)
+	inf := InferQueryBindings(prog, idb)
+	if len(inf.Bindings) == 0 {
+		t.Fatalf("precondition: expected bindings to be inferred for query body")
+	}
+	transformed := MagicSetTransform(prog, inf.Bindings)
+	if len(inf.SeedRules) > 0 {
+		augmented := make([]datalog.Rule, 0, len(transformed.Rules)+len(inf.SeedRules))
+		augmented = append(augmented, transformed.Rules...)
+		augmented = append(augmented, inf.SeedRules...)
+		transformed = &datalog.Program{Rules: augmented, Query: transformed.Query}
+	}
+	if _, errs := Plan(transformed, nil); len(errs) == 0 {
+		t.Fatalf("precondition: expected augmented program to fail planning with unsafe-head error; got none")
+	} else {
+		// Confirm the failure mode is specifically an unsafe head variable.
+		sawUnsafeHead := false
+		for _, e := range errs {
+			if strings.Contains(e.Error(), "unsafe rule: head variable") {
+				sawUnsafeHead = true
+				break
+			}
+		}
+		if !sawUnsafeHead {
+			t.Fatalf("precondition: expected unsafe-head error from augmented program, got: %v", errs)
+		}
+	}
+
+	// Actual assertion: WithMagicSetAuto must absorb the planning error and
+	// fall back to plain Plan.
+	ep, infOut, errs := WithMagicSetAuto(prog, nil)
+	if len(errs) != 0 {
+		t.Fatalf("WithMagicSetAuto must fall back on unsafe-head failure, got errors: %v", errs)
+	}
+	if ep == nil {
+		t.Fatalf("expected non-nil ExecutionPlan from fallback path")
+	}
+	// Belt-and-braces: fallback must signal by returning empty Bindings.
+	if len(infOut.Bindings) != 0 {
+		t.Fatalf("on unsafe-head fallback, expected empty Bindings (signal), got %v", infOut.Bindings)
+	}
+	// Plan must NOT contain magic_* rules (proves we fell back, not that the
+	// transform somehow succeeded).
 	for _, s := range ep.Strata {
 		for _, r := range s.Rules {
 			if len(r.Head.Predicate) > 6 && r.Head.Predicate[:6] == "magic_" {
