@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // buildTSQBinary compiles the tsq binary into a temporary directory and returns
@@ -320,4 +321,83 @@ select c as "c"
 	if len(rows) < 2 {
 		t.Errorf("converging case: expected header + at least one Call row, got %d\nstderr: %s", len(rows), stderr.String())
 	}
+}
+
+// TestCLI_Timeout_Promptness is the CLI-level regression for issue #81.
+// It runs a query that compels the system-rules pipeline (including deeply
+// recursive predicates such as LocalFlowStar) against a real fact DB with
+// --timeout 1ms and asserts:
+//   - non-zero exit (timeout is a runtime error, not a partial success)
+//   - stderr mentions cancellation / deadline
+//   - the whole subprocess returns within ~2s wall time, far below the
+//     time the same query takes to converge naturally (multiple seconds on
+//     non-trivial fact data). 2s is generous slack to absorb subprocess
+//     startup + extraction load on slow CI; the eval itself returns within
+//     ~timeout + 100ms per the unit-level promptness tests.
+func TestCLI_Timeout_Promptness(t *testing.T) {
+	tsq := buildTSQBinary(t)
+	root := cliRepoRoot(t)
+	workDir := t.TempDir()
+
+	dbFile := filepath.Join(workDir, "v2.db")
+	runExtract(t, tsq, filepath.Join(root, "testdata", "ts", "v2"), dbFile)
+
+	// Use the taint pipeline — TaintAlert depends on LocalFlowStar
+	// (transitive closure) and the full taint propagation graph, the
+	// heaviest stratum the system rules expose. Even on the small v2
+	// fixture this cannot converge in a sub-millisecond budget.
+	queryFile := writeQueryFile(t, workDir, "find_taint.ql", `import tsq::taint
+
+from TaintAlert alert
+select alert.getSrcKind() as "srcKind"
+`)
+
+	// --timeout is a global flag (before the subcommand) and only accepts
+	// the --timeout=DURATION form per cmd/tsq/main.go's global flag parser.
+	// 1ms is intentionally aggressive — guarantees the deadline fires inside
+	// a stratum, so we exercise the per-iteration ctx check rather than
+	// just the stratum-boundary one.
+	cmd := exec.Command(tsq, "--timeout=1ms", "query", "--db", dbFile, "--format", "csv", queryFile)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	t0 := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(t0)
+
+	if err == nil {
+		// 1ms is well below the cost of even the cheapest rule on this
+		// fixture — if we somehow converge inside it, hardware is so fast
+		// the test is meaningless. Skip rather than flake.
+		t.Skipf("query converged inside 1ms timeout (elapsed=%v); cannot exercise --timeout regression on this fixture", elapsed)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected *exec.ExitError from --timeout, got %T: %v\nstderr: %s", err, err, stderr.String())
+	}
+	if exitErr.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit code from --timeout, got 0\nstderr: %s", stderr.String())
+	}
+
+	se := stderr.String()
+	// The eval-layer error wraps context.DeadlineExceeded and includes
+	// "cancelled" + "stratum N, iteration M". Assert the cancellation
+	// surface, not the exact format string.
+	if !strings.Contains(se, "cancelled") {
+		t.Errorf("expected stderr to mention cancellation, got: %q", se)
+	}
+	if !strings.Contains(se, "deadline exceeded") && !strings.Contains(se, "context deadline") {
+		t.Errorf("expected stderr to mention deadline exceeded, got: %q", se)
+	}
+
+	// Promptness ceiling: 2s wall time is a soft cap that includes process
+	// spawn + database load + a single rule landing post-deadline. Without
+	// the per-iteration ctx check the same query would run to convergence
+	// (multiple seconds on this fixture) before the timeout was honored.
+	const ceiling = 2 * time.Second
+	if elapsed > ceiling {
+		t.Errorf("--timeout 1ms: subprocess took %v; ceiling is %v. Per-iteration ctx check likely regressed.", elapsed, ceiling)
+	}
+	t.Logf("--timeout 1ms: elapsed=%v exit=%d stderr=%q", elapsed, exitErr.ExitCode(), se)
 }

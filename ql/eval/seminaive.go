@@ -162,7 +162,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 
 	for si, stratum := range execPlan.Strata {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("cancelled before stratum %d: %w", si, err)
+			return nil, fmt.Errorf("evaluation cancelled before stratum %d: %w", si, err)
 		}
 
 		// Ensure head relations exist.
@@ -179,7 +179,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		var deltaRels map[string]*Relation
 		if cfg.parallel {
 			var perr error
-			deltaRels, perr = parallelBootstrap(stratum.Rules, allRels, cfg.maxBindingsPerRule)
+			deltaRels, perr = parallelBootstrap(ctx, stratum.Rules, allRels, cfg.maxBindingsPerRule)
 			if perr != nil {
 				return nil, perr
 			}
@@ -194,6 +194,13 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				newTuples, rerr := Rule(rule, allRels, cfg.maxBindingsPerRule)
 				if rerr != nil {
 					return nil, rerr
+				}
+				// Per-rule cancellation check (issue #81): a single rule's
+				// Rule()/RuleDelta() call may itself be slow on large inputs, so
+				// we honor ctx as soon as it returns rather than only at the
+				// next iteration boundary.
+				if cerr := ctx.Err(); cerr != nil {
+					return nil, fmt.Errorf("evaluation cancelled at stratum %d, bootstrap rule %s: %w", si, headName, cerr)
 				}
 				for _, t := range newTuples {
 					if headRel.Add(t) {
@@ -212,7 +219,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		iteration := 0
 		for {
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("cancelled in fixpoint stratum %d: %w", si, err)
+				return nil, fmt.Errorf("evaluation cancelled at stratum %d, iteration %d: %w", si, iteration, err)
 			}
 
 			// Check if any delta is non-empty. If the fixpoint has already
@@ -264,9 +271,17 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 
 			if cfg.parallel {
 				var perr error
-				deltaRels, perr = parallelDelta(stratum.Rules, allRels, deltaRels, cfg.maxBindingsPerRule)
+				deltaRels, perr = parallelDelta(ctx, stratum.Rules, allRels, deltaRels, cfg.maxBindingsPerRule)
 				if perr != nil {
 					return nil, perr
+				}
+				// Per-iteration cancellation check on the parallel path —
+				// parallelDelta returns the first per-rule error (which may
+				// itself be a wrapped ctx error from a worker), but we also
+				// re-check here in case workers all completed successfully on a
+				// stale-but-not-yet-cancelled context boundary.
+				if cerr := ctx.Err(); cerr != nil {
+					return nil, fmt.Errorf("evaluation cancelled at stratum %d, iteration %d: %w", si, iteration, cerr)
 				}
 			} else {
 				nextDelta := make(map[string]*Relation)
@@ -279,6 +294,14 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 					newTuples, rerr := RuleDelta(rule, allRels, deltaRels, cfg.maxBindingsPerRule)
 					if rerr != nil {
 						return nil, rerr
+					}
+					// Per-rule cancellation check (issue #81). A single
+					// RuleDelta call on a large delta or wide join can take
+					// many seconds; checking ctx after each rule (rather than
+					// only at the top of the next iteration) is what makes
+					// --timeout actually responsive on long strata.
+					if cerr := ctx.Err(); cerr != nil {
+						return nil, fmt.Errorf("evaluation cancelled at stratum %d, iteration %d, rule %s: %w", si, iteration, headName, cerr)
 					}
 					for _, t := range newTuples {
 						if headRel.Add(t) {

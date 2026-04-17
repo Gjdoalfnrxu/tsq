@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
@@ -21,7 +23,7 @@ func firstError(errs []error) error {
 // head predicate run sequentially within their group to avoid data races on
 // the shared Relation. Grouping is by (name, arity) — same-name different-arity
 // heads are independent and merge into independent relations.
-func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation, maxBindings int) (map[string]*Relation, error) {
+func parallelBootstrap(ctx context.Context, rules []plan.PlannedRule, allRels map[string]*Relation, maxBindings int) (map[string]*Relation, error) {
 	groups := groupByHead(rules)
 
 	type groupResult struct {
@@ -41,9 +43,21 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation, m
 			defer wg.Done()
 			var tuples []Tuple
 			for _, rule := range rs {
+				// Cooperative cancellation (issue #81): bail early if the
+				// outer context is already done. Workers cannot stop a
+				// running Rule() mid-call, but they can stop launching the
+				// next rule in their group.
+				if cerr := ctx.Err(); cerr != nil {
+					errs[idx] = fmt.Errorf("parallel bootstrap cancelled at rule %s: %w", rule.Head.Predicate, cerr)
+					return
+				}
 				newTuples, rerr := Rule(rule, allRels, maxBindings)
 				if rerr != nil {
 					errs[idx] = rerr
+					return
+				}
+				if cerr := ctx.Err(); cerr != nil {
+					errs[idx] = fmt.Errorf("parallel bootstrap cancelled after rule %s: %w", rule.Head.Predicate, cerr)
 					return
 				}
 				tuples = append(tuples, newTuples...)
@@ -77,7 +91,7 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation, m
 }
 
 // parallelDelta evaluates delta rules concurrently, grouping by head (name, arity).
-func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, deltaRels map[string]*Relation, maxBindings int) (map[string]*Relation, error) {
+func parallelDelta(ctx context.Context, rules []plan.PlannedRule, allRels map[string]*Relation, deltaRels map[string]*Relation, maxBindings int) (map[string]*Relation, error) {
 	groups := groupByHead(rules)
 
 	type groupResult struct {
@@ -97,9 +111,18 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 			defer wg.Done()
 			var tuples []Tuple
 			for _, rule := range rs {
+				// Cooperative cancellation (issue #81): see parallelBootstrap.
+				if cerr := ctx.Err(); cerr != nil {
+					errs[idx] = fmt.Errorf("parallel delta cancelled at rule %s: %w", rule.Head.Predicate, cerr)
+					return
+				}
 				newTuples, rerr := RuleDelta(rule, allRels, deltaRels, maxBindings)
 				if rerr != nil {
 					errs[idx] = rerr
+					return
+				}
+				if cerr := ctx.Err(); cerr != nil {
+					errs[idx] = fmt.Errorf("parallel delta cancelled after rule %s: %w", rule.Head.Predicate, cerr)
 					return
 				}
 				tuples = append(tuples, newTuples...)
