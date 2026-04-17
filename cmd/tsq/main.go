@@ -569,11 +569,6 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 	return execPlan, mod, warnings, errs
 }
 
-func buildProgramWithOpts(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int, opts buildOptions) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
-	execPlan, _, mod, warnings, errs := buildProgramWithProg(src, file, importLoader, sizeHints, opts)
-	return execPlan, mod, warnings, errs
-}
-
 // buildProgramWithProg is buildProgram with the post-merge *datalog.Program
 // also returned. It is used by `query` so the compileAndEval pipeline can run
 // the trivial-IDB pre-pass (eval.EstimateNonRecursiveIDBSizes) over the same
