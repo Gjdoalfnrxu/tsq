@@ -138,6 +138,14 @@ type evalConfig struct {
 	maxBindingsPerRule int
 	parallel           bool
 	allowPartial       bool
+	// sizeHints is the planner's relation→tuple-count map. When non-nil,
+	// Evaluate refreshes it after each stratum's fixpoint converges (using
+	// the materialised tuple counts of the head predicates produced in that
+	// stratum) and re-plans every subsequent stratum's join order with the
+	// updated hints. This fixes the IDB-default-1000 misestimate that caused
+	// Cartesian-heavy join orders for queries whose seed predicate is a tiny
+	// derived relation. See issue #88.
+	sizeHints map[string]int
 }
 
 // WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
@@ -171,6 +179,21 @@ func WithMaxBindingsPerRule(n int) Option {
 // are evaluated concurrently.
 func WithParallel() Option {
 	return func(c *evalConfig) { c.parallel = true }
+}
+
+// WithSizeHints provides the planner's relation→tuple-count map to the
+// evaluator. When supplied, Evaluate refreshes the map after each stratum's
+// fixpoint converges with the actual tuple counts of derived predicates
+// produced in that stratum, then re-plans every later stratum (and the final
+// query) using the refreshed hints. This is the fix for issue #88 — without
+// it, derived (IDB) predicates fall through to defaultSizeHint=1000 and the
+// planner mis-orders joins seeded by tiny derived relations.
+//
+// Pass the same map handed to plan.Plan; the evaluator mutates it in place.
+// Callers that do not need adaptive replanning can omit this option, in
+// which case behaviour is unchanged.
+func WithSizeHints(hints map[string]int) Option {
+	return func(c *evalConfig) { c.sizeHints = hints }
 }
 
 // Evaluate executes an ExecutionPlan over base facts and returns results.
@@ -369,6 +392,37 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				return nil, aerr
 			}
 			allRels[relKey(resultRel.Name, resultRel.Arity)] = resultRel
+		}
+
+		// Issue #88: refresh size hints with derived-relation cardinalities
+		// produced in this stratum, then re-plan every subsequent stratum
+		// (and the final query) so they pick join orders with real numbers
+		// instead of defaultSizeHint=1000 for IDB predicates. Strata that
+		// have already executed are not re-planned (their work is done).
+		if cfg.sizeHints != nil {
+			for _, rule := range stratum.Rules {
+				name := rule.Head.Predicate
+				arity := len(rule.Head.Args)
+				if rel, ok := allRels[relKey(name, arity)]; ok && rel != nil {
+					n := rel.Len()
+					// Only update if the new value is larger or the key is
+					// absent. We never shrink hints below an existing base
+					// count for a predicate of the same name (defensive — a
+					// bridge IDB and an EDB sharing a name would be a bug
+					// upstream, but if it ever happens we don't want to
+					// silently zero out the base count).
+					if cur, exists := cfg.sizeHints[name]; !exists || n > cur {
+						cfg.sizeHints[name] = n
+					}
+				}
+			}
+			// Re-plan strata si+1..end and the final query.
+			for j := si + 1; j < len(execPlan.Strata); j++ {
+				plan.RePlanStratum(&execPlan.Strata[j], cfg.sizeHints)
+			}
+			if execPlan.Query != nil {
+				plan.RePlanQuery(execPlan.Query, cfg.sizeHints)
+			}
 		}
 	}
 

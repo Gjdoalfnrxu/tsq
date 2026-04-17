@@ -684,6 +684,10 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 		eval.WithMaxBindingsPerRule(maxBindingsPerRule),
 		eval.WithMaxIterations(maxIterations),
 		eval.WithAllowPartial(allowPartial),
+		// Hand the planner's hints map to the evaluator so it can refresh
+		// derived-relation cardinalities between strata and re-plan the
+		// remaining strata + final query. Issue #88.
+		eval.WithSizeHints(sizeHints),
 	)
 	rs, err := evaluator.Evaluate(ctx)
 	if err != nil {
