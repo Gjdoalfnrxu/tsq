@@ -10,8 +10,10 @@ import (
 )
 
 // DefaultMaxIterations is the default maximum number of fixpoint iterations
-// per stratum. If exceeded, a warning is logged but evaluation continues
-// with the results computed so far.
+// per stratum. If exceeded and WithAllowPartial(true) is NOT set, Evaluate
+// returns a *IterationCapError (wraps ErrIterationCapExceeded). With
+// WithAllowPartial(true), legacy behaviour is restored: a warning is logged
+// and evaluation proceeds with the partial results computed so far.
 const DefaultMaxIterations = 100
 
 // DefaultMaxBindingsPerRule is the default per-rule cap on intermediate
@@ -46,6 +48,35 @@ func (e *BindingCapError) Error() string {
 
 func (e *BindingCapError) Unwrap() error { return ErrBindingCapExceeded }
 
+// ErrIterationCapExceeded is the sentinel returned (wrapped in a
+// *IterationCapError) when a stratum's semi-naive fixpoint loop hits the
+// configured iteration cap without reaching a fixpoint. Callers can detect
+// it with errors.Is. Use WithAllowPartial(true) to restore the legacy
+// "warn and return partial results" behaviour.
+var ErrIterationCapExceeded = errors.New("iteration cap exceeded before fixpoint")
+
+// IterationCapError gives detail about which stratum failed to converge,
+// the cap that was hit, the last-iteration delta size (a non-zero value
+// proves the fixpoint was still producing new tuples — i.e. the result is
+// genuinely incomplete, not just close to convergence), and the head
+// predicate of the rule whose delta was largest at the cap. It wraps
+// ErrIterationCapExceeded so errors.Is works.
+type IterationCapError struct {
+	Stratum       int    // index of the stratum that failed to converge
+	Rule          string // head predicate of the rule with the largest delta at the cap
+	Cap           int    // iteration cap that was hit
+	LastDeltaSize int    // total tuples in delta on the iteration the cap fired
+}
+
+func (e *IterationCapError) Error() string {
+	if e.Rule == "" {
+		return fmt.Sprintf("query did not converge in %d iterations (stratum %d, last delta size: %d). Increase --max-iterations or pass --allow-partial to accept incomplete results.", e.Cap, e.Stratum, e.LastDeltaSize)
+	}
+	return fmt.Sprintf("query did not converge in %d iterations (rule: %s, last delta size: %d). Increase --max-iterations or pass --allow-partial to accept incomplete results.", e.Cap, e.Rule, e.LastDeltaSize)
+}
+
+func (e *IterationCapError) Unwrap() error { return ErrIterationCapExceeded }
+
 // joinLimits carries the per-rule binding cap and identifying context
 // down through the join evaluation call chain. A nil receiver means no cap.
 type joinLimits struct {
@@ -76,13 +107,25 @@ type evalConfig struct {
 	maxIterations      int
 	maxBindingsPerRule int
 	parallel           bool
+	allowPartial       bool
 }
 
 // WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
-// If the limit is reached, a warning is logged and evaluation proceeds with
-// the results computed so far. A value of 0 means no limit.
+// If the limit is reached and WithAllowPartial(true) is NOT set, Evaluate
+// returns a *IterationCapError (wraps ErrIterationCapExceeded). With
+// WithAllowPartial(true), legacy behaviour applies: a warning is logged and
+// evaluation proceeds with the partial results computed so far. A value of
+// 0 means no limit.
 func WithMaxIterations(n int) Option {
 	return func(c *evalConfig) { c.maxIterations = n }
+}
+
+// WithAllowPartial restores the legacy behaviour for the iteration cap:
+// when the cap is hit, log a warning and return partial results instead of
+// returning an error. Default is false (return error). This option does NOT
+// affect the binding cap, which always errors.
+func WithAllowPartial(allow bool) Option {
+	return func(c *evalConfig) { c.allowPartial = allow }
 }
 
 // WithMaxBindingsPerRule sets the per-rule cap on intermediate join binding
@@ -172,14 +215,9 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				return nil, fmt.Errorf("cancelled in fixpoint stratum %d: %w", si, err)
 			}
 
-			// Check iteration limit.
-			if cfg.maxIterations > 0 && iteration >= cfg.maxIterations {
-				log.Printf("WARNING: stratum %d reached max iteration limit (%d); results may be incomplete", si, cfg.maxIterations)
-				break
-			}
-			iteration++
-
-			// Check if any delta is non-empty.
+			// Check if any delta is non-empty. If the fixpoint has already
+			// converged (no new tuples produced last iteration) we exit
+			// cleanly — even if iteration count happens to equal the cap.
 			anyDelta := false
 			for _, dr := range deltaRels {
 				if dr.Len() > 0 {
@@ -190,6 +228,39 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 			if !anyDelta {
 				break
 			}
+
+			// Check iteration limit. If hit and !allowPartial, return error
+			// (issue #79). Compute the delta size and dominant rule first so
+			// the caller has actionable diagnostics. The dominant rule is the
+			// one whose delta is largest at the cap — the most likely culprit.
+			if cfg.maxIterations > 0 && iteration >= cfg.maxIterations {
+				totalDelta := 0
+				dominantKey := ""
+				dominantSize := -1
+				for k, dr := range deltaRels {
+					n := dr.Len()
+					totalDelta += n
+					if n > dominantSize {
+						dominantSize = n
+						dominantKey = k
+					}
+				}
+				dominantName := dominantKey
+				if dr, ok := deltaRels[dominantKey]; ok && dr != nil {
+					dominantName = dr.Name
+				}
+				if !cfg.allowPartial {
+					return nil, &IterationCapError{
+						Stratum:       si,
+						Rule:          dominantName,
+						Cap:           cfg.maxIterations,
+						LastDeltaSize: totalDelta,
+					}
+				}
+				log.Printf("WARNING: stratum %d reached max iteration limit (%d); results may be incomplete (last delta size: %d, dominant rule: %s)", si, cfg.maxIterations, totalDelta, dominantName)
+				break
+			}
+			iteration++
 
 			if cfg.parallel {
 				var perr error

@@ -228,3 +228,96 @@ func TestCLI_ExtractAndQuery_CallGraph(t *testing.T) {
 
 	t.Logf("Method call rows found: %d", len(rows)-1)
 }
+
+// TestCLI_IterationCap_ErrorByDefault is the CLI-level regression for issue
+// #79. It runs a recursive transitive-closure query against an extracted
+// fact DB with --max-iterations 2, asserts the CLI returns a runtime error
+// (exit code 1), and that stderr names the rule and the iteration count.
+//
+// Before the fix, the same query would return exit code 0 with partial
+// results — silent wrong answer. This test would not have triggered before;
+// it specifically exercises the CLI-flag-to-evaluator wiring.
+func TestCLI_IterationCap_ErrorByDefault(t *testing.T) {
+	tsq := buildTSQBinary(t)
+	root := cliRepoRoot(t)
+	workDir := t.TempDir()
+
+	// Any fixture with a non-trivial AST will do — Contains chains in real
+	// TypeScript code easily exceed two levels of nesting, so a recursive
+	// closure over Contains needs more than 2 fixpoint iterations.
+	dbFile := filepath.Join(workDir, "v2.db")
+	runExtract(t, tsq, filepath.Join(root, "testdata", "ts", "v2"), dbFile)
+
+	// Recursive transitive closure over Contains. Real ASTs are deep, so
+	// this rule cannot converge in 2 iterations.
+	// The system-rules pipeline injects deeply recursive predicates (notably
+	// LocalFlowStar — the transitive closure of LocalFlow). Even a trivial
+	// user query forces those strata to run, and on real fact data they
+	// require many iterations to converge. With --max-iterations 2 the cap
+	// fires inside the system-rule stratum — exactly the silent-wrong-answer
+	// shape issue #79 cares about.
+	queryFile := writeQueryFile(t, workDir, "find_calls.ql", `import tsq::calls
+
+from Call c
+select c as "c"
+`)
+
+	cmd := exec.Command(tsq, "query", "--db", dbFile, "--max-iterations", "2", "--format", "csv", queryFile)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("expected non-zero exit (--max-iterations 2 should error on a divergent query), got success.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Errorf("expected exit code 1 (runtime error), got %d", exitErr.ExitCode())
+	}
+	se := stderr.String()
+	if !strings.Contains(se, "did not converge") {
+		t.Errorf("expected stderr to mention non-convergence, got: %q", se)
+	}
+	if !strings.Contains(se, "2 iterations") {
+		t.Errorf("expected stderr to mention the iteration count (2), got: %q", se)
+	}
+	// Issue #79 spec calls for the dominant rule name in the error message
+	// so the user knows which predicate failed to converge. The exact rule
+	// will be a system-rule head (e.g. LocalFlowStar) — we just assert the
+	// "rule:" label is present and a non-empty rule name follows it.
+	if !strings.Contains(se, "rule:") {
+		t.Errorf("expected stderr to include 'rule:' label naming the dominant predicate, got: %q", se)
+	}
+
+	// --allow-partial restores the legacy behaviour: exit 0 even when the
+	// fixpoint failed to converge. We assert exit 0 and that stderr carries
+	// the warning (proving partial-mode actually fired, not just skipped).
+	cmd = exec.Command(tsq, "query", "--db", dbFile, "--max-iterations", "2", "--allow-partial", "--format", "csv", queryFile)
+	stdout.Reset()
+	stderr.Reset()
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("--allow-partial: expected exit 0, got: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "max iteration limit") {
+		t.Errorf("--allow-partial: expected warning on stderr (proving cap fired and was bypassed), got: %q", stderr.String())
+	}
+
+	// Sanity: with a generous cap the same query succeeds and returns rows.
+	cmd = exec.Command(tsq, "query", "--db", dbFile, "--max-iterations", "200", "--format", "csv", queryFile)
+	stdout.Reset()
+	stderr.Reset()
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("converging case (max-iterations 200): expected exit 0, got: %v\nstderr: %s", err, stderr.String())
+	}
+	rows := parseCSV(t, stdout.String())
+	if len(rows) < 2 {
+		t.Errorf("converging case: expected header + at least one Call row, got %d\nstderr: %s", len(rows), stderr.String())
+	}
+}
