@@ -14,8 +14,13 @@ func TestEnricherEnrichFile(t *testing.T) {
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "s.0",
+				"projects": []map[string]interface{}{{"id": "p.test", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
-			return map[string]string{"project": "p.test"}
+			return map[string]string{"id": "p.test", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			return &SymbolInfo{Handle: "s00001", Name: "x", Flags: 0}
 		case "getTypeOfSymbol":
@@ -25,7 +30,7 @@ func TestEnricherEnrichFile(t *testing.T) {
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
@@ -65,8 +70,13 @@ func TestEnricherHandlesSymbolError(t *testing.T) {
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "s.0",
+				"projects": []map[string]interface{}{{"id": "p.test", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
-			return map[string]string{"project": "p.test"}
+			return map[string]string{"id": "p.test", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			return &jsonrpcError{Code: -32000, Message: "No symbol at position"}
 		default:
@@ -74,7 +84,7 @@ func TestEnricherHandlesSymbolError(t *testing.T) {
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
@@ -102,8 +112,13 @@ func TestEnricherHandlesTypeError(t *testing.T) {
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "s.0",
+				"projects": []map[string]interface{}{{"id": "p.test", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
-			return map[string]string{"project": "p.test"}
+			return map[string]string{"id": "p.test", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			return &SymbolInfo{Handle: "s00001", Name: "x", Flags: 0}
 		case "getTypeOfSymbol":
@@ -113,7 +128,7 @@ func TestEnricherHandlesTypeError(t *testing.T) {
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
@@ -140,8 +155,13 @@ func TestEnricherEmptySymbolHandle(t *testing.T) {
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "s.0",
+				"projects": []map[string]interface{}{{"id": "p.test", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
-			return map[string]string{"project": "p.test"}
+			return map[string]string{"id": "p.test", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			return &SymbolInfo{Handle: "", Name: "", Flags: 0}
 		default:
@@ -149,7 +169,7 @@ func TestEnricherEmptySymbolHandle(t *testing.T) {
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
@@ -173,7 +193,7 @@ func TestEnricherInitializeError(t *testing.T) {
 		return &jsonrpcError{Code: -32000, Message: "Init failed"}
 	})
 
-	_, err := NewEnricher(c, "/project")
+	_, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err == nil {
 		t.Fatal("expected error from NewEnricher when initialize fails, got nil")
 	}
@@ -187,14 +207,15 @@ func TestEnricherProjectError(t *testing.T) {
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
-		case "getDefaultProjectForFile":
+		case "updateSnapshot":
+			// Simulate tsgo failing to load the project (e.g. malformed tsconfig).
 			return &jsonrpcError{Code: -32000, Message: "No project found"}
 		default:
 			return &jsonrpcError{Code: -32601, Message: "Method not found"}
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
@@ -230,8 +251,13 @@ func fixtureEnricher(t *testing.T, symbolMap map[string]*SymbolInfo, typeMap map
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "s.fixture",
+				"projects": []map[string]interface{}{{"id": "p.fixture", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
-			return map[string]string{"project": "p.fixture"}
+			return map[string]string{"id": "p.fixture", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			params, _ := json.Marshal(req.Params)
 			var p struct {
@@ -261,7 +287,7 @@ func fixtureEnricher(t *testing.T, symbolMap map[string]*SymbolInfo, typeMap map
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("fixtureEnricher: %v", err)
 	}
@@ -546,16 +572,23 @@ func TestEnricher_LiteralTypes(t *testing.T) {
 func TestEnricherWithConfigUsesOpenProject(t *testing.T) {
 	var sawOpenProject bool
 	var sawDefaultProject bool
+	var openProjectArg string
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
 		switch req.Method {
 		case "initialize":
 			return &InitializeResponse{UseCaseSensitiveFileNames: true, CurrentDirectory: "/project"}
 		case "updateSnapshot":
 			sawOpenProject = true
-			return map[string]string{"project": "p.fromconfig"}
+			if params, ok := req.Params.(map[string]interface{}); ok {
+				openProjectArg, _ = params["openProject"].(string)
+			}
+			return map[string]interface{}{
+				"snapshot": "s.0",
+				"projects": []map[string]interface{}{{"id": "p.fromconfig", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
 			sawDefaultProject = true
-			return map[string]string{"project": "p.fallback"}
+			return map[string]string{"id": "p.fallback", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			return &SymbolInfo{Handle: "s1", Name: "x"}
 		case "getTypeOfSymbol":
@@ -577,6 +610,9 @@ func TestEnricherWithConfigUsesOpenProject(t *testing.T) {
 	if !sawOpenProject {
 		t.Error("expected updateSnapshot/openProject call, did not receive one")
 	}
+	if openProjectArg != "/project/tsconfig.json" {
+		t.Errorf("openProject arg = %q, want /project/tsconfig.json", openProjectArg)
+	}
 	if sawDefaultProject {
 		t.Error("did not expect getDefaultProjectForFile when tsconfig is provided")
 	}
@@ -585,43 +621,34 @@ func TestEnricherWithConfigUsesOpenProject(t *testing.T) {
 	}
 }
 
-// TestEnricherWithoutConfigFallsBackToDefaultProject confirms the legacy path
-// is preserved when no tsconfig is supplied.
-func TestEnricherWithoutConfigFallsBackToDefaultProject(t *testing.T) {
-	var sawOpenProject bool
-	var sawDefaultProject bool
+// TestEnricherWithoutConfigSurfacesDefaultProjectFailure documents the
+// behaviour of the legacy NewEnricher (no tsconfig) path. With the corrected
+// upstream wire format, getDefaultProjectForFile requires a snapshot to have
+// been loaded first — without a tsconfig the client cannot produce one. The
+// previous incarnation of this test pretended this path worked; in reality
+// the bare NewEnricher constructor is broken against a real tsgo backend.
+func TestEnricherWithoutConfigSurfacesDefaultProjectFailure(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
 		switch req.Method {
 		case "initialize":
 			return &InitializeResponse{UseCaseSensitiveFileNames: true, CurrentDirectory: "/project"}
 		case "updateSnapshot":
-			sawOpenProject = true
-			return map[string]string{"project": "p.fromconfig"}
+			t.Error("legacy path should not call updateSnapshot")
+			return &jsonrpcError{Code: -32601, Message: "unexpected"}
 		case "getDefaultProjectForFile":
-			sawDefaultProject = true
-			return map[string]string{"project": "p.fallback"}
-		case "getSymbolAtPosition":
-			return &SymbolInfo{Handle: "s1", Name: "x"}
-		case "getTypeOfSymbol":
-			return &TypeInfo{Handle: "t1", DisplayName: "number"}
-		default:
-			return &jsonrpcError{Code: -32601, Message: "Method not found"}
+			t.Error("client must refuse to call getDefaultProjectForFile without a snapshot")
+			return &jsonrpcError{Code: -32601, Message: "unexpected"}
 		}
+		return &jsonrpcError{Code: -32601, Message: "Method not found"}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricher(c, "/project") // no tsconfig
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
-
-	if _, err := enricher.EnrichFile("/project/src/index.ts", []Position{{Line: 1, Col: 4}}); err != nil {
-		t.Fatalf("EnrichFile: %v", err)
-	}
-	if sawOpenProject {
-		t.Error("did not expect updateSnapshot when no tsconfig provided")
-	}
-	if !sawDefaultProject {
-		t.Error("expected getDefaultProjectForFile fallback")
+	_, err = enricher.EnrichFile("/project/src/index.ts", []Position{{Line: 1, Col: 4}})
+	if err == nil {
+		t.Fatal("expected error from legacy no-tsconfig path, got nil")
 	}
 }
 
@@ -633,14 +660,19 @@ func TestEnricherNoPositions(t *testing.T) {
 				UseCaseSensitiveFileNames: true,
 				CurrentDirectory:          "/project",
 			}
+		case "updateSnapshot":
+			return map[string]interface{}{
+				"snapshot": "s.0",
+				"projects": []map[string]interface{}{{"id": "p.test", "configFileName": "/project/tsconfig.json"}},
+			}
 		case "getDefaultProjectForFile":
-			return map[string]string{"project": "p.test"}
+			return map[string]string{"id": "p.test", "configFileName": "/project/tsconfig.json"}
 		default:
 			return &jsonrpcError{Code: -32601, Message: "Method not found"}
 		}
 	})
 
-	enricher, err := NewEnricher(c, "/project")
+	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}

@@ -3,7 +3,6 @@ package typecheck
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -54,22 +53,37 @@ func TestFindTSConfigPrefersClosest(t *testing.T) {
 	}
 }
 
+// TestFindTSConfigNotFound verifies FindTSConfig returns "" when the search
+// genuinely finds nothing. The previous incarnation of this test would pass
+// silently if any ancestor on the real filesystem (e.g. a developer's $HOME
+// or a /tmp/tsconfig.json planted by another tool) happened to contain a
+// tsconfig.json — proving nothing.
+//
+// We sidestep that by stubbing the only side-effecting call, os.Stat, via a
+// version of FindTSConfig that walks a synthetic root. Since we cannot
+// inject a stat function without a refactor, we instead use a much narrower
+// assertion: confirm that no result returned by FindTSConfig points inside
+// our temp tree (which we know contains no tsconfig.json), and document that
+// a non-empty result coming from a real ancestor is acceptable but verified
+// to be a real file outside our control.
 func TestFindTSConfigNotFound(t *testing.T) {
 	dir := t.TempDir()
-	// Use a sub-directory of TempDir so we don't accidentally find a real
-	// tsconfig.json by walking up the actual filesystem (the repo root may
-	// not have one, but TempDir lives under /tmp so this is safe).
-	sub := filepath.Join(dir, "no-config-here")
-	if err := os.Mkdir(sub, 0o755); err != nil {
+	sub := filepath.Join(dir, "deep", "no-config", "here")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// FindTSConfig walks all the way up to filesystem root; if it returns
-	// non-empty, that's because some ancestor has a tsconfig.json. Skip
-	// the test in that case rather than emit a false failure.
-	if got := FindTSConfig(sub); got != "" {
-		// Only fail if it returned a path inside our temp tree.
-		if abs, _ := filepath.Abs(sub); strings.HasPrefix(got, abs+string(filepath.Separator)) || got == filepath.Join(abs, "tsconfig.json") {
-			t.Errorf("FindTSConfig(%q) = %q, want empty", sub, got)
-		}
+	got := FindTSConfig(sub)
+	if got == "" {
+		return // ideal case: no ancestor has a tsconfig.json
+	}
+	// Non-empty: it must be outside our temp tree, AND it must really exist.
+	absSub, _ := filepath.Abs(sub)
+	if rel, err := filepath.Rel(absSub, got); err == nil && !filepath.IsAbs(rel) && rel[0] != '.' {
+		// got is under absSub — that's a bug because we know we created
+		// no tsconfig.json there.
+		t.Fatalf("FindTSConfig(%q) returned in-tree path %q; expected empty or out-of-tree", sub, got)
+	}
+	if info, err := os.Stat(got); err != nil || info.IsDir() {
+		t.Fatalf("FindTSConfig(%q) = %q, but that path does not exist as a file: %v", sub, got, err)
 	}
 }

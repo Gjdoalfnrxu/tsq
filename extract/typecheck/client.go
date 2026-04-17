@@ -14,12 +14,31 @@ import (
 
 // Client communicates with a tsgo --api --async subprocess via JSON-RPC 2.0
 // using standard LSP Content-Length framing.
+//
+// The upstream typescript-go API (microsoft/typescript-go/internal/api) is a
+// stateful session: the server holds an immutable Snapshot, and queries are
+// scoped to (snapshot, project) handles returned from updateSnapshot. The
+// client tracks the most recent snapshot so callers do not have to thread it
+// through every method call.
 type Client struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	nextID atomic.Int64
 	mu     sync.Mutex
+
+	// snapshot is the most recent snapshot handle returned by OpenProject /
+	// updateSnapshot. Required as a parameter for nearly every subsequent
+	// query method on the upstream API. Updated under mu.
+	snapshot string
+}
+
+// Snapshot returns the most recent snapshot handle the client knows about.
+// Empty until OpenProject has been called.
+func (c *Client) Snapshot() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.snapshot
 }
 
 // NewClient starts a tsgo subprocess. tsgoPath is the path to the tsgo binary
@@ -164,28 +183,61 @@ func (c *Client) Initialize() (*InitializeResponse, error) {
 }
 
 // GetProjectForFile gets the project handle for a file path.
+//
+// Wire shape (microsoft/typescript-go/internal/api/proto.go,
+// GetDefaultProjectForFileParams): { snapshot, file }. Note there is no
+// "project" field on the request — the project is what we are resolving.
+// Requires a prior OpenProject call so that c.snapshot is populated.
 func (c *Client) GetProjectForFile(filePath string) (string, error) {
+	c.mu.Lock()
+	snap := c.snapshot
+	c.mu.Unlock()
+	if snap == "" {
+		return "", fmt.Errorf("typecheck: getDefaultProjectForFile requires OpenProject first (no snapshot loaded)")
+	}
 	raw, err := c.call("getDefaultProjectForFile", map[string]interface{}{
-		"file": filePath,
+		"snapshot": snap,
+		"file":     map[string]string{"fileName": filePath},
 	})
 	if err != nil {
 		return "", err
 	}
+	// The response is a ProjectResponse-shaped object: { id, configFileName, ... }.
+	// Older code (and some mock test fixtures) encoded a bare {"project": "..."}
+	// envelope; accept both shapes for safety.
 	var result struct {
+		ID      string `json:"id"`
 		Project string `json:"project"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return "", fmt.Errorf("typecheck: unmarshal project: %w", err)
 	}
+	if result.ID != "" {
+		return result.ID, nil
+	}
 	return result.Project, nil
 }
 
 // OpenProject loads a tsconfig.json into the tsgo session and returns the
-// resulting project handle. This corresponds to typescript-go's `updateSnapshot`
-// API method with `openProject` set to the absolute path of a tsconfig.json
-// file. Without this call, tsgo has no project loaded and `getDefaultProjectForFile`
-// will fail to resolve a project for any source file — type enrichment silently
-// returns nothing.
+// resulting (snapshot, project) handles. This corresponds to typescript-go's
+// `updateSnapshot` API method with `openProject` set to the absolute path of
+// a tsconfig.json file.
+//
+// Wire shape (microsoft/typescript-go/internal/api/proto.go):
+//
+//	Request:  UpdateSnapshotParams{ OpenProject string `json:"openProject,omitempty"` }
+//	Response: UpdateSnapshotResponse{
+//	    Snapshot Handle[project.Snapshot] `json:"snapshot"`
+//	    Projects []*ProjectResponse       `json:"projects"`
+//	}
+//	ProjectResponse{ Id Handle[project.Project] `json:"id"`, ConfigFileName string `json:"configFileName"` }
+//
+// Handles serialise as strings (e.g. "p" + 16 hex digits, "s" + 16 hex digits).
+//
+// On success the client caches the snapshot handle so subsequent query methods
+// can supply it automatically. Returns the project handle whose configFileName
+// matches the requested config (case-insensitive path compare), falling back
+// to the first returned project if no exact match is found.
 //
 // configFileName must be an absolute path to a tsconfig.json file.
 func (c *Client) OpenProject(configFileName string) (string, error) {
@@ -195,27 +247,67 @@ func (c *Client) OpenProject(configFileName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// The response shape varies by tsgo version; we accept either a bare
-	// project handle string under "project" or a snapshot object containing
-	// the project. Both are tolerated to keep the binding loose.
-	var result struct {
-		Project string `json:"project"`
+	var resp struct {
+		Snapshot string `json:"snapshot"`
+		Projects []struct {
+			ID             string `json:"id"`
+			ConfigFileName string `json:"configFileName"`
+		} `json:"projects"`
 	}
-	if err := json.Unmarshal(raw, &result); err == nil && result.Project != "" {
-		return result.Project, nil
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("typecheck: unmarshal updateSnapshot: %w", err)
 	}
-	// Fall through: return the configFileName itself as the project handle.
-	// tsgo identifies projects by their config file path internally; subsequent
-	// per-file calls go through getDefaultProjectForFile which will now succeed
-	// because the project is loaded.
-	return configFileName, nil
+	if resp.Snapshot == "" {
+		return "", fmt.Errorf("typecheck: updateSnapshot returned no snapshot handle (raw=%s)", string(raw))
+	}
+	// Cache snapshot handle for subsequent calls.
+	c.mu.Lock()
+	c.snapshot = resp.Snapshot
+	c.mu.Unlock()
+
+	if len(resp.Projects) == 0 {
+		return "", fmt.Errorf("typecheck: updateSnapshot returned no projects for %s", configFileName)
+	}
+	// Prefer an exact match on configFileName.
+	for _, p := range resp.Projects {
+		if strings.EqualFold(p.ConfigFileName, configFileName) {
+			return p.ID, nil
+		}
+	}
+	// Fall back to the first project (single-project openProject case).
+	return resp.Projects[0].ID, nil
+}
+
+// snap returns the cached snapshot handle or an error if OpenProject has not
+// been called yet. Holding the lock briefly is fine — callers do not need the
+// snapshot to be atomic with the subsequent RPC.
+func (c *Client) snap() (string, error) {
+	c.mu.Lock()
+	s := c.snapshot
+	c.mu.Unlock()
+	if s == "" {
+		return "", fmt.Errorf("typecheck: no snapshot loaded; call OpenProject first")
+	}
+	return s, nil
 }
 
 // GetTypeAtPosition returns the type handle and type string at a position.
+//
+// Wire shape (GetTypeAtPositionParams): { snapshot, project, file:DocumentIdentifier, position:uint32 }.
+//
+// NOTE: The upstream `position` field is a uint32 byte offset, not a
+// {line,character} object. The line/col API is preserved for backwards
+// compatibility with the existing enricher pipeline; for new code that talks
+// to a real tsgo backend, prefer GetTypeAtOffset.
 func (c *Client) GetTypeAtPosition(project string, file string, line, col int) (*TypeInfo, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.call("getTypeAtPosition", map[string]interface{}{
+		"snapshot": snap,
 		"project":  project,
-		"file":     file,
+		"file":     map[string]string{"fileName": file},
 		"position": map[string]int{"line": line, "character": col},
 	})
 	if err != nil {
@@ -228,11 +320,40 @@ func (c *Client) GetTypeAtPosition(project string, file string, line, col int) (
 	return &info, nil
 }
 
-// GetSymbolAtPosition returns the symbol handle and info at a position.
-func (c *Client) GetSymbolAtPosition(project string, file string, line, col int) (*SymbolInfo, error) {
-	raw, err := c.call("getSymbolAtPosition", map[string]interface{}{
+// GetTypeAtOffset matches the real upstream wire format: position is a byte
+// offset into the file. Use this for live-tsgo callers.
+func (c *Client) GetTypeAtOffset(project, file string, offset uint32) (*TypeInfo, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.call("getTypeAtPosition", map[string]interface{}{
+		"snapshot": snap,
 		"project":  project,
-		"file":     file,
+		"file":     map[string]string{"fileName": file},
+		"position": offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var info TypeInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return nil, fmt.Errorf("typecheck: unmarshal type: %w", err)
+	}
+	return &info, nil
+}
+
+// GetSymbolAtPosition returns the symbol handle and info at a position.
+// See GetTypeAtPosition note re: position encoding.
+func (c *Client) GetSymbolAtPosition(project string, file string, line, col int) (*SymbolInfo, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.call("getSymbolAtPosition", map[string]interface{}{
+		"snapshot": snap,
+		"project":  project,
+		"file":     map[string]string{"fileName": file},
 		"position": map[string]int{"line": line, "character": col},
 	})
 	if err != nil {
@@ -246,10 +367,16 @@ func (c *Client) GetSymbolAtPosition(project string, file string, line, col int)
 }
 
 // GetTypeOfSymbol returns the type of a symbol.
+// Wire: GetTypeOfSymbolParams{ snapshot, project, symbol }.
 func (c *Client) GetTypeOfSymbol(project string, symbolHandle string) (*TypeInfo, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.call("getTypeOfSymbol", map[string]interface{}{
-		"project": project,
-		"symbol":  symbolHandle,
+		"snapshot": snap,
+		"project":  project,
+		"symbol":   symbolHandle,
 	})
 	if err != nil {
 		return nil, err
@@ -262,10 +389,17 @@ func (c *Client) GetTypeOfSymbol(project string, symbolHandle string) (*TypeInfo
 }
 
 // GetMembersOfSymbol returns member symbols.
+// Wire: GetMembersOfSymbolParams{ snapshot, symbol } — note no project field.
+// The project arg is accepted for API consistency but not sent on the wire.
 func (c *Client) GetMembersOfSymbol(project string, symbolHandle string) ([]MemberInfo, error) {
+	_ = project // unused per upstream wire shape
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.call("getMembersOfSymbol", map[string]interface{}{
-		"project": project,
-		"symbol":  symbolHandle,
+		"snapshot": snap,
+		"symbol":   symbolHandle,
 	})
 	if err != nil {
 		return nil, err
@@ -278,10 +412,16 @@ func (c *Client) GetMembersOfSymbol(project string, symbolHandle string) ([]Memb
 }
 
 // GetBaseTypes returns base type handles.
+// Wire: CheckerTypeParams{ snapshot, project, type }.
 func (c *Client) GetBaseTypes(project string, typeHandle string) ([]TypeInfo, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.call("getBaseTypes", map[string]interface{}{
-		"project": project,
-		"type":    typeHandle,
+		"snapshot": snap,
+		"project":  project,
+		"type":     typeHandle,
 	})
 	if err != nil {
 		return nil, err
@@ -295,9 +435,14 @@ func (c *Client) GetBaseTypes(project string, typeHandle string) ([]TypeInfo, er
 
 // TypeToString returns a human-readable type string.
 func (c *Client) TypeToString(project string, typeHandle string) (string, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return "", err
+	}
 	raw, err := c.call("typeToString", map[string]interface{}{
-		"project": project,
-		"type":    typeHandle,
+		"snapshot": snap,
+		"project":  project,
+		"type":     typeHandle,
 	})
 	if err != nil {
 		return "", err
@@ -312,10 +457,16 @@ func (c *Client) TypeToString(project string, typeHandle string) (string, error)
 }
 
 // GetSemanticDiagnostics returns type errors for a file.
+// Wire: GetDiagnosticsParams{ snapshot, project, file:DocumentIdentifier }.
 func (c *Client) GetSemanticDiagnostics(project string, file string) ([]Diagnostic, error) {
+	snap, err := c.snap()
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.call("getSemanticDiagnostics", map[string]interface{}{
-		"project": project,
-		"file":    file,
+		"snapshot": snap,
+		"project":  project,
+		"file":     map[string]string{"fileName": file},
 	})
 	if err != nil {
 		return nil, err
