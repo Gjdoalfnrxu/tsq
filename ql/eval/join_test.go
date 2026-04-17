@@ -303,6 +303,17 @@ func TestRuleBindingCapTriggers(t *testing.T) {
 	if bce.Cardinality <= cap {
 		t.Errorf("expected reported cardinality > cap (%d), got %d", cap, bce.Cardinality)
 	}
+	// Promptness: cap must fire at the boundary, not after the join has already
+	// blown past it by orders of magnitude. Step 2 (A×B) yields 100 = cap; step 3
+	// (×C) yields 1000 — that's the latest the cap may legitimately fire.
+	if bce.Cardinality > 2*cap {
+		t.Errorf("cap fired late: cardinality=%d, cap=%d (expected <= 2*cap)", bce.Cardinality, cap)
+	}
+	// Must trip before the final join step completes, otherwise the inner-loop
+	// check has been silently lost and only the per-step check is firing.
+	if bce.StepIndex >= len(rule.JoinOrder)-1 {
+		t.Errorf("cap fired at step %d (last step); expected earlier step (inner-loop check missing?)", bce.StepIndex)
+	}
 	if !strings.Contains(err.Error(), "BadRule") || !strings.Contains(err.Error(), "binding cap") {
 		t.Errorf("error message should mention rule name and binding cap: %q", err.Error())
 	}

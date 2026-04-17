@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -371,5 +373,68 @@ func TestComputeRankStableOrder(t *testing.T) {
 		if r != expected[i] {
 			t.Errorf("rank[%d]: expected %d, got %d", i, expected[i], r)
 		}
+	}
+}
+
+// TestAggregateBindingCapTriggers verifies that the per-rule binding cap fires
+// inside an aggregate body — covering the "aggregate:<resultRelation>" code
+// path that's otherwise untested (every other aggregate test passes cap=0).
+// Regression guard for the threading of joinLimits through Aggregate /
+// evalLiterals.
+func TestAggregateBindingCapTriggers(t *testing.T) {
+	mkUnary := func(name string) *Relation {
+		vals := make([]Value, 10)
+		for i := 0; i < 10; i++ {
+			vals[i] = IntVal{V: int64(i)}
+		}
+		return makeRelation(name, 1, vals...)
+	}
+	rels := RelsOf(mkUnary("A"), mkUnary("B"), mkUnary("C"), mkUnary("D"))
+
+	// Aggregate body is a 4-way Cartesian (10×10×10×10 = 10000) — same shape
+	// as TestRuleBindingCapTriggers, but routed through Aggregate.
+	body := []datalog.Literal{
+		{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "a"}}}},
+		{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "b"}}}},
+		{Positive: true, Atom: datalog.Atom{Predicate: "C", Args: []datalog.Term{datalog.Var{Name: "c"}}}},
+		{Positive: true, Atom: datalog.Atom{Predicate: "D", Args: []datalog.Term{datalog.Var{Name: "d"}}}},
+	}
+	agg := plan.PlannedAggregate{
+		ResultRelation: "BadAgg",
+		GroupByVars:    []datalog.Var{{Name: "a"}},
+		Agg: datalog.Aggregate{
+			Func:      "count",
+			Var:       "d",
+			ResultVar: datalog.Var{Name: "BadAgg"},
+			Body:      body,
+		},
+	}
+
+	const cap = 100
+	result, err := Aggregate(agg, rels, cap)
+	if err == nil {
+		t.Fatalf("expected ErrBindingCapExceeded, got nil error and result with %d rows", result.Len())
+	}
+	if !errors.Is(err, ErrBindingCapExceeded) {
+		t.Fatalf("expected error wrapping ErrBindingCapExceeded, got: %v", err)
+	}
+	var bce *BindingCapError
+	if !errors.As(err, &bce) {
+		t.Fatalf("expected *BindingCapError, got: %T (%v)", err, err)
+	}
+	if !strings.HasPrefix(bce.Rule, "aggregate:") {
+		t.Errorf("expected rule name with 'aggregate:' prefix, got %q", bce.Rule)
+	}
+	if bce.Rule != "aggregate:BadAgg" {
+		t.Errorf("expected rule name %q, got %q", "aggregate:BadAgg", bce.Rule)
+	}
+	if bce.Cap != cap {
+		t.Errorf("expected cap %d, got %d", cap, bce.Cap)
+	}
+	if bce.Cardinality <= cap {
+		t.Errorf("expected cardinality > cap (%d), got %d", cap, bce.Cardinality)
+	}
+	if bce.Cardinality > 2*cap {
+		t.Errorf("aggregate cap fired late: cardinality=%d, cap=%d", bce.Cardinality, cap)
 	}
 }
