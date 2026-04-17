@@ -307,22 +307,51 @@ func TestExtractEnrichmentSmoke(t *testing.T) {
 		t.Fatalf("enrichment regressed: ResolvedType=%d SymbolType=%d (want >0 each)\nstderr:\n%s", resolved, symbolType, stderr.String())
 	}
 
-	// Sanity-check display names: at least one ResolvedType row must have a
-	// non-empty display string (the v2 bug was facts written with empty
-	// displays because typeToString was never called).
-	var sawDisplay bool
+	// Sanity-check display names: every ResolvedType row must have a non-empty
+	// display string (the v2 bug was facts written with empty displays because
+	// typeToString was never called), and the multiset of displays must include
+	// the primitives the fixture explicitly declares — `string` and `number`.
 	rt := dbObj.Relation("ResolvedType")
+	displays := make([]string, 0, rt.Tuples())
+	typeIDs := make(map[int32]int) // type-id -> count, asserts dedup
 	for i := 0; i < rt.Tuples(); i++ {
 		s, err := rt.GetString(dbObj, i, 1)
-		if err == nil && s != "" {
-			sawDisplay = true
-			break
+		if err != nil {
+			t.Fatalf("ResolvedType row %d: read display: %v", i, err)
+		}
+		if s == "" {
+			t.Fatalf("ResolvedType row %d: empty display string (typeToString round-trip failed)", i)
+		}
+		id, err := rt.GetInt(i, 0)
+		if err != nil {
+			t.Fatalf("ResolvedType row %d: read type-id: %v", i, err)
+		}
+		typeIDs[id]++
+		displays = append(displays, s)
+	}
+	wantDisplays := []string{"string", "number"}
+	for _, want := range wantDisplays {
+		var found bool
+		for _, got := range displays {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ResolvedType displays missing %q; got: %v", want, displays)
 		}
 	}
-	if !sawDisplay {
-		t.Fatal("all ResolvedType display strings are empty (typeToString round-trip failed)")
+	// Dedup invariant: a given TypeHandle (and therefore type-id) must produce
+	// exactly one ResolvedType row across the whole extraction. Without dedup
+	// the cmd/tsq path emits one row per occurrence and primitives like
+	// "string" balloon the row count.
+	for id, n := range typeIDs {
+		if n > 1 {
+			t.Errorf("ResolvedType not deduped: type-id %d appears %d times", id, n)
+		}
 	}
-	t.Logf("smoke OK: ResolvedType=%d SymbolType=%d", resolved, symbolType)
+	t.Logf("smoke OK: ResolvedType=%d SymbolType=%d unique-types=%d", resolved, symbolType, len(typeIDs))
 }
 
 // Regression: global flags followed by a valid subcommand should work.

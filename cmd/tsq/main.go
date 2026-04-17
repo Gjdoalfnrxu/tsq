@@ -288,6 +288,12 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 	enricher.RegisterFiles(allPaths)
 
 	var aggSymQ, aggSymErr, aggTypQ, aggTypErr, aggFacts int
+	// Dedup ResolvedType emissions across all files: identical TypeHandles must
+	// produce a single ResolvedType row. Without this guard the same primitive
+	// (e.g. "string") is emitted once per occurrence, multiplying row counts
+	// and breaking the downstream uniqueness expectation. Mirrors the seenTypes
+	// map in extract/typecheck/enricher.go:WriteTypeFacts.
+	seenTypes := make(map[string]bool)
 	for _, filePath := range allPaths {
 		// Collect positions: variable declarations and parameters
 		positions := collectEnrichmentPositions(database, filePath)
@@ -308,16 +314,22 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 
 		// Populate ResolvedType and SymbolType/ExprType relations
 		for _, fact := range facts {
-			typeID := extract.TypeEntityID(fact.TypeHandle)
-			if err := database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay); err != nil {
-				fmt.Fprintf(stderr, "warning: add ResolvedType: %v\n", err)
+			if fact.TypeHandle == "" {
 				continue
 			}
-
-			// Phase 3d: mark non-taintable primitive types for type-based sanitization.
-			if nonTaintablePrimitives[fact.TypeDisplay] {
-				if err := database.Relation("NonTaintableType").AddTuple(database, typeID); err != nil {
-					fmt.Fprintf(stderr, "warning: add NonTaintableType: %v\n", err)
+			typeID := extract.TypeEntityID(fact.TypeHandle)
+			if !seenTypes[fact.TypeHandle] {
+				seenTypes[fact.TypeHandle] = true
+				if err := database.Relation("ResolvedType").AddTuple(database, typeID, fact.TypeDisplay); err != nil {
+					fmt.Fprintf(stderr, "warning: add ResolvedType: %v\n", err)
+					continue
+				}
+				// Phase 3d: mark non-taintable primitive types for type-based sanitization.
+				// Emitted once per type alongside the ResolvedType row.
+				if nonTaintablePrimitives[fact.TypeDisplay] {
+					if err := database.Relation("NonTaintableType").AddTuple(database, typeID); err != nil {
+						fmt.Fprintf(stderr, "warning: add NonTaintableType: %v\n", err)
+					}
 				}
 			}
 

@@ -80,7 +80,14 @@ func NewEnricherWithConfig(client *Client, rootDir, tsconfigPath string) (*Enric
 // unless they have been declared this way first.
 //
 // Must be called before the first EnrichFile (which triggers OpenProject).
-// Subsequent calls are no-ops once the project has been opened.
+// IMPORTANT: only files registered before that first EnrichFile call are
+// seeded into the snapshot — getProject uses sync.Once to open the project
+// exactly once and reads the registered slice at that moment. Subsequent
+// RegisterFiles calls append to the slice but have no effect on tsgo's view
+// of the project, and EnrichFile's `appendUnique(files, filePath)` fallback
+// only covers the single file being queried right now. Callers that discover
+// files lazily must register them all up-front, or the late arrivals will
+// fail to resolve position queries.
 func (e *Enricher) RegisterFiles(paths []string) {
 	e.registerMu.Lock()
 	defer e.registerMu.Unlock()
@@ -239,11 +246,17 @@ func buildLineStartsUTF16(src []byte) []int {
 // offsetForLineCol converts a (1-based line, 0-based column) pair to a UTF-16
 // offset. Returns false if the line is out of range.
 //
-// NOTE: `col` from the tree-sitter walker is a byte column. For ASCII source
-// the byte column equals the UTF-16 column; for multibyte source the two
-// diverge. We treat `col` as a UTF-16 column here — accepting that mixed
-// non-ASCII code at the column position will be slightly off until the
-// extractor surfaces UTF-16 columns natively. This is documented in the wiki.
+// NOTE: `col` from the tree-sitter walker is a byte column. tsgo / TS APIs
+// expect UTF-16 columns. For pure-ASCII source the two are identical, so the
+// happy path is correct. For source containing non-ASCII characters before
+// the queried position, the byte column is larger than the UTF-16 column
+// (multi-byte UTF-8 sequences count as one UTF-16 code unit for BMP chars,
+// two for astral chars), so the offset we compute here will land past the
+// intended node and tsgo will return the wrong type — or no type at all.
+// We do NOT silently "treat byte columns as UTF-16"; this code is plainly
+// wrong for non-ASCII source and the tracking issue is in the wiki. Fixing
+// it requires either surfacing UTF-16 columns from the extractor or doing
+// a UTF-8 -> UTF-16 reconversion here using the line text.
 func offsetForLineCol(lineStarts []int, line, col int) (uint32, bool) {
 	if line < 1 || line > len(lineStarts) {
 		return 0, false

@@ -682,7 +682,7 @@ func TestMockOpenProjectRealWireFormat(t *testing.T) {
 		t.Errorf("project = %q, want %q", proj, "p0000000000000007")
 	}
 	if got := c.Snapshot(); got != "n0000000000000001" {
-		t.Errorf("snapshot = %q, want %q", got, "s0000000000000001")
+		t.Errorf("snapshot = %q, want %q", got, "n0000000000000001")
 	}
 	if got := sawParams["openProject"]; got != "/abs/path/tsconfig.json" {
 		t.Errorf("openProject param = %v, want /abs/path/tsconfig.json", got)
