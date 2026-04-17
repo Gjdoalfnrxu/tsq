@@ -285,46 +285,61 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 		tuples := rel.Tuples()
 		for _, ti := range matchingIdxs {
 			t := tuples[ti]
-			// Verify bound columns match (index lookup already filters, but
-			// for multi-col with partial hash we re-check).
-			match := true
-			for j, col := range boundCols {
-				if col >= len(t) {
-					match = false
-					break
-				}
-				eq, err := Compare("=", t[col], boundVals[j])
-				if err != nil || !eq {
-					match = false
-					break
-				}
-			}
-			if !match {
+			// Index.Lookup keys are canonical (partialKey over sorted cols),
+			// and applyPositive builds boundCols in ascending order by
+			// iterating atom.Args left-to-right, so a hit here IS a match.
+			// The full-equality re-check that used to live here is dead
+			// work — see TestPartialKeyCanonicality_* and
+			// TestIndexLookupAgreement_* in partialkey_canonicality_test.go.
+			//
+			// Defensive arity guard only: if the relation contains a tuple
+			// shorter than expected, skip rather than panic. Should be
+			// impossible given Relation.Add's arity-mismatch panic, but
+			// kept as a belt-and-braces check.
+			if len(boundCols) > 0 && boundCols[len(boundCols)-1] >= len(t) {
 				continue
 			}
 
 			// Extend binding with free variables.
-			nb := b.clone()
-			consistent := true
-			for _, fv := range freeVars {
-				if fv.col < len(t) {
-					if existing, ok := nb[fv.name]; ok {
-						// Variable already bound (from earlier column in same atom).
-						// Must be equal for the binding to be consistent.
-						eq, err := Compare("=", existing, t[fv.col])
-						if err != nil || !eq {
-							consistent = false
-							break
+			//
+			// Fast path: when this step has no free variables, it is acting
+			// as a pure filter — no new variable bindings are introduced.
+			// All downstream steps that mutate a binding (applyPositive
+			// itself, bindResult in builtins) clone before writing, so it
+			// is safe to share the same binding map across multiple output
+			// rows. This avoids O(matches × cols) map allocation on the
+			// hot filter path.
+			//
+			// INVARIANT: callers must never mutate a binding map they don't
+			// own — clone first. The shared-map output below depends on
+			// every downstream writer honouring this contract. If you add
+			// a new builtin or join helper that writes into a binding,
+			// clone before the first write. See bindResult in builtins.go.
+			if len(freeVars) == 0 {
+				out = append(out, b)
+			} else {
+				nb := b.clone()
+				consistent := true
+				for _, fv := range freeVars {
+					if fv.col < len(t) {
+						if existing, ok := nb[fv.name]; ok {
+							// Variable already bound (from earlier column in same atom).
+							// Must be equal for the binding to be consistent.
+							eq, err := Compare("=", existing, t[fv.col])
+							if err != nil || !eq {
+								consistent = false
+								break
+							}
+						} else {
+							nb[fv.name] = t[fv.col]
 						}
-					} else {
-						nb[fv.name] = t[fv.col]
 					}
 				}
+				if !consistent {
+					continue
+				}
+				out = append(out, nb)
 			}
-			if !consistent {
-				continue
-			}
-			out = append(out, nb)
 			// Early cap check inside the inner loop. Without this, a single
 			// blown literal can still allocate gigabytes of bindings before
 			// the per-step check at the call site fires (issue #80).

@@ -7,9 +7,68 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 )
+
+// regexCache memoises compiled regexp.Regexp by pattern string. All three
+// regex builtins (regexpMatch, regexpFind, regexpReplaceAll) compile the
+// same pattern on every invocation per binding row in their hot loop —
+// a query like `regexpMatch(x, "^foo.*bar$")` over N bindings paid N
+// regexp.Compile calls before this cache.
+//
+// sync.Map fits the read-mostly access pattern: after the first row of a
+// query, every subsequent row hits the read-only map with no locking.
+// Concurrency safety is provided by sync.Map itself; *regexp.Regexp is
+// documented as safe for concurrent use by multiple goroutines.
+//
+// We do NOT cache compile errors — a malformed pattern is rare and cheap
+// to re-fail on; caching errors would also keep their (possibly large)
+// error messages alive forever.
+//
+// Unbounded growth: pattern strings come from user queries. We only insert
+// into the cache when the pattern arg is a compile-time StringConst — i.e.
+// fixed by the query text itself, bounded by query size. Per-binding
+// dynamic patterns (a Var resolved from a relation) bypass the cache and
+// compile directly via regexp.Compile, so a query that derives patterns
+// from N rows cannot blow the cache to N entries. See the per-builtin
+// call sites below for the routing.
+var regexCache sync.Map // map[string]*regexp.Regexp
+
+// cachedRegexp returns a compiled *regexp.Regexp for pattern, reusing a
+// previously compiled instance if one exists. Returns the same (re, err)
+// shape as regexp.Compile. Only call this when the pattern is bounded
+// (compile-time constant in the query) — see compileRegexp for the
+// routing helper that enforces this.
+func cachedRegexp(pattern string) (*regexp.Regexp, error) {
+	if v, ok := regexCache.Load(pattern); ok {
+		return v.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	// LoadOrStore: if a concurrent caller already inserted, use theirs.
+	// Discarding our compiled re is cheap; consistency matters more.
+	if actual, loaded := regexCache.LoadOrStore(pattern, re); loaded {
+		return actual.(*regexp.Regexp), nil
+	}
+	return re, nil
+}
+
+// compileRegexp routes compilation through the cache only when the pattern
+// is a compile-time constant in the query (datalog.StringConst). For any
+// other term shape — typically a Var resolved from a binding row — the
+// pattern is data-driven and may be distinct per row; caching it would
+// give the cache an attacker-controllable / data-controllable size. In
+// that case we compile directly without inserting into the cache.
+func compileRegexp(arg datalog.Term, pattern string) (*regexp.Regexp, error) {
+	if _, isConst := arg.(datalog.StringConst); isConst {
+		return cachedRegexp(pattern)
+	}
+	return regexp.Compile(pattern)
+}
 
 // builtinFunc evaluates a built-in predicate against a set of bindings.
 // It takes the atom (with args) and current bindings, and returns extended bindings.
@@ -87,7 +146,14 @@ func resolveIntArg(arg datalog.Term, b binding) (int64, bool) {
 	return iv.V, true
 }
 
-// helper: bind or check the result variable
+// helper: bind or check the result variable.
+//
+// Invariant (shared with applyPositive's clone-skip fast path): callers
+// MUST NOT mutate a binding map they don't own. The clone-skip in
+// applyPositive shares the same `binding` (a Go map) across multiple
+// output rows when a step has no free variables; bindResult therefore
+// clones before writing a new variable, never mutates `b` in place.
+// Any future helper that writes into a binding map must do the same.
 func bindResult(arg datalog.Term, b binding, val Value) (binding, bool) {
 	existing, ok := lookupTerm(arg, b)
 	if ok {
@@ -334,7 +400,7 @@ func builtinStringRegexpMatch(atom datalog.Atom, bindings []binding) []binding {
 		if !ok {
 			continue
 		}
-		re, err := regexp.Compile(pattern)
+		re, err := compileRegexp(atom.Args[1], pattern)
 		if err != nil {
 			continue
 		}
@@ -444,7 +510,7 @@ func builtinStringRegexpFind(atom datalog.Atom, bindings []binding) []binding {
 		if offset < 0 || int(offset) > len(s) {
 			continue
 		}
-		re, err := regexp.Compile(pattern)
+		re, err := compileRegexp(atom.Args[1], pattern)
 		if err != nil {
 			continue
 		}
@@ -479,7 +545,7 @@ func builtinStringRegexpReplaceAll(atom datalog.Atom, bindings []binding) []bind
 		if !ok {
 			continue
 		}
-		re, err := regexp.Compile(pattern)
+		re, err := compileRegexp(atom.Args[1], pattern)
 		if err != nil {
 			continue
 		}
