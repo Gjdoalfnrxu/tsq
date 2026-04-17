@@ -48,7 +48,10 @@ func TestAggCount(t *testing.T) {
 	)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -68,7 +71,10 @@ func TestAggCountNoGroup(t *testing.T) {
 	rel := makeRelation("R", 1, IntVal{1}, IntVal{2}, IntVal{3})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "x", nil, "count", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 result, got %d", result.Len())
 	}
@@ -82,7 +88,10 @@ func TestAggMin(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{50}, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "min", "minv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -95,7 +104,10 @@ func TestAggMax(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{5}, IntVal{1}, IntVal{100}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "max", "maxv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -108,7 +120,10 @@ func TestAggSum(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{5})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "sum", "sumv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -128,7 +143,10 @@ func TestAggAvg(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "avg", "avgv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -141,7 +159,10 @@ func TestAggEmptyInput(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty input, got %d", result.Len())
 	}
@@ -151,7 +172,10 @@ func TestAggStrictcount(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -171,7 +195,10 @@ func TestAggStrictcountEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty strictcount, got %d", result.Len())
 	}
@@ -181,7 +208,10 @@ func TestAggStrictsum(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -194,7 +224,10 @@ func TestAggStrictsumEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty strictsum, got %d", result.Len())
 	}
@@ -204,7 +237,10 @@ func TestAggConcat(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, StrVal{"hello"}, IntVal{1}, StrVal{"world"})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "concat", "cval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -218,7 +254,10 @@ func TestRankOrdinal(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 3 {
 		t.Fatalf("expected 3 tuples (one per value), got %d", result.Len())
 	}
@@ -240,7 +279,10 @@ func TestRankEmptyGroup(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty rank input, got %d", result.Len())
 	}
@@ -283,7 +325,10 @@ func TestAggUniqueSingle(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -296,7 +341,10 @@ func TestAggUniqueMultiple(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for non-unique values, got %d", result.Len())
 	}
@@ -306,7 +354,10 @@ func TestAggUniqueEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty unique, got %d", result.Len())
 	}

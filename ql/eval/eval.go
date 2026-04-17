@@ -14,13 +14,17 @@ import (
 type Evaluator struct {
 	execPlan *plan.ExecutionPlan
 	factDB   *db.DB
+	opts     []Option
 }
 
 // NewEvaluator creates an Evaluator that will load base facts from factDB.
-func NewEvaluator(execPlan *plan.ExecutionPlan, factDB *db.DB) *Evaluator {
+// Pass options (WithMaxIterations, WithMaxBindingsPerRule, WithParallel) to
+// configure the underlying call to Evaluate.
+func NewEvaluator(execPlan *plan.ExecutionPlan, factDB *db.DB, opts ...Option) *Evaluator {
 	return &Evaluator{
 		execPlan: execPlan,
 		factDB:   factDB,
+		opts:     opts,
 	}
 }
 
@@ -30,7 +34,7 @@ func (e *Evaluator) Evaluate(ctx context.Context) (*ResultSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("eval: load base relations: %w", err)
 	}
-	return Evaluate(ctx, e.execPlan, baseRels)
+	return Evaluate(ctx, e.execPlan, baseRels, e.opts...)
 }
 
 // loadBaseRelations converts a db.DB into a map of eval.Relation objects.

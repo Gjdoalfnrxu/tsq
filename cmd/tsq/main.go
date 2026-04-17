@@ -338,6 +338,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.SetOutput(stderr)
 	dbFile := fs.String("db", "tsq.db", "fact database file")
 	format := fs.String("format", "json", "output format: sarif, json, csv")
+	maxBindingsPerRule := fs.Int("max-bindings-per-rule", eval.DefaultMaxBindingsPerRule, "per-rule cap on intermediate join binding cardinality (0 = unlimited; prevents OOM on weak joins, see issue #80)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -362,7 +363,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	// Read and compile the query.
-	rs, err := compileAndEval(ctx, queryFile, *dbFile)
+	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -527,7 +528,9 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 }
 
 // compileAndEval reads a .ql file, compiles it, loads a fact DB, and evaluates.
-func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.ResultSet, error) {
+// maxBindingsPerRule caps intermediate join cardinality per rule to prevent
+// OOM on queries with weak join constraints (issue #80). Pass 0 to disable.
+func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPerRule int) (*eval.ResultSet, error) {
 	src, err := os.ReadFile(queryFile)
 	if err != nil {
 		return nil, fmt.Errorf("read query file: %w", err)
@@ -567,7 +570,7 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 	}
 
 	// Evaluate.
-	evaluator := eval.NewEvaluator(execPlan, factDB)
+	evaluator := eval.NewEvaluator(execPlan, factDB, eval.WithMaxBindingsPerRule(maxBindingsPerRule))
 	rs, err := evaluator.Evaluate(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate: %w", err)

@@ -44,7 +44,10 @@ func naiveEvaluate(rules []plan.PlannedRule, baseRels map[string]*Relation) map[
 			headName := rule.Head.Predicate
 			hk := relKey(headName, len(rule.Head.Args))
 			headRel := rels[hk]
-			newTuples := Rule(rule, rels)
+			newTuples, err := Rule(rule, rels, 0)
+			if err != nil {
+				panic(err)
+			}
 			for _, t := range newTuples {
 				if headRel.Add(t) {
 					changed = true
@@ -221,7 +224,10 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 			headName := rule.Head.Predicate
 			hk := relKey(headName, len(rule.Head.Args))
 			headRel := allRels2[hk]
-			newTuples := Rule(rule, allRels2)
+			newTuples, err := Rule(rule, allRels2, 0)
+			if err != nil {
+				return nil, err
+			}
 			for _, t := range newTuples {
 				if headRel.Add(t) {
 					dr, ok := deltaRels[hk]
@@ -251,7 +257,10 @@ func runSemiNaive(rules []datalog.Rule, baseRels map[string]*Relation) (map[stri
 				headName := rule.Head.Predicate
 				hk := relKey(headName, len(rule.Head.Args))
 				headRel := allRels2[hk]
-				newTuples := RuleDelta(rule, allRels2, deltaRels)
+				newTuples, err := RuleDelta(rule, allRels2, deltaRels, 0)
+				if err != nil {
+					return nil, err
+				}
 				for _, t := range newTuples {
 					if headRel.Add(t) {
 						dr, ok := nextDelta[hk]
