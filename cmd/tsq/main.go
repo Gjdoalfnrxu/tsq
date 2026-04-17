@@ -341,6 +341,8 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	maxBindingsPerRule := fs.Int("max-bindings-per-rule", eval.DefaultMaxBindingsPerRule, "per-rule cap on intermediate join binding cardinality (0 = unlimited; prevents OOM on weak joins, see issue #80)")
 	maxIterations := fs.Int("max-iterations", eval.DefaultMaxIterations, "max semi-naive fixpoint iterations per stratum before erroring (0 = unlimited; see issue #79)")
 	allowPartial := fs.Bool("allow-partial", false, "if --max-iterations is hit, log a warning and return partial results instead of erroring (legacy behaviour)")
+	noMagicSets := fs.Bool("no-magic-sets", false, "disable the magic-set query rewrite (default: enabled). Magic sets prune irrelevant tuples on selective queries against recursive predicates (e.g. taint with a constant source), often 10-1000x speedup. Use this flag if a query regresses or returns wrong answers under magic sets (please file an issue).")
+	verbose := fs.Bool("verbose", false, "log diagnostic info to stderr (e.g. magic-set transform application)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -365,7 +367,11 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	// Read and compile the query.
-	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule, *maxIterations, *allowPartial)
+	bopts := buildOptions{useMagicSets: !*noMagicSets}
+	if *verbose {
+		bopts.verboseOut = stderr
+	}
+	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule, *maxIterations, *allowPartial, bopts)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -478,7 +484,19 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 // errors, so callers can still surface things like capability warnings.
 // Resolve-phase warnings (e.g. deprecated imports) are returned alongside
 // errors so callers can surface them regardless of whether later phases ran.
+// buildOptions carries optional flags affecting the planning stage.
+// Zero value disables magic sets (preserving the prior plan.Plan behaviour)
+// and emits no verbose logging.
+type buildOptions struct {
+	useMagicSets bool
+	verboseOut   io.Writer // if non-nil, magic-set-fired diagnostics are written here
+}
+
 func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
+	return buildProgramWithOpts(src, file, importLoader, sizeHints, buildOptions{})
+}
+
+func buildProgramWithOpts(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int, opts buildOptions) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
 	// Parse.
 	p := parse.NewParser(src, file)
 	mod, err := p.Parse()
@@ -516,8 +534,21 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 	// system-rule-augmented form failed to plan or hung at eval time.
 	prog = rules.MergeSystemRules(prog, rules.AllSystemRules())
 
-	// Plan.
-	execPlan, planErrors := plan.Plan(prog, sizeHints)
+	// Plan. When magic sets are enabled, run the binding-inference + transform
+	// path; on no-bindings it falls through to plain Plan transparently.
+	var execPlan *plan.ExecutionPlan
+	var planErrors []error
+	if opts.useMagicSets {
+		var inf plan.QueryBindingInference
+		execPlan, inf, planErrors = plan.WithMagicSetAuto(prog, sizeHints)
+		if opts.verboseOut != nil && len(inf.Bindings) > 0 {
+			fmt.Fprintf(opts.verboseOut, "magic-set: transform applied; bindings=%v seed_rules=%d\n", inf.Bindings, len(inf.SeedRules))
+		} else if opts.verboseOut != nil {
+			fmt.Fprintln(opts.verboseOut, "magic-set: no inferable query bindings; using plain plan")
+		}
+	} else {
+		execPlan, planErrors = plan.Plan(prog, sizeHints)
+	}
 	if len(planErrors) > 0 {
 		errs := make([]error, 0, len(planErrors))
 		for _, e := range planErrors {
@@ -536,7 +567,7 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 // allowPartial restores legacy "warn and return partial results" behaviour
 // when the iteration cap is hit; default false errors out so non-converging
 // queries cannot silently return wrong answers.
-func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPerRule, maxIterations int, allowPartial bool) (*eval.ResultSet, error) {
+func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPerRule, maxIterations int, allowPartial bool, opts buildOptions) (*eval.ResultSet, error) {
 	src, err := os.ReadFile(queryFile)
 	if err != nil {
 		return nil, fmt.Errorf("read query file: %w", err)
@@ -567,7 +598,7 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// rule graph (parse → resolve → desugar → MergeSystemRules → plan).
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
-	execPlan, _, _, buildErrs := buildProgram(string(src), queryFile, importLoader, sizeHints)
+	execPlan, _, _, buildErrs := buildProgramWithOpts(string(src), queryFile, importLoader, sizeHints, opts)
 	if len(buildErrs) > 0 {
 		// Reproduce the prior multi-error formatting of compileAndEval: group
 		// by phase and join with newline-indented messages so callers see one

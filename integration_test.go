@@ -675,3 +675,137 @@ func TestMagicSetPreservesResults(t *testing.T) {
 	}
 	t.Logf("both evaluations produced %d results", len(set1))
 }
+
+// TestMagicSetAuto_EquivalenceParametric is the cornerstone test for issue #87:
+// for a fixed graph and a small set of representative query bodies, the
+// WithMagicSetAuto path must produce results identical (as sets) to the
+// plain Plan path. Equivalence is asserted on sorted result rows.
+func TestMagicSetAuto_EquivalenceParametric(t *testing.T) {
+	// Path(x,y) :- Edge(x,y). Path(x,z) :- Edge(x,y), Path(y,z).
+	mkProg := func(queryBody []datalog.Literal, sel ...datalog.Term) *datalog.Program {
+		return &datalog.Program{
+			Rules: []datalog.Rule{
+				{
+					Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+					},
+				},
+				{
+					Head: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "z"}}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+						{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "y"}, datalog.Var{Name: "z"}}}},
+					},
+				},
+			},
+			Query: &datalog.Query{Select: sel, Body: queryBody},
+		}
+	}
+
+	// Diamond + tail graph: 1→2, 1→3, 2→4, 3→4, 4→5.
+	edgeRel := eval.NewRelation("Edge", 2)
+	for _, e := range [][2]int64{{1, 2}, {1, 3}, {2, 4}, {3, 4}, {4, 5}} {
+		edgeRel.Add(eval.Tuple{eval.IntVal{V: e[0]}, eval.IntVal{V: e[1]}})
+	}
+
+	cases := []struct {
+		name     string
+		body     []datalog.Literal
+		sel      []datalog.Term
+		expectMS bool // whether magic-set should fire
+	}{
+		{
+			name: "no_constants_full_closure",
+			body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+			},
+			sel:      []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}},
+			expectMS: false,
+		},
+		{
+			name: "const_in_first_col",
+			body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "b"}}}},
+			},
+			sel:      []datalog.Term{datalog.Var{Name: "b"}},
+			expectMS: true,
+		},
+		{
+			name: "where_eq_const",
+			body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+				{Positive: true, Cmp: &datalog.Comparison{Op: "=", Left: datalog.Var{Name: "a"}, Right: datalog.IntConst{Value: 1}}},
+			},
+			sel:      []datalog.Term{datalog.Var{Name: "b"}},
+			expectMS: true,
+		},
+		{
+			name: "base_lookup_with_const_grounds_var",
+			body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "b"}}}},
+			},
+			sel:      []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "b"}},
+			expectMS: true,
+		},
+	}
+
+	rowsToSortedSet := func(rs *eval.ResultSet) []string {
+		out := make([]string, 0, len(rs.Rows))
+		for _, row := range rs.Rows {
+			out = append(out, fmt.Sprintf("%v", row))
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			prog := mkProg(tc.body, tc.sel...)
+
+			// Plain plan.
+			ep1, errs := plan.Plan(prog, nil)
+			if len(errs) > 0 {
+				t.Fatalf("plain plan errors: %v", errs)
+			}
+			rs1, err := eval.Evaluate(context.Background(), ep1, map[string]*eval.Relation{"Edge": edgeRel})
+			if err != nil {
+				t.Fatalf("plain eval: %v", err)
+			}
+
+			// Magic-set-auto plan.
+			ep2, inf, errs := plan.WithMagicSetAuto(prog, nil)
+			if len(errs) > 0 {
+				t.Fatalf("magic-set plan errors: %v", errs)
+			}
+			fired := len(inf.Bindings) > 0
+			if fired != tc.expectMS {
+				t.Fatalf("magic-set fire mismatch: expected=%v got=%v (bindings=%v)", tc.expectMS, fired, inf.Bindings)
+			}
+			rs2, err := eval.Evaluate(context.Background(), ep2, map[string]*eval.Relation{"Edge": edgeRel})
+			if err != nil {
+				t.Fatalf("magic-set eval: %v", err)
+			}
+
+			set1 := rowsToSortedSet(rs1)
+			set2 := rowsToSortedSet(rs2)
+			if !equalStringSlices(set1, set2) {
+				t.Fatalf("equivalence violated:\n  plain     = %v\n  magic-set = %v", set1, set2)
+			}
+		})
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

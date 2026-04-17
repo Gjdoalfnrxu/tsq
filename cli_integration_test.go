@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -319,5 +320,92 @@ select c as "c"
 	rows := parseCSV(t, stdout.String())
 	if len(rows) < 2 {
 		t.Errorf("converging case: expected header + at least one Call row, got %d\nstderr: %s", len(rows), stderr.String())
+	}
+}
+
+// TestCLI_MagicSet_DefaultOnVsOff asserts that the --no-magic-sets flag is
+// wired through the CLI: with magic sets ON (default) and OFF, results must
+// be identical, and the verbose log must report whether the transform fired.
+// This is the CLI-level cornerstone for issue #87.
+func TestCLI_MagicSet_DefaultOnVsOff(t *testing.T) {
+	tsq := buildTSQBinary(t)
+	root := cliRepoRoot(t)
+	workDir := t.TempDir()
+
+	dbFile := filepath.Join(workDir, "v2.db")
+	runExtract(t, tsq, filepath.Join(root, "testdata", "ts", "v2"), dbFile)
+
+	// Recursive predicate: find_method_calls.ql exercises a recursive call-graph
+	// predicate from the system rules. Use the existing fixture so this test
+	// tracks real-world query shape.
+	queryFile := filepath.Join(root, "testdata", "queries", "v2", "find_method_calls.ql")
+
+	run := func(args ...string) (string, string, error) {
+		full := append([]string{"query", "--db", dbFile, "--format", "csv"}, args...)
+		full = append(full, queryFile)
+		cmd := exec.Command(tsq, full...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		return stdout.String(), stderr.String(), err
+	}
+
+	// Default (magic sets ON) — must succeed and return rows.
+	outOn, _, err := run()
+	if err != nil {
+		t.Fatalf("magic-sets-on (default) failed: %v", err)
+	}
+	rowsOn := parseCSV(t, outOn)
+	if len(rowsOn) < 2 {
+		t.Fatalf("magic-sets-on returned no data rows; got %d", len(rowsOn))
+	}
+
+	// --no-magic-sets — must succeed and return identical rows.
+	outOff, _, err := run("--no-magic-sets")
+	if err != nil {
+		t.Fatalf("--no-magic-sets failed: %v", err)
+	}
+	rowsOff := parseCSV(t, outOff)
+
+	// Equivalence on sorted rows (cornerstone assertion).
+	normaliseSorted := func(rows [][]string) []string {
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, strings.Join(r, "|"))
+		}
+		sort.Strings(out)
+		return out
+	}
+	on := normaliseSorted(rowsOn)
+	off := normaliseSorted(rowsOff)
+	if len(on) != len(off) {
+		t.Fatalf("equivalence failed: %d rows with magic-sets-on vs %d with --no-magic-sets", len(on), len(off))
+	}
+	for i := range on {
+		if on[i] != off[i] {
+			t.Fatalf("equivalence failed at row %d:\n  on : %q\n  off: %q", i, on[i], off[i])
+		}
+	}
+
+	// --verbose must produce a magic-set diagnostic line on stderr (either
+	// "transform applied" if bindings were inferred, or "no inferable query
+	// bindings" if not — both prove the verbose-logging branch is wired).
+	_, stderrVerbose, err := run("--verbose")
+	if err != nil {
+		t.Fatalf("--verbose failed: %v", err)
+	}
+	if !strings.Contains(stderrVerbose, "magic-set:") {
+		t.Errorf("expected --verbose to log a 'magic-set:' line on stderr, got: %q", stderrVerbose)
+	}
+
+	// --no-magic-sets --verbose must NOT log the magic-set diagnostic
+	// (the transform branch is gated off entirely).
+	_, stderrOffVerbose, err := run("--no-magic-sets", "--verbose")
+	if err != nil {
+		t.Fatalf("--no-magic-sets --verbose failed: %v", err)
+	}
+	if strings.Contains(stderrOffVerbose, "magic-set:") {
+		t.Errorf("expected --no-magic-sets to suppress 'magic-set:' diagnostics, got: %q", stderrOffVerbose)
 	}
 }
