@@ -270,26 +270,41 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 	}
 	defer enricher.Close()
 
-	// Collect extracted file paths from the File relation
+	// Collect extracted file paths from the File relation. Register them
+	// all up-front so the snapshot is opened with FileChanges.Created
+	// covering every file we plan to query — without this, the live tsgo
+	// binary returns "source file not found" for files reachable only via
+	// the tsconfig include glob.
 	fileRel := database.Relation("File")
 	numFiles := fileRel.Tuples()
+	allPaths := make([]string, 0, numFiles)
 	for i := 0; i < numFiles; i++ {
-		filePath, err := fileRel.GetString(database, i, 1) // col 1 = path
+		fp, err := fileRel.GetString(database, i, 1)
 		if err != nil {
 			continue
 		}
+		allPaths = append(allPaths, fp)
+	}
+	enricher.RegisterFiles(allPaths)
 
+	var aggSymQ, aggSymErr, aggTypQ, aggTypErr, aggFacts int
+	for _, filePath := range allPaths {
 		// Collect positions: variable declarations and parameters
 		positions := collectEnrichmentPositions(database, filePath)
 		if len(positions) == 0 {
 			continue
 		}
 
-		facts, err := enricher.EnrichFile(filePath, positions)
+		facts, stats, err := enricher.EnrichFile(filePath, positions)
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: tsgo enrich %s: %v\n", filePath, err)
 			continue
 		}
+		aggSymQ += stats.SymbolQueries
+		aggSymErr += stats.SymbolErrors
+		aggTypQ += stats.TypeQueries
+		aggTypErr += stats.TypeErrors
+		aggFacts += stats.FactsEmitted
 
 		// Populate ResolvedType and SymbolType/ExprType relations
 		for _, fact := range facts {
@@ -320,7 +335,16 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 		}
 	}
 
-	fmt.Fprintf(stderr, "tsgo type enrichment complete\n")
+	fmt.Fprintf(stderr,
+		"tsgo type enrichment complete: facts=%d symbolQueries=%d (errors=%d) typeQueries=%d (errors=%d)\n",
+		aggFacts, aggSymQ, aggSymErr, aggTypQ, aggTypErr,
+	)
+	if aggSymQ > 0 && aggFacts == 0 {
+		fmt.Fprintf(stderr,
+			"warning: tsgo answered %d symbol queries but produced zero type facts; downstream enrichment is not working — check tsgo binary and tsconfig\n",
+			aggSymQ,
+		)
+	}
 	return nil
 }
 

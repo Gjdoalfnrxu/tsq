@@ -195,9 +195,15 @@ func (c *Client) GetProjectForFile(filePath string) (string, error) {
 	if snap == "" {
 		return "", fmt.Errorf("typecheck: getDefaultProjectForFile requires OpenProject first (no snapshot loaded)")
 	}
+	// IMPORTANT: send `file` as a plain string, not {"fileName": ...}.
+	// Upstream DocumentIdentifier.UnmarshalJSONFrom (proto.go:191) handles
+	// the string form by populating FileName, but its object branch only
+	// reads `uri` — the `fileName` key is silently ignored, leaving an
+	// empty DocumentIdentifier and producing a "source file not found"
+	// error downstream. Verified against TypeScript 7.0.0-dev.20260416.
 	raw, err := c.call("getDefaultProjectForFile", map[string]interface{}{
 		"snapshot": snap,
-		"file":     map[string]string{"fileName": filePath},
+		"file":     filePath,
 	})
 	if err != nil {
 		return "", err
@@ -232,7 +238,15 @@ func (c *Client) GetProjectForFile(filePath string) (string, error) {
 //	}
 //	ProjectResponse{ Id Handle[project.Project] `json:"id"`, ConfigFileName string `json:"configFileName"` }
 //
-// Handles serialise as strings (e.g. "p" + 16 hex digits, "s" + 16 hex digits).
+// Handles serialise as strings. Per upstream proto.go:31-37 + createHandle:
+//   - Snapshot: 'n' + 16 hex digits  (e.g. "n0000000000000001")
+//   - Symbol:   's' + 16 hex digits
+//   - Type:     't' + 16 hex digits
+//   - Signature:'g' + 16 hex digits
+//
+// Project handles are NOT createHandle-shaped — see ProjectHandle (proto.go:39):
+// they serialise as "p." + tspath.Path (typically the absolute tsconfig path),
+// e.g. "p./tmp/proj/tsconfig.json".
 //
 // On success the client caches the snapshot handle so subsequent query methods
 // can supply it automatically. Returns the project handle whose configFileName
@@ -241,9 +255,32 @@ func (c *Client) GetProjectForFile(filePath string) (string, error) {
 //
 // configFileName must be an absolute path to a tsconfig.json file.
 func (c *Client) OpenProject(configFileName string) (string, error) {
-	raw, err := c.call("updateSnapshot", map[string]interface{}{
+	return c.OpenProjectWithFiles(configFileName, nil)
+}
+
+// OpenProjectWithFiles is like OpenProject but additionally seeds the snapshot
+// with a list of created source files via UpdateSnapshotParams.FileChanges.
+// This is empirically required for the live tsgo binary to resolve subsequent
+// position queries — even files reachable via the tsconfig `include` glob
+// must be advertised as "created" before getSymbolAtPosition / getTypeAtPosition
+// will return anything other than "source file not found".
+//
+// createdFiles must be a list of absolute file paths.
+func (c *Client) OpenProjectWithFiles(configFileName string, createdFiles []string) (string, error) {
+	params := map[string]interface{}{
 		"openProject": configFileName,
-	})
+	}
+	if len(createdFiles) > 0 {
+		// Send each entry as a plain string — DocumentIdentifier accepts
+		// either a string or {uri} object (the {fileName} object form is
+		// silently dropped by upstream's custom unmarshaller).
+		created := make([]string, len(createdFiles))
+		copy(created, createdFiles)
+		params["fileChanges"] = map[string]interface{}{
+			"created": created,
+		}
+	}
+	raw, err := c.call("updateSnapshot", params)
 	if err != nil {
 		return "", err
 	}
@@ -291,37 +328,20 @@ func (c *Client) snap() (string, error) {
 	return s, nil
 }
 
-// GetTypeAtPosition returns the type handle and type string at a position.
+// GetTypeAtOffset returns the type response at a byte offset in a file.
 //
-// Wire shape (GetTypeAtPositionParams): { snapshot, project, file:DocumentIdentifier, position:uint32 }.
+// Wire shape (GetTypeAtPositionParams, proto.go:726-731):
 //
-// NOTE: The upstream `position` field is a uint32 byte offset, not a
-// {line,character} object. The line/col API is preserved for backwards
-// compatibility with the existing enricher pipeline; for new code that talks
-// to a real tsgo backend, prefer GetTypeAtOffset.
-func (c *Client) GetTypeAtPosition(project string, file string, line, col int) (*TypeInfo, error) {
-	snap, err := c.snap()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := c.call("getTypeAtPosition", map[string]interface{}{
-		"snapshot": snap,
-		"project":  project,
-		"file":     map[string]string{"fileName": file},
-		"position": map[string]int{"line": line, "character": col},
-	})
-	if err != nil {
-		return nil, err
-	}
-	var info TypeInfo
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return nil, fmt.Errorf("typecheck: unmarshal type: %w", err)
-	}
-	return &info, nil
-}
-
-// GetTypeAtOffset matches the real upstream wire format: position is a byte
-// offset into the file. Use this for live-tsgo callers.
+//	{ snapshot, project, file:DocumentIdentifier, position:uint32 }
+//
+// `position` is a uint32 BYTE offset, not a {line,character} object. The
+// upstream session converts this to UTF-8 internally via UTF16ToUTF8, so the
+// offset is interpreted as UTF-16 code-unit count from the start of the file.
+// For pure ASCII / BMP source the UTF-16 offset equals the byte offset.
+//
+// Returns a populated TypeInfo whose Handle is set; DisplayName is left empty
+// here — upstream TypeResponse does not include a display name. Callers that
+// need a printable type string should chain a TypeToString call.
 func (c *Client) GetTypeAtOffset(project, file string, offset uint32) (*TypeInfo, error) {
 	snap, err := c.snap()
 	if err != nil {
@@ -330,7 +350,7 @@ func (c *Client) GetTypeAtOffset(project, file string, offset uint32) (*TypeInfo
 	raw, err := c.call("getTypeAtPosition", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
-		"file":     map[string]string{"fileName": file},
+		"file":     file, // plain string — see note on OpenProject
 		"position": offset,
 	})
 	if err != nil {
@@ -343,9 +363,9 @@ func (c *Client) GetTypeAtOffset(project, file string, offset uint32) (*TypeInfo
 	return &info, nil
 }
 
-// GetSymbolAtPosition returns the symbol handle and info at a position.
-// See GetTypeAtPosition note re: position encoding.
-func (c *Client) GetSymbolAtPosition(project string, file string, line, col int) (*SymbolInfo, error) {
+// GetSymbolAtOffset returns the symbol response at a byte offset in a file.
+// Same wire-shape notes as GetTypeAtOffset.
+func (c *Client) GetSymbolAtOffset(project, file string, offset uint32) (*SymbolInfo, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return nil, err
@@ -353,8 +373,8 @@ func (c *Client) GetSymbolAtPosition(project string, file string, line, col int)
 	raw, err := c.call("getSymbolAtPosition", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
-		"file":     map[string]string{"fileName": file},
-		"position": map[string]int{"line": line, "character": col},
+		"file":     file,
+		"position": offset,
 	})
 	if err != nil {
 		return nil, err
@@ -433,7 +453,10 @@ func (c *Client) GetBaseTypes(project string, typeHandle string) ([]TypeInfo, er
 	return types, nil
 }
 
-// TypeToString returns a human-readable type string.
+// TypeToString returns a human-readable type string for a type handle.
+//
+// Upstream (handleTypeToString, session.go:1352) returns a bare JSON string —
+// e.g. `"string"` or `"Box<number>"` — NOT an object with a displayName field.
 func (c *Client) TypeToString(project string, typeHandle string) (string, error) {
 	snap, err := c.snap()
 	if err != nil {
@@ -447,6 +470,13 @@ func (c *Client) TypeToString(project string, typeHandle string) (string, error)
 	if err != nil {
 		return "", err
 	}
+	// First try the bare-string shape used by the real binary.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil
+	}
+	// Fall back to the legacy {displayName} object shape — preserved for
+	// compatibility with older mocks / tsgo builds.
 	var result struct {
 		DisplayName string `json:"displayName"`
 	}
@@ -466,7 +496,7 @@ func (c *Client) GetSemanticDiagnostics(project string, file string) ([]Diagnost
 	raw, err := c.call("getSemanticDiagnostics", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
-		"file":     map[string]string{"fileName": file},
+		"file":     file, // plain string per DocumentIdentifier note above
 	})
 	if err != nil {
 		return nil, err

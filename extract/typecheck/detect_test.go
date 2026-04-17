@@ -68,22 +68,30 @@ func TestFindTSConfigPrefersClosest(t *testing.T) {
 // to be a real file outside our control.
 func TestFindTSConfigNotFound(t *testing.T) {
 	dir := t.TempDir()
+
+	// If any ancestor of t.TempDir() already contains a tsconfig.json (which
+	// can happen on a developer machine, in CI Docker images, or under /tmp
+	// when other tools plant one), FindTSConfig will legitimately find it
+	// and the "expect empty" branch becomes meaningless. Skip in that case
+	// so the test is honest: it either runs the empty-result branch, or it
+	// is skipped — never silently passes against a stranger's file.
+	for cur := dir; ; {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		if _, err := os.Stat(filepath.Join(parent, "tsconfig.json")); err == nil {
+			t.Skipf("ancestor %q contains tsconfig.json; cannot exercise the empty-result branch", parent)
+		}
+		cur = parent
+	}
+
 	sub := filepath.Join(dir, "deep", "no-config", "here")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	got := FindTSConfig(sub)
-	if got == "" {
-		return // ideal case: no ancestor has a tsconfig.json
-	}
-	// Non-empty: it must be outside our temp tree, AND it must really exist.
-	absSub, _ := filepath.Abs(sub)
-	if rel, err := filepath.Rel(absSub, got); err == nil && !filepath.IsAbs(rel) && rel[0] != '.' {
-		// got is under absSub — that's a bug because we know we created
-		// no tsconfig.json there.
-		t.Fatalf("FindTSConfig(%q) returned in-tree path %q; expected empty or out-of-tree", sub, got)
-	}
-	if info, err := os.Stat(got); err != nil || info.IsDir() {
-		t.Fatalf("FindTSConfig(%q) = %q, but that path does not exist as a file: %v", sub, got, err)
+	if got != "" {
+		t.Fatalf("FindTSConfig(%q) = %q, want empty (no ancestors carry tsconfig.json)", sub, got)
 	}
 }

@@ -1,30 +1,49 @@
 package typecheck
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// writeFakeSource creates a fake file with `numLines` lines of `lineLen` 'x'
+// characters terminated by '\n'. Returns the path. Useful when the line/col
+// → byte-offset translation is the only thing the test actually needs.
+func writeFakeSource(t *testing.T, name string, numLines int) string {
+	t.Helper()
+	dir := t.TempDir()
+	const lineLen = 80
+	body := make([]byte, 0, (lineLen+1)*numLines)
+	for i := 0; i < numLines; i++ {
+		body = append(body, bytes.Repeat([]byte{'x'}, lineLen)...)
+		body = append(body, '\n')
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, body, 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	return p
+}
 
 func TestEnricherEnrichFile(t *testing.T) {
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
 		switch req.Method {
 		case "initialize":
-			return &InitializeResponse{
-				UseCaseSensitiveFileNames: true,
-				CurrentDirectory:          "/project",
-			}
+			return &InitializeResponse{UseCaseSensitiveFileNames: true, CurrentDirectory: "/project"}
 		case "updateSnapshot":
 			return map[string]interface{}{
-				"snapshot": "s.0",
+				"snapshot": "n0000000000000001",
 				"projects": []map[string]interface{}{{"id": "p.test", "configFileName": "/project/tsconfig.json"}},
 			}
-		case "getDefaultProjectForFile":
-			return map[string]string{"id": "p.test", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			return &SymbolInfo{Handle: "s00001", Name: "x", Flags: 0}
 		case "getTypeOfSymbol":
 			return &TypeInfo{Handle: "t00001", DisplayName: "number", Flags: 0}
+		case "typeToString":
+			return "number"
 		default:
 			return &jsonrpcError{Code: -32601, Message: "Method not found"}
 		}
@@ -34,19 +53,20 @@ func TestEnricherEnrichFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
+	src := writeFakeSource(t, "index.ts", 10)
 
 	positions := []Position{
 		{Line: 1, Col: 4},
 		{Line: 3, Col: 6},
 	}
 
-	facts, err := enricher.EnrichFile("/project/src/index.ts", positions)
+	facts, stats, err := enricher.EnrichFile(src, positions)
 	if err != nil {
 		t.Fatalf("EnrichFile: %v", err)
 	}
 
 	if len(facts) != 2 {
-		t.Fatalf("len(facts) = %d, want 2", len(facts))
+		t.Fatalf("len(facts) = %d, want 2; stats=%+v", len(facts), stats)
 	}
 	if facts[0].TypeDisplay != "number" {
 		t.Errorf("facts[0].TypeDisplay = %q, want %q", facts[0].TypeDisplay, "number")
@@ -59,6 +79,9 @@ func TestEnricherEnrichFile(t *testing.T) {
 	}
 	if facts[1].Line != 3 {
 		t.Errorf("facts[1].Line = %d, want 3", facts[1].Line)
+	}
+	if stats.SymbolQueries != 2 || stats.FactsEmitted != 2 {
+		t.Errorf("stats = %+v, want 2 queries / 2 facts", stats)
 	}
 }
 
@@ -88,19 +111,17 @@ func TestEnricherHandlesSymbolError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
+	src := writeFakeSource(t, "index.ts", 10)
 
-	positions := []Position{
-		{Line: 1, Col: 4},
-	}
-
-	facts, err := enricher.EnrichFile("/project/src/index.ts", positions)
+	facts, stats, err := enricher.EnrichFile(src, []Position{{Line: 1, Col: 4}})
 	if err != nil {
 		t.Fatalf("EnrichFile: %v", err)
 	}
-
-	// Should gracefully return empty when tsgo returns errors
 	if len(facts) != 0 {
-		t.Errorf("len(facts) = %d, want 0 (graceful degradation)", len(facts))
+		t.Errorf("len(facts) = %d, want 0", len(facts))
+	}
+	if stats.SymbolErrors == 0 {
+		t.Errorf("expected SymbolErrors > 0, got stats=%+v", stats)
 	}
 }
 
@@ -132,18 +153,17 @@ func TestEnricherHandlesTypeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
+	src := writeFakeSource(t, "index.ts", 10)
 
-	positions := []Position{
-		{Line: 1, Col: 4},
-	}
-
-	facts, err := enricher.EnrichFile("/project/src/index.ts", positions)
+	facts, stats, err := enricher.EnrichFile(src, []Position{{Line: 1, Col: 4}})
 	if err != nil {
 		t.Fatalf("EnrichFile: %v", err)
 	}
-
 	if len(facts) != 0 {
-		t.Errorf("len(facts) = %d, want 0 (graceful degradation)", len(facts))
+		t.Errorf("len(facts) = %d, want 0", len(facts))
+	}
+	if stats.TypeErrors == 0 {
+		t.Errorf("expected TypeErrors > 0, got stats=%+v", stats)
 	}
 }
 
@@ -173,18 +193,17 @@ func TestEnricherEmptySymbolHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
+	src := writeFakeSource(t, "index.ts", 10)
 
-	positions := []Position{
-		{Line: 1, Col: 4},
-	}
-
-	facts, err := enricher.EnrichFile("/project/src/index.ts", positions)
+	facts, stats, err := enricher.EnrichFile(src, []Position{{Line: 1, Col: 4}})
 	if err != nil {
 		t.Fatalf("EnrichFile: %v", err)
 	}
-
 	if len(facts) != 0 {
 		t.Errorf("len(facts) = %d, want 0 (empty handle should be skipped)", len(facts))
+	}
+	if stats.SymbolEmpty == 0 {
+		t.Errorf("expected SymbolEmpty > 0, got stats=%+v", stats)
 	}
 }
 
@@ -221,8 +240,9 @@ func TestEnricherProjectError(t *testing.T) {
 	}
 
 	positions := []Position{{Line: 1, Col: 4}}
+	src := writeFakeSource(t, "index.ts", 10)
 
-	_, err = enricher.EnrichFile("/project/src/index.ts", positions)
+	_, _, err = enricher.EnrichFile(src, positions)
 	if err == nil {
 		t.Fatal("expected error when project resolution fails, got nil")
 	}
@@ -239,11 +259,55 @@ func posKey(line, col int) string {
 	return fmt.Sprintf("%d:%d", line, col)
 }
 
-// fixtureEnricher builds a mock enricher that dispatches type
-// info by (line, col) position.  symbolMap maps "line:col" to
-// a SymbolInfo; typeMap maps symbol handle to TypeInfo.
-func fixtureEnricher(t *testing.T, symbolMap map[string]*SymbolInfo, typeMap map[string]*TypeInfo) *Enricher {
+// fixtureEnricher builds a mock enricher backed by a fake source file (so that
+// the line/col → byte-offset translation produces deterministic offsets) and a
+// mock tsgo server that dispatches by (line, col) via a reverse lookup of the
+// requested byte offset.
+//
+// symbolMap maps "line:col" to a SymbolInfo; typeMap maps symbol handle to a
+// TypeInfo whose DisplayName is also returned by typeToString.
+func fixtureEnricher(t *testing.T, fixturePath string, symbolMap map[string]*SymbolInfo, typeMap map[string]*TypeInfo) (*Enricher, string) {
 	t.Helper()
+
+	// Lay down a synthetic source file with a known shape so byte offsets
+	// are deterministic. Each line is 80 bytes of 'x' + newline; that gives
+	// us a generous range for any (line, col) pair the tests use.
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, filepath.Base(fixturePath))
+	const lineLen = 80
+	const numLines = 200
+	body := make([]byte, 0, (lineLen+1)*numLines)
+	for i := 0; i < numLines; i++ {
+		body = append(body, bytes.Repeat([]byte{'x'}, lineLen)...)
+		body = append(body, '\n')
+	}
+	if err := os.WriteFile(srcPath, body, 0o644); err != nil {
+		t.Fatalf("write fixture source: %v", err)
+	}
+
+	offsetForKey := func(key string) (uint32, bool) {
+		var line, col int
+		if _, err := fmt.Sscanf(key, "%d:%d", &line, &col); err != nil {
+			return 0, false
+		}
+		return uint32((line-1)*(lineLen+1) + col), true
+	}
+	keyForOffset := func(off uint32) string {
+		// best-effort reverse map; tolerate offsets that don't land on
+		// our row grid by returning the closest cell.
+		row := int(off) / (lineLen + 1)
+		col := int(off) % (lineLen + 1)
+		return posKey(row+1, col)
+	}
+	// Validate every symbolMap key has a corresponding offset in our grid.
+	for k := range symbolMap {
+		if off, ok := offsetForKey(k); !ok {
+			t.Fatalf("fixtureEnricher: bad posKey %q", k)
+		} else if got := keyForOffset(off); got != k {
+			t.Fatalf("fixtureEnricher: round-trip mismatch %q -> %d -> %q", k, off, got)
+		}
+	}
+
 	c := newMockClient(t, func(req jsonrpcRequest) interface{} {
 		switch req.Method {
 		case "initialize":
@@ -253,21 +317,18 @@ func fixtureEnricher(t *testing.T, symbolMap map[string]*SymbolInfo, typeMap map
 			}
 		case "updateSnapshot":
 			return map[string]interface{}{
-				"snapshot": "s.fixture",
-				"projects": []map[string]interface{}{{"id": "p.fixture", "configFileName": "/project/tsconfig.json"}},
+				"snapshot": "n0000000000000001",
+				"projects": []map[string]interface{}{{"id": "p." + srcPath, "configFileName": "/project/tsconfig.json"}},
 			}
 		case "getDefaultProjectForFile":
 			return map[string]string{"id": "p.fixture", "configFileName": "/project/tsconfig.json"}
 		case "getSymbolAtPosition":
 			params, _ := json.Marshal(req.Params)
 			var p struct {
-				Position struct {
-					Line int `json:"line"`
-					Char int `json:"character"`
-				} `json:"position"`
+				Position uint32 `json:"position"`
 			}
 			json.Unmarshal(params, &p)
-			key := posKey(p.Position.Line, p.Position.Char)
+			key := keyForOffset(p.Position)
 			if sym, ok := symbolMap[key]; ok {
 				return sym
 			}
@@ -282,16 +343,29 @@ func fixtureEnricher(t *testing.T, symbolMap map[string]*SymbolInfo, typeMap map
 				return ti
 			}
 			return &jsonrpcError{Code: -32000, Message: "No type for symbol"}
+		case "typeToString":
+			params, _ := json.Marshal(req.Params)
+			var p struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal(params, &p)
+			for _, ti := range typeMap {
+				if ti.Handle == p.Type {
+					return ti.DisplayName
+				}
+			}
+			return ""
 		default:
 			return &jsonrpcError{Code: -32601, Message: "Method not found"}
 		}
 	})
 
-	enricher, err := NewEnricherWithConfig(c, "/project", "/project/tsconfig.json")
+	enricher, err := NewEnricherWithConfig(c, dir, "/project/tsconfig.json")
 	if err != nil {
 		t.Fatalf("fixtureEnricher: %v", err)
 	}
-	return enricher
+	t.Cleanup(func() { enricher.Close() })
+	return enricher, srcPath
 }
 
 // TestEnricher_Generics exercises the enricher against generics.ts.
@@ -315,10 +389,9 @@ func TestEnricher_Generics(t *testing.T) {
 		"s_Box":      {Handle: "t_Box", DisplayName: "typeof Box", Flags: 0},
 	}
 
-	enricher := fixtureEnricher(t, symbolMap, typeMap)
+	enricher, src := fixtureEnricher(t, "generics.ts", symbolMap, typeMap)
 
-	// Test inferred generic result types
-	facts, err := enricher.EnrichFile("/project/testdata/ts/typed/generics.ts", []Position{
+	facts, stats, err := enricher.EnrichFile(src, []Position{
 		{Line: 23, Col: 6},
 		{Line: 24, Col: 6},
 		{Line: 25, Col: 6},
@@ -327,7 +400,7 @@ func TestEnricher_Generics(t *testing.T) {
 		t.Fatalf("EnrichFile: %v", err)
 	}
 	if len(facts) == 0 {
-		t.Skip("enricher gap: no type facts returned for generic variable declarations")
+		t.Fatalf("enricher returned no facts despite full mock coverage; enricher regressed (stats=%+v)", stats)
 	}
 
 	want := map[int]string{
@@ -343,8 +416,7 @@ func TestEnricher_Generics(t *testing.T) {
 		}
 	}
 
-	// Test generic function signature positions
-	sigFacts, err := enricher.EnrichFile("/project/testdata/ts/typed/generics.ts", []Position{
+	sigFacts, _, err := enricher.EnrichFile(src, []Position{
 		{Line: 7, Col: 9},
 		{Line: 11, Col: 9},
 	})
@@ -352,7 +424,7 @@ func TestEnricher_Generics(t *testing.T) {
 		t.Fatalf("EnrichFile (signatures): %v", err)
 	}
 	if len(sigFacts) == 0 {
-		t.Skip("enricher gap: no type facts for generic function signatures")
+		t.Fatalf("enricher returned no signature facts despite full mock coverage; enricher regressed")
 	}
 	for _, f := range sigFacts {
 		if f.TypeDisplay == "" {
@@ -373,9 +445,9 @@ func TestEnricher_Conditional(t *testing.T) {
 		"s_elem":  {Handle: "t_number", DisplayName: "number", Flags: 0},
 	}
 
-	enricher := fixtureEnricher(t, symbolMap, typeMap)
+	enricher, src := fixtureEnricher(t, "conditional.ts", symbolMap, typeMap)
 
-	facts, err := enricher.EnrichFile("/project/testdata/ts/typed/conditional.ts", []Position{
+	facts, stats, err := enricher.EnrichFile(src, []Position{
 		{Line: 17, Col: 6},
 		{Line: 18, Col: 6},
 	})
@@ -383,7 +455,7 @@ func TestEnricher_Conditional(t *testing.T) {
 		t.Fatalf("EnrichFile: %v", err)
 	}
 	if len(facts) == 0 {
-		t.Skip("enricher gap: no type facts returned for conditional type variables")
+		t.Fatalf("enricher returned no facts despite full mock coverage; enricher regressed (stats=%+v)", stats)
 	}
 
 	want := map[int]string{
@@ -398,18 +470,21 @@ func TestEnricher_Conditional(t *testing.T) {
 		}
 	}
 
-	// Conditional type aliases (lines 3,5,7,9) are type-level only;
-	// the enricher works on value-level symbols, so type alias
-	// declarations may not produce TypeFacts.
-	typeAliasFacts, err := enricher.EnrichFile("/project/testdata/ts/typed/conditional.ts", []Position{
+	// Type alias declarations (lines 3,5) are type-level only; the mock
+	// has no symbol entries for them so EnrichFile correctly returns nothing
+	// and that is the expected behaviour, not a regression.
+	typeAliasFacts, aliasStats, err := enricher.EnrichFile(src, []Position{
 		{Line: 3, Col: 5},
 		{Line: 5, Col: 5},
 	})
 	if err != nil {
 		t.Fatalf("EnrichFile (type aliases): %v", err)
 	}
-	if len(typeAliasFacts) == 0 {
-		t.Skip("enricher gap: type alias declarations do not produce TypeFacts (expected)")
+	if len(typeAliasFacts) != 0 {
+		t.Errorf("expected zero facts for type-only positions, got %d (stats=%+v)", len(typeAliasFacts), aliasStats)
+	}
+	if aliasStats.SymbolErrors == 0 {
+		t.Errorf("expected SymbolErrors > 0 for type-only positions, got %+v", aliasStats)
 	}
 }
 
@@ -427,9 +502,9 @@ func TestEnricher_Mapped(t *testing.T) {
 		"s_nullable": {Handle: "t_nullable_user", DisplayName: "Nullable<User>", Flags: 0},
 	}
 
-	enricher := fixtureEnricher(t, symbolMap, typeMap)
+	enricher, src := fixtureEnricher(t, "mapped.ts", symbolMap, typeMap)
 
-	facts, err := enricher.EnrichFile("/project/testdata/ts/typed/mapped.ts", []Position{
+	facts, stats, err := enricher.EnrichFile(src, []Position{
 		{Line: 19, Col: 6},
 		{Line: 20, Col: 6},
 		{Line: 21, Col: 6},
@@ -438,7 +513,7 @@ func TestEnricher_Mapped(t *testing.T) {
 		t.Fatalf("EnrichFile: %v", err)
 	}
 	if len(facts) == 0 {
-		t.Skip("enricher gap: no type facts returned for mapped type variables")
+		t.Fatalf("enricher returned no facts despite full mock coverage; enricher regressed (stats=%+v)", stats)
 	}
 	if len(facts) != 3 {
 		t.Errorf("len(facts) = %d, want 3", len(facts))
@@ -472,9 +547,9 @@ func TestEnricher_UnionIntersection(t *testing.T) {
 		"s_a":      {Handle: "t_number", DisplayName: "number", Flags: 0},
 	}
 
-	enricher := fixtureEnricher(t, symbolMap, typeMap)
+	enricher, src := fixtureEnricher(t, "union_intersection.ts", symbolMap, typeMap)
 
-	facts, err := enricher.EnrichFile("/project/testdata/ts/typed/union_intersection.ts", []Position{
+	facts, stats, err := enricher.EnrichFile(src, []Position{
 		{Line: 16, Col: 9},
 		{Line: 29, Col: 6},
 		{Line: 30, Col: 6},
@@ -483,7 +558,7 @@ func TestEnricher_UnionIntersection(t *testing.T) {
 		t.Fatalf("EnrichFile: %v", err)
 	}
 	if len(facts) == 0 {
-		t.Skip("enricher gap: no type facts for union/intersection variables")
+		t.Fatalf("enricher returned no facts despite full mock coverage; enricher regressed (stats=%+v)", stats)
 	}
 
 	// Verify the function taking a union type parameter is resolved
@@ -523,9 +598,9 @@ func TestEnricher_LiteralTypes(t *testing.T) {
 		"s_status":       {Handle: "t_string", DisplayName: "string", Flags: 0},
 	}
 
-	enricher := fixtureEnricher(t, symbolMap, typeMap)
+	enricher, src := fixtureEnricher(t, "literal_types.ts", symbolMap, typeMap)
 
-	facts, err := enricher.EnrichFile("/project/testdata/ts/typed/literal_types.ts", []Position{
+	facts, stats, err := enricher.EnrichFile(src, []Position{
 		{Line: 9, Col: 9},
 		{Line: 11, Col: 9},
 		{Line: 20, Col: 6},
@@ -535,7 +610,7 @@ func TestEnricher_LiteralTypes(t *testing.T) {
 		t.Fatalf("EnrichFile: %v", err)
 	}
 	if len(facts) == 0 {
-		t.Skip("enricher gap: no type facts for literal type variables")
+		t.Fatalf("enricher returned no facts despite full mock coverage; enricher regressed (stats=%+v)", stats)
 	}
 
 	// Verify const assertion preserves literal types
@@ -593,6 +668,8 @@ func TestEnricherWithConfigUsesOpenProject(t *testing.T) {
 			return &SymbolInfo{Handle: "s1", Name: "x"}
 		case "getTypeOfSymbol":
 			return &TypeInfo{Handle: "t1", DisplayName: "number"}
+		case "typeToString":
+			return "number"
 		default:
 			return &jsonrpcError{Code: -32601, Message: "Method not found"}
 		}
@@ -602,8 +679,9 @@ func TestEnricherWithConfigUsesOpenProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricherWithConfig: %v", err)
 	}
+	src := writeFakeSource(t, "index.ts", 10)
 
-	facts, err := enricher.EnrichFile("/project/src/index.ts", []Position{{Line: 1, Col: 4}})
+	facts, _, err := enricher.EnrichFile(src, []Position{{Line: 1, Col: 4}})
 	if err != nil {
 		t.Fatalf("EnrichFile: %v", err)
 	}
@@ -646,7 +724,8 @@ func TestEnricherWithoutConfigSurfacesDefaultProjectFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
-	_, err = enricher.EnrichFile("/project/src/index.ts", []Position{{Line: 1, Col: 4}})
+	src := writeFakeSource(t, "index.ts", 10)
+	_, _, err = enricher.EnrichFile(src, []Position{{Line: 1, Col: 4}})
 	if err == nil {
 		t.Fatal("expected error from legacy no-tsconfig path, got nil")
 	}
@@ -676,8 +755,9 @@ func TestEnricherNoPositions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnricher: %v", err)
 	}
+	src := writeFakeSource(t, "index.ts", 10)
 
-	facts, err := enricher.EnrichFile("/project/src/index.ts", nil)
+	facts, _, err := enricher.EnrichFile(src, nil)
 	if err != nil {
 		t.Fatalf("EnrichFile: %v", err)
 	}
