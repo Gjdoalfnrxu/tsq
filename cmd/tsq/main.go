@@ -417,64 +417,43 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Parse.
-	p := parse.NewParser(string(src), queryFile)
-	mod, err := p.Parse()
-	if err != nil {
-		fmt.Fprintf(stderr, "parse error: %v\n", err)
-		return 1
-	}
-
-	// Resolve with bridge loader.
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
-	resolved, err := resolve.Resolve(mod, importLoader)
-	if err != nil {
-		fmt.Fprintf(stderr, "resolve error: %v\n", err)
-		return 1
-	}
 
-	// Surface deprecation warnings (non-fatal).
-	for _, w := range resolved.Warnings {
-		fmt.Fprintf(stderr, "  %s\n", w.String())
-	}
+	// Run the same compilation pipeline used by `query` so that issues which
+	// would surface during evaluation (e.g. system-rule planning failures) are
+	// caught here. The fact DB is not loaded, so size hints are nil — the
+	// planner uses its default heuristics.
+	_, mod, resolveWarnings, buildErrs := buildProgram(string(src), queryFile, importLoader, nil)
 
 	hasErrors := false
-	if len(resolved.Errors) > 0 {
-		for _, e := range resolved.Errors {
+	if len(buildErrs) > 0 {
+		for _, e := range buildErrs {
 			fmt.Fprintf(stderr, "  %s\n", e.Error())
 		}
 		hasErrors = true
 	}
 
-	// Desugar.
-	prog, dsErrors := desugar.Desugar(resolved)
-	if len(dsErrors) > 0 {
-		for _, e := range dsErrors {
-			fmt.Fprintf(stderr, "  desugar: %v\n", e)
-		}
-		hasErrors = true
+	// Surface resolve-phase deprecation warnings (non-fatal). These were
+	// previously emitted by cmdCheck directly; preserve that behaviour now
+	// that resolution happens inside buildProgram.
+	for _, w := range resolveWarnings {
+		fmt.Fprintf(stderr, "  %s\n", w.String())
 	}
 
-	// Plan.
-	_, planErrors := plan.Plan(prog, nil)
-	if len(planErrors) > 0 {
-		for _, e := range planErrors {
-			fmt.Fprintf(stderr, "  plan: %v\n", e)
+	// Surface bridge capability warnings. buildProgram returns the parsed
+	// module even on later-stage errors so we can still report these.
+	if mod != nil {
+		manifest := bridge.V1Manifest()
+		var imports []string
+		for _, imp := range mod.Imports {
+			imports = append(imports, imp.Path)
 		}
-		hasErrors = true
-	}
-
-	// Capability warnings.
-	manifest := bridge.V1Manifest()
-	var imports []string
-	for _, imp := range mod.Imports {
-		imports = append(imports, imp.Path)
-	}
-	warnings := manifest.CheckQuery(imports)
-	for _, w := range warnings {
-		fmt.Fprintf(stdout, "warning: import %q uses unavailable feature (%s, expected %s)\n",
-			w.Import, w.Reason, w.VersionTarget)
+		warnings := manifest.CheckQuery(imports)
+		for _, w := range warnings {
+			fmt.Fprintf(stdout, "warning: import %q uses unavailable feature (%s, expected %s)\n",
+				w.Import, w.Reason, w.VersionTarget)
+		}
 	}
 
 	if hasErrors {
@@ -486,48 +465,73 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// buildProgram runs the shared QL compilation pipeline used by both `check`
+// and `query`: parse → resolve → desugar → MergeSystemRules → plan. Both
+// callers must use this helper so that a query which passes `check` cannot
+// later hang or OOM in `query` due to a divergent rule graph (issue #82).
+//
+// sizeHints may be nil; the planner will use its default heuristics in that
+// case. The parsed *ast.Module is returned even when later phases produce
+// errors, so callers can still surface things like capability warnings.
+// Resolve-phase warnings (e.g. deprecated imports) are returned alongside
+// errors so callers can surface them regardless of whether later phases ran.
+func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
+	// Parse.
+	p := parse.NewParser(src, file)
+	mod, err := p.Parse()
+	if err != nil {
+		return nil, nil, nil, []error{fmt.Errorf("parse: %w", err)}
+	}
+
+	// Resolve.
+	resolved, err := resolve.Resolve(mod, importLoader)
+	if err != nil {
+		return nil, mod, nil, []error{fmt.Errorf("resolve: %w", err)}
+	}
+	warnings := resolved.Warnings
+	if len(resolved.Errors) > 0 {
+		errs := make([]error, 0, len(resolved.Errors))
+		for _, e := range resolved.Errors {
+			errs = append(errs, fmt.Errorf("resolve: %w", e))
+		}
+		return nil, mod, warnings, errs
+	}
+
+	// Desugar.
+	prog, dsErrors := desugar.Desugar(resolved)
+	if len(dsErrors) > 0 {
+		errs := make([]error, 0, len(dsErrors))
+		for _, e := range dsErrors {
+			errs = append(errs, fmt.Errorf("desugar: %w", e))
+		}
+		return nil, mod, warnings, errs
+	}
+
+	// Inject system rules so derived relations (CallTarget, LocalFlow,
+	// TaintAlert, etc.) are present in the planned graph. This used to live
+	// only in `query`, which meant `check` could green-light a program whose
+	// system-rule-augmented form failed to plan or hung at eval time.
+	prog = rules.MergeSystemRules(prog, rules.AllSystemRules())
+
+	// Plan.
+	execPlan, planErrors := plan.Plan(prog, sizeHints)
+	if len(planErrors) > 0 {
+		errs := make([]error, 0, len(planErrors))
+		for _, e := range planErrors {
+			errs = append(errs, fmt.Errorf("plan: %w", e))
+		}
+		return nil, mod, warnings, errs
+	}
+
+	return execPlan, mod, warnings, nil
+}
+
 // compileAndEval reads a .ql file, compiles it, loads a fact DB, and evaluates.
 func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.ResultSet, error) {
 	src, err := os.ReadFile(queryFile)
 	if err != nil {
 		return nil, fmt.Errorf("read query file: %w", err)
 	}
-
-	// Parse.
-	p := parse.NewParser(string(src), queryFile)
-	mod, err := p.Parse()
-	if err != nil {
-		return nil, fmt.Errorf("parse: %w", err)
-	}
-
-	// Resolve.
-	bridgeFiles := bridge.LoadBridge()
-	importLoader := makeBridgeImportLoader(bridgeFiles)
-	resolved, err := resolve.Resolve(mod, importLoader)
-	if err != nil {
-		return nil, fmt.Errorf("resolve: %w", err)
-	}
-	if len(resolved.Errors) > 0 {
-		var msgs []string
-		for _, e := range resolved.Errors {
-			msgs = append(msgs, e.Error())
-		}
-		return nil, fmt.Errorf("resolve errors:\n  %s", strings.Join(msgs, "\n  "))
-	}
-
-	// Desugar.
-	prog, dsErrors := desugar.Desugar(resolved)
-	if len(dsErrors) > 0 {
-		var msgs []string
-		for _, e := range dsErrors {
-			msgs = append(msgs, e.Error())
-		}
-		return nil, fmt.Errorf("desugar errors:\n  %s", strings.Join(msgs, "\n  "))
-	}
-
-	// Inject system rules so derived relations (CallTarget, LocalFlow, TaintAlert, etc.)
-	// are available for evaluation.
-	prog = rules.MergeSystemRules(prog, rules.AllSystemRules())
 
 	// Load fact DB before planning so we can pass actual tuple counts as size hints.
 	f, err := os.Open(dbFile)
@@ -550,14 +554,16 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 	// order joins by true relation size rather than a uniform default of 1000.
 	sizeHints := buildSizeHints(factDB)
 
-	// Plan.
-	execPlan, planErrors := plan.Plan(prog, sizeHints)
-	if len(planErrors) > 0 {
-		var msgs []string
-		for _, e := range planErrors {
-			msgs = append(msgs, e.Error())
-		}
-		return nil, fmt.Errorf("plan errors:\n  %s", strings.Join(msgs, "\n  "))
+	// Compile via the shared pipeline so that `check` and `query` agree on the
+	// rule graph (parse → resolve → desugar → MergeSystemRules → plan).
+	bridgeFiles := bridge.LoadBridge()
+	importLoader := makeBridgeImportLoader(bridgeFiles)
+	execPlan, _, _, buildErrs := buildProgram(string(src), queryFile, importLoader, sizeHints)
+	if len(buildErrs) > 0 {
+		// Reproduce the prior multi-error formatting of compileAndEval: group
+		// by phase and join with newline-indented messages so callers see one
+		// error per phase boundary rather than a flat error.Join blob.
+		return nil, joinPhaseErrors(buildErrs)
 	}
 
 	// Evaluate.
@@ -567,6 +573,39 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 		return nil, fmt.Errorf("evaluate: %w", err)
 	}
 	return rs, nil
+}
+
+// joinPhaseErrors reformats a slice of phase-prefixed errors back into the
+// "<phase> errors:\n  <msg1>\n  <msg2>" shape that compileAndEval used to
+// produce. Callers (cmdQuery via stderr) parse this for human display only.
+func joinPhaseErrors(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	// Group consecutive errors that share the same prefix (e.g. "desugar:").
+	// In practice buildProgram only returns errors from a single phase per
+	// call, so this is just a faithful flatten with the phase header.
+	prefix := ""
+	if i := strings.Index(errs[0].Error(), ":"); i > 0 {
+		prefix = errs[0].Error()[:i]
+	}
+	var msgs []string
+	for _, e := range errs {
+		s := e.Error()
+		// Trim the "<phase>: " prefix added by buildProgram so it's not
+		// repeated on every line of the joined output.
+		if prefix != "" && strings.HasPrefix(s, prefix+": ") {
+			s = s[len(prefix)+2:]
+		}
+		msgs = append(msgs, s)
+	}
+	if prefix == "" {
+		return fmt.Errorf("errors:\n  %s", strings.Join(msgs, "\n  "))
+	}
+	return fmt.Errorf("%s errors:\n  %s", prefix, strings.Join(msgs, "\n  "))
 }
 
 // makeBridgeImportLoader creates an import loader that parses bridge .qll files.
