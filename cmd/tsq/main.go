@@ -424,20 +424,26 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	// would surface during evaluation (e.g. system-rule planning failures) are
 	// caught here. The fact DB is not loaded, so size hints are nil — the
 	// planner uses its default heuristics.
-	_, mod, buildErrs := buildProgram(string(src), queryFile, importLoader, nil)
+	_, mod, resolveWarnings, buildErrs := buildProgram(string(src), queryFile, importLoader, nil)
 
 	hasErrors := false
-	if buildErrs != nil {
+	if len(buildErrs) > 0 {
 		for _, e := range buildErrs {
 			fmt.Fprintf(stderr, "  %s\n", e.Error())
 		}
 		hasErrors = true
 	}
 
-	// Surface deprecation warnings (non-fatal). buildProgram returns the
-	// parsed module even on later-stage errors so we can still report these.
+	// Surface resolve-phase deprecation warnings (non-fatal). These were
+	// previously emitted by cmdCheck directly; preserve that behaviour now
+	// that resolution happens inside buildProgram.
+	for _, w := range resolveWarnings {
+		fmt.Fprintf(stderr, "  %s\n", w.String())
+	}
+
+	// Surface bridge capability warnings. buildProgram returns the parsed
+	// module even on later-stage errors so we can still report these.
 	if mod != nil {
-		// Capability warnings.
 		manifest := bridge.V1Manifest()
 		var imports []string
 		for _, imp := range mod.Imports {
@@ -467,25 +473,28 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 // sizeHints may be nil; the planner will use its default heuristics in that
 // case. The parsed *ast.Module is returned even when later phases produce
 // errors, so callers can still surface things like capability warnings.
-func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []error) {
+// Resolve-phase warnings (e.g. deprecated imports) are returned alongside
+// errors so callers can surface them regardless of whether later phases ran.
+func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
 	// Parse.
 	p := parse.NewParser(src, file)
 	mod, err := p.Parse()
 	if err != nil {
-		return nil, nil, []error{fmt.Errorf("parse: %w", err)}
+		return nil, nil, nil, []error{fmt.Errorf("parse: %w", err)}
 	}
 
 	// Resolve.
 	resolved, err := resolve.Resolve(mod, importLoader)
 	if err != nil {
-		return nil, mod, []error{fmt.Errorf("resolve: %w", err)}
+		return nil, mod, nil, []error{fmt.Errorf("resolve: %w", err)}
 	}
+	warnings := resolved.Warnings
 	if len(resolved.Errors) > 0 {
 		errs := make([]error, 0, len(resolved.Errors))
 		for _, e := range resolved.Errors {
 			errs = append(errs, fmt.Errorf("resolve: %w", e))
 		}
-		return nil, mod, errs
+		return nil, mod, warnings, errs
 	}
 
 	// Desugar.
@@ -495,7 +504,7 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 		for _, e := range dsErrors {
 			errs = append(errs, fmt.Errorf("desugar: %w", e))
 		}
-		return nil, mod, errs
+		return nil, mod, warnings, errs
 	}
 
 	// Inject system rules so derived relations (CallTarget, LocalFlow,
@@ -511,10 +520,10 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 		for _, e := range planErrors {
 			errs = append(errs, fmt.Errorf("plan: %w", e))
 		}
-		return nil, mod, errs
+		return nil, mod, warnings, errs
 	}
 
-	return execPlan, mod, nil
+	return execPlan, mod, warnings, nil
 }
 
 // compileAndEval reads a .ql file, compiles it, loads a fact DB, and evaluates.
@@ -549,7 +558,7 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string) (*eval.Result
 	// rule graph (parse → resolve → desugar → MergeSystemRules → plan).
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
-	execPlan, _, buildErrs := buildProgram(string(src), queryFile, importLoader, sizeHints)
+	execPlan, _, _, buildErrs := buildProgram(string(src), queryFile, importLoader, sizeHints)
 	if len(buildErrs) > 0 {
 		// Reproduce the prior multi-error formatting of compileAndEval: group
 		// by phase and join with newline-indented messages so callers see one

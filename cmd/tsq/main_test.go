@@ -181,7 +181,7 @@ select x
 `
 	loader := makeBridgeImportLoader(bridgeLoadForTest())
 
-	checkPlan, _, errs := buildProgram(src, "test.ql", loader, nil)
+	checkPlan, _, _, errs := buildProgram(src, "test.ql", loader, nil)
 	if len(errs) > 0 {
 		t.Fatalf("buildProgram (check config) returned errors: %v", errs)
 	}
@@ -204,7 +204,7 @@ select x
 	}
 
 	// Now build a second plan with size hints, simulating the `query` path.
-	queryPlan, _, errs := buildProgram(src, "test.ql", loader, map[string]int{"Node": 100, "Call": 50})
+	queryPlan, _, _, errs := buildProgram(src, "test.ql", loader, map[string]int{"Node": 100, "Call": 50})
 	if len(errs) > 0 {
 		t.Fatalf("buildProgram (query config) returned errors: %v", errs)
 	}
