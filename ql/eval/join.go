@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"errors"
+
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
@@ -41,11 +43,18 @@ func lookupTerm(t datalog.Term, b binding) (Value, bool) {
 }
 
 // Rule evaluates a single PlannedRule against the given relations.
-// Returns all result tuples for the rule head.
-func Rule(rule plan.PlannedRule, rels map[string]*Relation) []Tuple {
+// Returns all result tuples for the rule head. If maxBindings > 0 and the
+// intermediate join cardinality exceeds it during evaluation, Rule returns
+// a *BindingCapError (wraps ErrBindingCapExceeded) and stops early to
+// prevent OOM (issue #80).
+func Rule(rule plan.PlannedRule, rels map[string]*Relation, maxBindings int) ([]Tuple, error) {
 	initial := []binding{make(binding)}
-	bindings := evalJoinSteps(rule.JoinOrder, rels, initial)
-	return projectHead(rule.Head, bindings)
+	limits := &joinLimits{maxBindings: maxBindings, ruleName: rule.Head.Predicate}
+	bindings, err := evalJoinSteps(rule.JoinOrder, rels, initial, limits)
+	if err != nil {
+		return nil, err
+	}
+	return projectHead(rule.Head, bindings), nil
 }
 
 // RuleDelta evaluates a rule in semi-naive mode.
@@ -61,9 +70,10 @@ func Rule(rule plan.PlannedRule, rels map[string]*Relation) []Tuple {
 // When di=1, only the second Path literal uses delta; the first uses full.
 // This avoids the delta×delta over-counting that a global predicate replacement
 // would produce.
-func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[string]*Relation) []Tuple {
+func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[string]*Relation, maxBindings int) ([]Tuple, error) {
 	seen := make(map[string]struct{})
 	var results []Tuple
+	limits := &joinLimits{maxBindings: maxBindings, ruleName: rule.Head.Predicate}
 
 	for di, step := range rule.JoinOrder {
 		// Only positive atom steps with a delta can be "delta variants".
@@ -82,7 +92,10 @@ func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[s
 
 		// Evaluate the join sequence with delta substitution only at step di.
 		initial := []binding{make(binding)}
-		bindings := evalJoinStepsWithDelta(rule.JoinOrder, rels, deltaRels, di, delta, initial)
+		bindings, err := evalJoinStepsWithDelta(rule.JoinOrder, rels, deltaRels, di, delta, initial, limits)
+		if err != nil {
+			return nil, err
+		}
 		tuples := projectHead(rule.Head, bindings)
 		for _, t := range tuples {
 			k := tupleKey(t)
@@ -92,20 +105,32 @@ func RuleDelta(rule plan.PlannedRule, rels map[string]*Relation, deltaRels map[s
 			}
 		}
 	}
-	return results
+	return results, nil
 }
 
 // evalJoinSteps processes a sequence of JoinSteps, starting from the given
-// bindings, and returns all final bindings.
-func evalJoinSteps(steps []plan.JoinStep, rels map[string]*Relation, initial []binding) []binding {
+// bindings, and returns all final bindings. limits may be nil for unlimited.
+func evalJoinSteps(steps []plan.JoinStep, rels map[string]*Relation, initial []binding, limits *joinLimits) ([]binding, error) {
 	current := initial
-	for _, step := range steps {
+	for i, step := range steps {
 		if len(current) == 0 {
-			return nil
+			return nil, nil
 		}
-		current = applyStep(step, rels, current)
+		next, err := applyStep(step, rels, current, limits)
+		if err != nil {
+			// Annotate with the step index where the cap was hit.
+			var bce *BindingCapError
+			if errors.As(err, &bce) && bce.StepIndex == 0 {
+				bce.StepIndex = i
+			}
+			return nil, err
+		}
+		current = next
+		if err := limits.check(i, len(current)); err != nil {
+			return nil, err
+		}
 	}
-	return current
+	return current, nil
 }
 
 // evalJoinStepsWithDelta processes a sequence of JoinSteps like evalJoinSteps,
@@ -113,12 +138,16 @@ func evalJoinSteps(steps []plan.JoinStep, rels map[string]*Relation, initial []b
 // relation for that predicate). All other steps use the full relations in rels.
 // This ensures only one literal position is delta-substituted per variant,
 // which is required for correct semi-naive evaluation.
-func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, deltaRels map[string]*Relation, deltaIdx int, deltaRel *Relation, initial []binding) []binding {
+func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, deltaRels map[string]*Relation, deltaIdx int, deltaRel *Relation, initial []binding, limits *joinLimits) ([]binding, error) {
 	current := initial
 	for i, step := range steps {
 		if len(current) == 0 {
-			return nil
+			return nil, nil
 		}
+		var (
+			next []binding
+			err  error
+		)
 		if i == deltaIdx {
 			// Use the delta relation for this step only.
 			// Build a merged map where only this literal's (name, arity)
@@ -131,32 +160,44 @@ func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, de
 				merged[k] = v
 			}
 			merged[relKey(pred, arity)] = deltaRel
-			current = applyStep(step, merged, current)
+			next, err = applyStep(step, merged, current, limits)
 		} else {
-			current = applyStep(step, rels, current)
+			next, err = applyStep(step, rels, current, limits)
+		}
+		if err != nil {
+			var bce *BindingCapError
+			if errors.As(err, &bce) && bce.StepIndex == 0 {
+				bce.StepIndex = i
+			}
+			return nil, err
+		}
+		current = next
+		if err := limits.check(i, len(current)); err != nil {
+			return nil, err
 		}
 	}
-	return current
+	return current, nil
 }
 
 // applyStep applies a single JoinStep to the current set of bindings.
-func applyStep(step plan.JoinStep, rels map[string]*Relation, bindings []binding) []binding {
+// limits may be nil for unlimited evaluation.
+func applyStep(step plan.JoinStep, rels map[string]*Relation, bindings []binding, limits *joinLimits) ([]binding, error) {
 	lit := step.Literal
 
 	// Comparison filter.
 	if lit.Cmp != nil {
-		return applyComparison(lit.Cmp, bindings)
+		return applyComparison(lit.Cmp, bindings), nil
 	}
 
 	// Aggregate sub-goal (handled at stratum level; skip here).
 	if lit.Agg != nil {
-		return bindings
+		return bindings, nil
 	}
 
 	// Builtin predicate — evaluate procedurally.
 	if IsBuiltin(lit.Atom.Predicate) {
 		if lit.Positive {
-			return ApplyBuiltin(lit.Atom, bindings)
+			return ApplyBuiltin(lit.Atom, bindings), nil
 		}
 		// Negated builtin: keep bindings where the builtin produces no results.
 		var out []binding
@@ -166,14 +207,15 @@ func applyStep(step plan.JoinStep, rels map[string]*Relation, bindings []binding
 				out = append(out, b)
 			}
 		}
-		return out
+		return out, nil
 	}
 
 	if lit.Positive {
-		return applyPositive(lit.Atom, rels, bindings)
+		return applyPositive(lit.Atom, rels, bindings, limits)
 	}
-	// Negative (anti-join).
-	return applyNegative(lit.Atom, rels, bindings)
+	// Negative (anti-join). Anti-joins only filter (output ≤ input), so they
+	// can't grow cardinality past the cap; no limit threading needed.
+	return applyNegative(lit.Atom, rels, bindings), nil
 }
 
 // applyComparison filters bindings by evaluating the comparison against each.
@@ -198,10 +240,10 @@ func applyComparison(cmp *datalog.Comparison, bindings []binding) []binding {
 // The relation lookup is keyed by (predicate, arity) so a 1-arity literal
 // like `C(this)` cannot accidentally probe a 3-arity base relation `C`
 // of the same name.
-func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []binding) []binding {
+func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []binding, limits *joinLimits) ([]binding, error) {
 	rel, ok := rels[relKey(atom.Predicate, len(atom.Args))]
 	if !ok || rel == nil || rel.Len() == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var out []binding
@@ -283,9 +325,19 @@ func applyPositive(atom datalog.Atom, rels map[string]*Relation, bindings []bind
 				continue
 			}
 			out = append(out, nb)
+			// Early cap check inside the inner loop. Without this, a single
+			// blown literal can still allocate gigabytes of bindings before
+			// the per-step check at the call site fires (issue #80).
+			if limits != nil && limits.maxBindings > 0 && len(out) > limits.maxBindings {
+				return nil, &BindingCapError{
+					Rule:        limits.ruleName,
+					Cap:         limits.maxBindings,
+					Cardinality: len(out),
+				}
+			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // applyNegative filters bindings by requiring NO matching tuple exists (anti-join).

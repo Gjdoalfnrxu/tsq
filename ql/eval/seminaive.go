@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -13,6 +14,55 @@ import (
 // with the results computed so far.
 const DefaultMaxIterations = 100
 
+// DefaultMaxBindingsPerRule is the default per-rule cap on intermediate
+// binding cardinality during join evaluation. With weak join constraints
+// (free variables, low-selectivity predicates) intermediate cardinality can
+// reach 100M+ entries (1-2 GB) before any deduplication happens, which OOMs
+// the process. The cap is well above legitimate query needs but well below
+// the RAM ceiling on a typical workstation. Set 0 via WithMaxBindingsPerRule
+// to disable.
+const DefaultMaxBindingsPerRule = 5_000_000
+
+// ErrBindingCapExceeded is the sentinel returned (wrapped in a *BindingCapError)
+// when a rule's intermediate join cardinality exceeds the configured cap.
+// Callers can detect it with errors.Is.
+var ErrBindingCapExceeded = errors.New("rule binding cap exceeded")
+
+// BindingCapError gives detail about which rule blew the cap and at what
+// step. It wraps ErrBindingCapExceeded so errors.Is works.
+type BindingCapError struct {
+	Rule        string
+	StepIndex   int
+	Cap         int
+	Cardinality int
+}
+
+func (e *BindingCapError) Error() string {
+	if e.Rule == "" {
+		return fmt.Sprintf("rule binding cap exceeded: cap=%d at join step %d (intermediate cardinality=%d). Increase --max-bindings-per-rule or rewrite the query for better selectivity.", e.Cap, e.StepIndex, e.Cardinality)
+	}
+	return fmt.Sprintf("rule %q exceeded binding cap of %d at join step %d (intermediate cardinality=%d). Increase --max-bindings-per-rule or rewrite the query for better selectivity.", e.Rule, e.Cap, e.StepIndex, e.Cardinality)
+}
+
+func (e *BindingCapError) Unwrap() error { return ErrBindingCapExceeded }
+
+// joinLimits carries the per-rule binding cap and identifying context
+// down through the join evaluation call chain. A nil receiver means no cap.
+type joinLimits struct {
+	maxBindings int    // 0 == unlimited
+	ruleName    string // for error messages; may be empty (e.g. final query)
+}
+
+func (l *joinLimits) check(stepIndex, n int) error {
+	if l == nil || l.maxBindings <= 0 {
+		return nil
+	}
+	if n > l.maxBindings {
+		return &BindingCapError{Rule: l.ruleName, StepIndex: stepIndex, Cap: l.maxBindings, Cardinality: n}
+	}
+	return nil
+}
+
 // ResultSet holds the query results.
 type ResultSet struct {
 	Columns []string // column names (from query select)
@@ -23,8 +73,9 @@ type ResultSet struct {
 type Option func(*evalConfig)
 
 type evalConfig struct {
-	maxIterations int
-	parallel      bool
+	maxIterations      int
+	maxBindingsPerRule int
+	parallel           bool
 }
 
 // WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
@@ -32,6 +83,14 @@ type evalConfig struct {
 // the results computed so far. A value of 0 means no limit.
 func WithMaxIterations(n int) Option {
 	return func(c *evalConfig) { c.maxIterations = n }
+}
+
+// WithMaxBindingsPerRule sets the per-rule cap on intermediate join binding
+// cardinality. If a rule's intermediate cardinality exceeds the cap during
+// evaluation, Evaluate returns a *BindingCapError (wraps ErrBindingCapExceeded).
+// A value of 0 disables the cap.
+func WithMaxBindingsPerRule(n int) Option {
+	return func(c *evalConfig) { c.maxBindingsPerRule = n }
 }
 
 // WithParallel enables parallel evaluation of independent rules within
@@ -43,7 +102,10 @@ func WithParallel() Option {
 
 // Evaluate executes an ExecutionPlan over base facts and returns results.
 func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[string]*Relation, opts ...Option) (*ResultSet, error) {
-	cfg := evalConfig{maxIterations: DefaultMaxIterations}
+	cfg := evalConfig{
+		maxIterations:      DefaultMaxIterations,
+		maxBindingsPerRule: DefaultMaxBindingsPerRule,
+	}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -73,7 +135,11 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		// Bootstrap: evaluate each rule once using full relations as source.
 		var deltaRels map[string]*Relation
 		if cfg.parallel {
-			deltaRels = parallelBootstrap(stratum.Rules, allRels)
+			var perr error
+			deltaRels, perr = parallelBootstrap(stratum.Rules, allRels, cfg.maxBindingsPerRule)
+			if perr != nil {
+				return nil, perr
+			}
 		} else {
 			deltaRels = make(map[string]*Relation)
 			for _, rule := range stratum.Rules {
@@ -82,7 +148,10 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				hk := relKey(headName, headArity)
 				headRel := allRels[hk]
 
-				newTuples := Rule(rule, allRels)
+				newTuples, rerr := Rule(rule, allRels, cfg.maxBindingsPerRule)
+				if rerr != nil {
+					return nil, rerr
+				}
 				for _, t := range newTuples {
 					if headRel.Add(t) {
 						dr, ok := deltaRels[hk]
@@ -123,7 +192,11 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 			}
 
 			if cfg.parallel {
-				deltaRels = parallelDelta(stratum.Rules, allRels, deltaRels)
+				var perr error
+				deltaRels, perr = parallelDelta(stratum.Rules, allRels, deltaRels, cfg.maxBindingsPerRule)
+				if perr != nil {
+					return nil, perr
+				}
 			} else {
 				nextDelta := make(map[string]*Relation)
 				for _, rule := range stratum.Rules {
@@ -132,7 +205,10 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 					hk := relKey(headName, headArity)
 					headRel := allRels[hk]
 
-					newTuples := RuleDelta(rule, allRels, deltaRels)
+					newTuples, rerr := RuleDelta(rule, allRels, deltaRels, cfg.maxBindingsPerRule)
+					if rerr != nil {
+						return nil, rerr
+					}
 					for _, t := range newTuples {
 						if headRel.Add(t) {
 							dr, ok := nextDelta[hk]
@@ -150,7 +226,10 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 
 		// Evaluate aggregates after fixpoint.
 		for _, agg := range stratum.Aggregates {
-			resultRel := Aggregate(agg, allRels)
+			resultRel, aerr := Aggregate(agg, allRels, cfg.maxBindingsPerRule)
+			if aerr != nil {
+				return nil, aerr
+			}
 			allRels[relKey(resultRel.Name, resultRel.Arity)] = resultRel
 		}
 	}
@@ -160,13 +239,17 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		return &ResultSet{}, nil
 	}
 
-	return evalQuery(execPlan.Query, allRels), nil
+	return evalQuery(execPlan.Query, allRels, cfg.maxBindingsPerRule)
 }
 
 // evalQuery evaluates the planned query and returns a ResultSet.
-func evalQuery(q *plan.PlannedQuery, allRels map[string]*Relation) *ResultSet {
+func evalQuery(q *plan.PlannedQuery, allRels map[string]*Relation, maxBindings int) (*ResultSet, error) {
 	initial := []binding{make(binding)}
-	bindings := evalJoinSteps(q.JoinOrder, allRels, initial)
+	limits := &joinLimits{maxBindings: maxBindings, ruleName: "<query>"}
+	bindings, err := evalJoinSteps(q.JoinOrder, allRels, initial, limits)
+	if err != nil {
+		return nil, err
+	}
 
 	rs := &ResultSet{}
 
@@ -205,5 +288,5 @@ func evalQuery(q *plan.PlannedQuery, allRels map[string]*Relation) *ResultSet {
 			}
 		}
 	}
-	return rs
+	return rs, nil
 }

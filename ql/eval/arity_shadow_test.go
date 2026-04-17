@@ -94,7 +94,10 @@ func TestEvalArityShadowSeparateRelations(t *testing.T) {
 		},
 	}
 
-	tuples := Rule(rule, rels)
+	tuples, err := Rule(rule, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(tuples) != 2 {
 		t.Fatalf("expected 2 Match tuples, got %d: %v", len(tuples), tuples)
 	}
@@ -134,7 +137,10 @@ func TestEvalArityShadowSameName(t *testing.T) {
 			},
 		},
 	}
-	out1 := Rule(probe1, rels)
+	out1, err := Rule(probe1, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(out1) != 1 {
 		t.Fatalf("1-arity C: expected 1 tuple, got %d: %v", len(out1), out1)
 	}
@@ -164,7 +170,10 @@ func TestEvalArityShadowSameName(t *testing.T) {
 			},
 		},
 	}
-	out3 := Rule(probe3, rels)
+	out3, err := Rule(probe3, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(out3) != 2 {
 		t.Fatalf("3-arity C: expected 2 tuples, got %d: %v", len(out3), out3)
 	}

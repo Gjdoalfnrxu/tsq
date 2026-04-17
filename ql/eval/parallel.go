@@ -6,12 +6,22 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
+// firstError returns the first non-nil error from a slice, or nil if all are nil.
+func firstError(errs []error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 // parallelBootstrap evaluates rules concurrently, grouping by head predicate.
 // Rules with different head predicates run in parallel; rules with the same
 // head predicate run sequentially within their group to avoid data races on
 // the shared Relation. Grouping is by (name, arity) — same-name different-arity
 // heads are independent and merge into independent relations.
-func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) map[string]*Relation {
+func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation, maxBindings int) (map[string]*Relation, error) {
 	groups := groupByHead(rules)
 
 	type groupResult struct {
@@ -21,6 +31,7 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) m
 	}
 
 	results := make([]groupResult, len(groups))
+	errs := make([]error, len(groups))
 	var wg sync.WaitGroup
 
 	i := 0
@@ -30,7 +41,11 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) m
 			defer wg.Done()
 			var tuples []Tuple
 			for _, rule := range rs {
-				newTuples := Rule(rule, allRels)
+				newTuples, rerr := Rule(rule, allRels, maxBindings)
+				if rerr != nil {
+					errs[idx] = rerr
+					return
+				}
 				tuples = append(tuples, newTuples...)
 			}
 			results[idx] = groupResult{key: k, name: rs[0].Head.Predicate, tuples: tuples}
@@ -39,6 +54,10 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) m
 	}
 
 	wg.Wait()
+
+	if err := firstError(errs); err != nil {
+		return nil, err
+	}
 
 	deltaRels := make(map[string]*Relation)
 	for _, gr := range results {
@@ -54,11 +73,11 @@ func parallelBootstrap(rules []plan.PlannedRule, allRels map[string]*Relation) m
 			}
 		}
 	}
-	return deltaRels
+	return deltaRels, nil
 }
 
 // parallelDelta evaluates delta rules concurrently, grouping by head (name, arity).
-func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, deltaRels map[string]*Relation) map[string]*Relation {
+func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, deltaRels map[string]*Relation, maxBindings int) (map[string]*Relation, error) {
 	groups := groupByHead(rules)
 
 	type groupResult struct {
@@ -68,6 +87,7 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 	}
 
 	results := make([]groupResult, len(groups))
+	errs := make([]error, len(groups))
 	var wg sync.WaitGroup
 
 	i := 0
@@ -77,7 +97,11 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 			defer wg.Done()
 			var tuples []Tuple
 			for _, rule := range rs {
-				newTuples := RuleDelta(rule, allRels, deltaRels)
+				newTuples, rerr := RuleDelta(rule, allRels, deltaRels, maxBindings)
+				if rerr != nil {
+					errs[idx] = rerr
+					return
+				}
 				tuples = append(tuples, newTuples...)
 			}
 			results[idx] = groupResult{key: k, name: rs[0].Head.Predicate, tuples: tuples}
@@ -86,6 +110,10 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 	}
 
 	wg.Wait()
+
+	if err := firstError(errs); err != nil {
+		return nil, err
+	}
 
 	nextDelta := make(map[string]*Relation)
 	for _, gr := range results {
@@ -101,7 +129,7 @@ func parallelDelta(rules []plan.PlannedRule, allRels map[string]*Relation, delta
 			}
 		}
 	}
-	return nextDelta
+	return nextDelta, nil
 }
 
 // groupByHead groups planned rules by their head (name, arity) key.

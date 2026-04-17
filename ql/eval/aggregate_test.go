@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -48,7 +50,10 @@ func TestAggCount(t *testing.T) {
 	)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -68,7 +73,10 @@ func TestAggCountNoGroup(t *testing.T) {
 	rel := makeRelation("R", 1, IntVal{1}, IntVal{2}, IntVal{3})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "x", nil, "count", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 result, got %d", result.Len())
 	}
@@ -82,7 +90,10 @@ func TestAggMin(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{50}, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "min", "minv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -95,7 +106,10 @@ func TestAggMax(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{5}, IntVal{1}, IntVal{100}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "max", "maxv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -108,7 +122,10 @@ func TestAggSum(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{5})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "sum", "sumv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -128,7 +145,10 @@ func TestAggAvg(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "avg", "avgv")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -141,7 +161,10 @@ func TestAggEmptyInput(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "count", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty input, got %d", result.Len())
 	}
@@ -151,7 +174,10 @@ func TestAggStrictcount(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{2}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 2 {
 		t.Fatalf("expected 2 groups, got %d", result.Len())
 	}
@@ -171,7 +197,10 @@ func TestAggStrictcountEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictcount", "cnt")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty strictcount, got %d", result.Len())
 	}
@@ -181,7 +210,10 @@ func TestAggStrictsum(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -194,7 +226,10 @@ func TestAggStrictsumEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "strictsum", "sval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty strictsum, got %d", result.Len())
 	}
@@ -204,7 +239,10 @@ func TestAggConcat(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, StrVal{"hello"}, IntVal{1}, StrVal{"world"})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "concat", "cval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -218,7 +256,10 @@ func TestRankOrdinal(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20}, IntVal{1}, IntVal{30})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 3 {
 		t.Fatalf("expected 3 tuples (one per value), got %d", result.Len())
 	}
@@ -240,7 +281,10 @@ func TestRankEmptyGroup(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "rank", "rval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty rank input, got %d", result.Len())
 	}
@@ -283,7 +327,10 @@ func TestAggUniqueSingle(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42}, IntVal{1}, IntVal{42})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 1 {
 		t.Fatalf("expected 1 group, got %d", result.Len())
 	}
@@ -296,7 +343,10 @@ func TestAggUniqueMultiple(t *testing.T) {
 	rel := makeRelation("R", 2, IntVal{1}, IntVal{10}, IntVal{1}, IntVal{20})
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for non-unique values, got %d", result.Len())
 	}
@@ -306,7 +356,10 @@ func TestAggUniqueEmpty(t *testing.T) {
 	rel := NewRelation("R", 2)
 	rels := RelsOf(rel)
 	agg := makeAgg("R", "v", []string{"g"}, "unique", "uval")
-	result := Aggregate(agg, rels)
+	result, err := Aggregate(agg, rels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Len() != 0 {
 		t.Errorf("expected 0 results for empty unique, got %d", result.Len())
 	}
@@ -320,5 +373,68 @@ func TestComputeRankStableOrder(t *testing.T) {
 		if r != expected[i] {
 			t.Errorf("rank[%d]: expected %d, got %d", i, expected[i], r)
 		}
+	}
+}
+
+// TestAggregateBindingCapTriggers verifies that the per-rule binding cap fires
+// inside an aggregate body — covering the "aggregate:<resultRelation>" code
+// path that's otherwise untested (every other aggregate test passes cap=0).
+// Regression guard for the threading of joinLimits through Aggregate /
+// evalLiterals.
+func TestAggregateBindingCapTriggers(t *testing.T) {
+	mkUnary := func(name string) *Relation {
+		vals := make([]Value, 10)
+		for i := 0; i < 10; i++ {
+			vals[i] = IntVal{V: int64(i)}
+		}
+		return makeRelation(name, 1, vals...)
+	}
+	rels := RelsOf(mkUnary("A"), mkUnary("B"), mkUnary("C"), mkUnary("D"))
+
+	// Aggregate body is a 4-way Cartesian (10×10×10×10 = 10000) — same shape
+	// as TestRuleBindingCapTriggers, but routed through Aggregate.
+	body := []datalog.Literal{
+		{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "a"}}}},
+		{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "b"}}}},
+		{Positive: true, Atom: datalog.Atom{Predicate: "C", Args: []datalog.Term{datalog.Var{Name: "c"}}}},
+		{Positive: true, Atom: datalog.Atom{Predicate: "D", Args: []datalog.Term{datalog.Var{Name: "d"}}}},
+	}
+	agg := plan.PlannedAggregate{
+		ResultRelation: "BadAgg",
+		GroupByVars:    []datalog.Var{{Name: "a"}},
+		Agg: datalog.Aggregate{
+			Func:      "count",
+			Var:       "d",
+			ResultVar: datalog.Var{Name: "BadAgg"},
+			Body:      body,
+		},
+	}
+
+	const cap = 100
+	result, err := Aggregate(agg, rels, cap)
+	if err == nil {
+		t.Fatalf("expected ErrBindingCapExceeded, got nil error and result with %d rows", result.Len())
+	}
+	if !errors.Is(err, ErrBindingCapExceeded) {
+		t.Fatalf("expected error wrapping ErrBindingCapExceeded, got: %v", err)
+	}
+	var bce *BindingCapError
+	if !errors.As(err, &bce) {
+		t.Fatalf("expected *BindingCapError, got: %T (%v)", err, err)
+	}
+	if !strings.HasPrefix(bce.Rule, "aggregate:") {
+		t.Errorf("expected rule name with 'aggregate:' prefix, got %q", bce.Rule)
+	}
+	if bce.Rule != "aggregate:BadAgg" {
+		t.Errorf("expected rule name %q, got %q", "aggregate:BadAgg", bce.Rule)
+	}
+	if bce.Cap != cap {
+		t.Errorf("expected cap %d, got %d", cap, bce.Cap)
+	}
+	if bce.Cardinality <= cap {
+		t.Errorf("expected cardinality > cap (%d), got %d", cap, bce.Cardinality)
+	}
+	if bce.Cardinality > 2*cap {
+		t.Errorf("aggregate cap fired late: cardinality=%d, cap=%d", bce.Cardinality, cap)
 	}
 }

@@ -12,9 +12,13 @@ import (
 // Aggregate evaluates a planned aggregate and returns the result relation.
 // The result relation is named agg.ResultRelation and contains
 // (groupKey..., aggregatedValue) tuples.
-func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
+func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation, maxBindings int) (*Relation, error) {
 	// Compute bindings over the aggregate body using raw literals (no planner ordering).
-	bindings := evalLiterals(agg.Agg.Body, rels)
+	limits := &joinLimits{maxBindings: maxBindings, ruleName: "aggregate:" + agg.ResultRelation}
+	bindings, err := evalLiterals(agg.Agg.Body, rels, limits)
+	if err != nil {
+		return nil, err
+	}
 
 	// Determine which column holds the aggregated value.
 	aggVar := agg.Agg.Var
@@ -97,7 +101,7 @@ func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 				result.Add(t)
 			}
 		}
-		return result
+		return result, nil
 	}
 
 	for _, gk := range groupOrder {
@@ -113,7 +117,7 @@ func Aggregate(agg plan.PlannedAggregate, rels map[string]*Relation) *Relation {
 		result.Add(t)
 	}
 
-	return result
+	return result, nil
 }
 
 // computeAggregate applies the named aggregate function to a list of Values.
@@ -308,21 +312,28 @@ func asInt64(v Value) (int64, error) {
 // body) naively, returning all resulting bindings.
 // This mirrors evalJoinSteps but works on []datalog.Literal directly,
 // without planner-ordered JoinSteps.
-func evalLiterals(lits []datalog.Literal, rels map[string]*Relation) []binding {
+func evalLiterals(lits []datalog.Literal, rels map[string]*Relation, limits *joinLimits) ([]binding, error) {
 	current := []binding{make(binding)}
-	for _, lit := range lits {
+	for i, lit := range lits {
 		if len(current) == 0 {
-			return nil
+			return nil, nil
 		}
 		if lit.Cmp != nil {
 			current = applyComparison(lit.Cmp, current)
 		} else if lit.Agg != nil {
 			// Nested aggregate in body -- skip for v1.
 		} else if lit.Positive {
-			current = applyPositive(lit.Atom, rels, current)
+			next, err := applyPositive(lit.Atom, rels, current, limits)
+			if err != nil {
+				return nil, err
+			}
+			current = next
 		} else {
 			current = applyNegative(lit.Atom, rels, current)
 		}
+		if err := limits.check(i, len(current)); err != nil {
+			return nil, err
+		}
 	}
-	return current
+	return current, nil
 }
