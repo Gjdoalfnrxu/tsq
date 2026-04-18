@@ -48,6 +48,9 @@ func taintBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relatio
 		"NonTaintableType": eval.NewRelation("NonTaintableType", 1),
 		// Expression-in-function scoping for Rule 6b
 		"ExprInFunction": eval.NewRelation("ExprInFunction", 2),
+		// Contains: parent-child AST containment (used by SinkContains
+		// transitive closure for Rule 6b SinkRefSym helper).
+		"Contains": eval.NewRelation("Contains", 2),
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -474,14 +477,25 @@ func TestTaintedSym_VarDeclInit(t *testing.T) {
 
 // TestTaintAlert_VarDeclSource tests Rule 6b: TaintAlert via VarDecl linkage
 // when the source expression is a FieldRead without ExprMayRef.
+//
+// Updated for issue #113 fix: Rule 6b now requires the sink expression to
+// actually reference the tainted symbol (directly via ExprMayRef on the
+// sink itself, or via a CallArg sub-expression). The previous fixture was
+// missing that link and was passing only because Rule 6b accepted any
+// tainted sym in the same function — the false-positive shape this fix
+// removes. The added ExprMayRef(200, 10) makes this a real direct sink.
 func TestTaintAlert_VarDeclSource(t *testing.T) {
 	// Source: TaintSource(100, "http_input") with VarDecl(_, 10, 100, _)
-	// Sink: TaintSink(200, "xss") in the same function (fn=1) as tainted sym 10.
-	// Rule 1b gives TaintedSym(10, "http_input"), Rule 6b gives TaintAlert.
+	// Sink: TaintSink(200, "xss") where sink expression 200 references sym 10
+	//       directly (e.g. `let x = req.body; xssSink(x);` where the sink
+	//       expression is the identifier `x`).
+	// Rule 1b gives TaintedSym(10, "http_input"); Rule 6b variant A
+	// (direct identifier sink) gives TaintAlert.
 	baseRels := taintBaseRels(map[string]*eval.Relation{
 		"TaintSource":    makeRel("TaintSource", 2, iv(100), sv("http_input")),
 		"VarDecl":        makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
 		"TaintSink":      makeRel("TaintSink", 2, iv(200), sv("xss")),
+		"ExprMayRef":     makeRel("ExprMayRef", 2, iv(200), iv(10)),
 		"SymInFunction":  makeRel("SymInFunction", 2, iv(10), iv(1)),
 		"ExprInFunction": makeRel("ExprInFunction", 2, iv(200), iv(1)),
 	})
@@ -499,11 +513,19 @@ func TestTaintAlert_VarDeclSource(t *testing.T) {
 
 // TestTaintAlert_VarDeclSource_CrossProduct verifies that Rule 6b does not
 // produce cross-product false positives across functions. Sinks in different
-// functions are excluded by SymInFunction/ExprInFunction scoping.
+// functions are excluded because the unrelated sink does not reference any
+// symbol reachable from the tainted VarDecl symbol (post-#113-fix the rule
+// requires a real source→sink-symbol link, which incidentally also rules out
+// cross-function false positives).
+//
+// Updated for issue #113: connected sink 200 now includes ExprMayRef(200, 10)
+// so it actually references the tainted sym (direct identifier sink). The
+// unrelated sink 300 is in a different function with no link to sym 10 and
+// must not alert.
 func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
 	// Source: TaintSource(100, "http_input") -> VarDecl sym 10 in fn 1
-	// Connected sink 200 (xss) is in fn 1 (same function as tainted sym)
-	// Unrelated sink 300 (sql) is in fn 2 (different function)
+	// Connected sink 200 (xss) is in fn 1 and references sym 10
+	// Unrelated sink 300 (sql) is in fn 2 and references unrelated sym 30
 	baseRels := taintBaseRels(map[string]*eval.Relation{
 		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
 		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
@@ -511,8 +533,13 @@ func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
 			iv(200), sv("xss"),
 			iv(300), sv("sql"),
 		),
+		"ExprMayRef": makeRel("ExprMayRef", 2,
+			iv(200), iv(10), // connected sink references tainted sym
+			iv(300), iv(30), // unrelated sink references unrelated sym
+		),
 		"SymInFunction": makeRel("SymInFunction", 2,
 			iv(10), iv(1),
+			iv(30), iv(2),
 		),
 		"ExprInFunction": makeRel("ExprInFunction", 2,
 			iv(200), iv(1),
@@ -538,6 +565,92 @@ func TestTaintAlert_VarDeclSource_CrossProduct(t *testing.T) {
 	}
 }
 
+// TestTaintAlert_Rule6b_UnrelatedSinkNoAlert is the regression test for issue #113.
+//
+// Pre-fix bug: TaintAlert Rule 6b (VarDecl-init source path) fired whenever ANY
+// tainted symbol of the same kind existed in the same function as the sink
+// expression — without requiring that the sink expression actually reference
+// (directly or via flow) the tainted symbol. Cross-symbol false positive cannon.
+//
+// Setup: function fn=1 contains
+//   - a tainted VarDecl (sym=10 fed by FieldRead source 100, "http_input")
+//   - an unrelated clean variable (sym=20) referenced by a sink expression 200
+//
+// There is no flow from sym 10 to sym 20. The sink references sym 20 only.
+// Expectation: NO TaintAlert is emitted. Pre-fix, an alert was incorrectly
+// produced because Rule 6b picked sinkSym=10 (the only tainted sym in the
+// function) and accepted sinkExpr=200 purely on ExprInFunction match,
+// ignoring whether the sink actually references the tainted value.
+func TestTaintAlert_Rule6b_UnrelatedSinkNoAlert(t *testing.T) {
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		// FieldRead-shaped source: req.body initialises sym 10 via VarDecl.
+		// No ExprMayRef for srcExpr 100 (this is the FieldRead branch that
+		// motivates Rule 6b).
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		// Sink references an unrelated, clean symbol 20 (e.g. a literal/local
+		// variable that never received tainted data).
+		"TaintSink":  makeRel("TaintSink", 2, iv(200), sv("sql")),
+		"ExprMayRef": makeRel("ExprMayRef", 2, iv(200), iv(20)),
+		// Both syms live in fn=1; sink expression also in fn=1.
+		"SymInFunction": makeRel("SymInFunction", 2,
+			iv(10), iv(1),
+			iv(20), iv(1),
+		),
+		"ExprInFunction": makeRel("ExprInFunction", 2, iv(200), iv(1)),
+		// Crucially: NO Assign / VarDecl / FieldWrite / etc. linking sym 10 to
+		// sym 20. No LocalFlow, no FlowStar between them.
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	for _, row := range rs.Rows {
+		if len(row) >= 2 && row[0] == iv(100) && row[1] == iv(200) {
+			t.Fatalf("issue #113: TaintAlert(100, 200, ...) fired without a flow link "+
+				"between source sym 10 and sink sym 20 in the same function. "+
+				"Rule 6b must require a real source→sink connection. Got rows: %v", rs.Rows)
+		}
+	}
+}
+
+// TestTaintAlert_Rule6b_FlowToSinkAlerts is the positive companion to the
+// negative test above. Same shape but with a real flow chain from sym 10 to
+// sym 20 (an Assign that reads from sym 10 and writes to sym 20). This MUST
+// still alert — the fix must not over-tighten Rule 6b into uselessness.
+func TestTaintAlert_Rule6b_FlowToSinkAlerts(t *testing.T) {
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		// FieldRead-shaped source on sym 10.
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		// Real flow: y = x → LocalFlow(fn, 10, 20).
+		"Assign": makeRel("Assign", 3, iv(310), iv(300), iv(20)),
+		"ExprMayRef": makeRel("ExprMayRef", 2,
+			iv(300), iv(10), // rhs of y = x references sym 10
+			iv(200), iv(20), // sink references sym 20
+		),
+		"TaintSink": makeRel("TaintSink", 2, iv(200), sv("sql")),
+		"SymInFunction": makeRel("SymInFunction", 2,
+			iv(10), iv(1),
+			iv(20), iv(1),
+		),
+		"ExprInFunction": makeRel("ExprInFunction", 2, iv(200), iv(1)),
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	if !resultContains(rs, iv(100), iv(200), sv("http_input"), sv("sql")) {
+		t.Errorf("expected TaintAlert(100, 200, http_input, sql) — real flow from sym 10 → 20 → sink should alert, got %v", rs.Rows)
+	}
+}
+
 // TestTaintRulesValidate verifies all taint rules pass the planner's validation.
 func TestTaintRulesValidate(t *testing.T) {
 	for i, r := range TaintRules() {
@@ -557,11 +670,15 @@ func TestTaintRulesStratify(t *testing.T) {
 	}
 }
 
-// TestTaintRulesCount verifies we produce exactly 9 taint rules.
+// TestTaintRulesCount verifies we produce exactly 14 taint rules.
+// Count breakdown: 5 propagation (1, 1b, 2, 4, 5) + 2 sanitization (3, 3b)
+// + 1 main alert (Rule 6) + 6 VarDecl-init alert support rules from the
+// issue #113 fix (2 SinkContains transitive closure + 2 SinkRefSym
+// helpers direct/descendant + 2 TaintAlert variants A direct / B flow).
 func TestTaintRulesCount(t *testing.T) {
 	rules := TaintRules()
-	if len(rules) != 9 {
-		t.Errorf("expected 9 taint rules, got %d", len(rules))
+	if len(rules) != 14 {
+		t.Errorf("expected 14 taint rules, got %d", len(rules))
 	}
 }
 
