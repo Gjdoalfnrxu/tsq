@@ -2,11 +2,15 @@ package typecheck
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestJSONRPCRequestSerialization(t *testing.T) {
@@ -786,3 +790,172 @@ func TestMockGetTypeOfSymbol(t *testing.T) {
 		t.Errorf("displayName = %q, want empty (TypeResponse has no displayName field)", info.DisplayName)
 	}
 }
+
+// TestClient_CallCtxCancellationUnblocksStdinReader is the client-level test
+// for the callCtx stdin-close mechanism (PR #117 review B2). It covers:
+//   - Cancelling ctx mid-RPC unblocks within ~250ms.
+//   - The Client is poisoned afterward (atomic.Bool set).
+//   - A second callCtx returns ErrClientPoisoned IMMEDIATELY rather than
+//     queueing on c.mu behind the still-blocked first reader.
+//
+// Mutation kill: removing the `c.stdin.Close()` line in callCtx makes this
+// test fail (or flake on the kill-fallback timer); removing the poison
+// mechanism makes the second-call assertion fail.
+//
+// Note: this test deliberately uses a server goroutine that NEVER writes a
+// response, so the read in doCall is genuinely stuck. This is the gap the
+// loop-level fake test (which bypasses callCtx entirely) cannot cover.
+func TestClient_CallCtxCancellationUnblocksStdinReader(t *testing.T) {
+	clientReader, serverWriter := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+
+	// "Server": read framed requests forever, never reply. We DO need to
+	// drain bytes off the pipe so the client's write doesn't block — pipes
+	// are synchronous. serverEOF closes when the server observes EOF on its
+	// read end — that EOF only happens if the client actually closes c.stdin
+	// (which is the production unblock mechanism we're testing).
+	serverDone := make(chan struct{})
+	serverEOF := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 4096)
+		for {
+			if _, err := serverReader.Read(buf); err != nil {
+				close(serverEOF)
+				return
+			}
+		}
+	}()
+
+	// Use a long-running real subprocess so the kill-fallback path has a
+	// real os.Process to operate on. `sleep 300` is portable enough for
+	// Linux CI; the subprocess does not interact with the pipes we wired
+	// above — those are fake stdio for the JSON-RPC layer.
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("sleep binary unavailable: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	// Shrink the kill-fallback grace window so the test can verify the
+	// process was killed without waiting the production 2s. Using the
+	// atomic accessor avoids racing the cancellation goroutine in callCtx
+	// that reads the same value (PR #117 review round 3, nit #2).
+	origKillAfter := setKillAfterCancel(200 * time.Millisecond)
+	t.Cleanup(func() { setKillAfterCancel(origKillAfter) })
+
+	c := &Client{
+		cmd:    cmd,
+		stdin:  clientWriter,
+		stdout: bufio.NewReader(clientReader),
+	}
+
+	t.Cleanup(func() {
+		// Best-effort cleanup of pipes; the server goroutine exits when
+		// serverReader observes EOF.
+		_ = clientWriter.Close()
+		_ = serverReader.Close()
+		_ = clientReader.Close()
+		_ = serverWriter.Close()
+		<-serverDone
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Fire the first call in a goroutine — it will block in readResponse
+	// because the "server" never writes anything back.
+	type callResult struct {
+		err error
+		dur time.Duration
+	}
+	first := make(chan callResult, 1)
+	go func() {
+		start := time.Now()
+		_, err := c.callCtx(ctx, "initialize", map[string]interface{}{})
+		first <- callResult{err: err, dur: time.Since(start)}
+	}()
+
+	// Give the goroutine time to enter doCall and block on readResponse.
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case r := <-first:
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("first call err = %v, want context.Canceled", r.err)
+		}
+		if r.dur > 250*time.Millisecond {
+			t.Errorf("first call took %v after cancel; want <250ms (stdin-close unblock not working?)", r.dur)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first call did not return within 2s of cancel — stdin-close mechanism broken")
+	}
+
+	if !c.poisoned.Load() {
+		t.Error("expected c.poisoned to be true after cancellation")
+	}
+
+	// Direct assertion that callCtx actually closed c.stdin (the B2 smoking
+	// gun). Without this, callCtx could still return ctx.Canceled via the
+	// select while leaking the doCall goroutine forever on its blocked read.
+	// The server side observes EOF only when the production code closes the
+	// pipe writer. Allow generous slack vs the 250ms first-call window — we
+	// only care that close happened, not exact timing.
+	select {
+	case <-serverEOF:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("server never observed EOF on its read pipe — callCtx did not close c.stdin (B2 not fixed)")
+	}
+
+	// Second call must fast-fail with ErrClientPoisoned. Critically: the
+	// in-flight doCall MAY still be holding c.mu (its read is unblocked by
+	// stdin close, but in adversarial timing it could still be unwinding).
+	// The poison check must happen BEFORE c.mu.Lock() in doCall — otherwise
+	// this call would queue indefinitely. We give it a generous 500ms cap
+	// to detect that hang.
+	second := make(chan callResult, 1)
+	go func() {
+		start := time.Now()
+		_, err := c.callCtx(context.Background(), "initialize", map[string]interface{}{})
+		second <- callResult{err: err, dur: time.Since(start)}
+	}()
+
+	select {
+	case r := <-second:
+		if !errors.Is(r.err, ErrClientPoisoned) {
+			t.Errorf("second call err = %v, want ErrClientPoisoned", r.err)
+		}
+		if r.dur > 500*time.Millisecond {
+			t.Errorf("second call took %v; want immediate (poison check must precede c.mu.Lock)", r.dur)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second call hung — poison check is downstream of c.mu.Lock (B1 not fixed)")
+	}
+}
+
+// TestClient_CallCtxAlreadyPoisoned verifies that a Client which is already
+// marked poisoned refuses new calls instantly without touching the pipes.
+func TestClient_CallCtxAlreadyPoisoned(t *testing.T) {
+	c := &Client{
+		cmd:    exec.Command("true"),
+		stdin:  nopWriteCloser{io.Discard},
+		stdout: bufio.NewReader(strings.NewReader("")),
+	}
+	c.poisoned.Store(true)
+
+	_, err := c.callCtx(context.Background(), "anything", nil)
+	if !errors.Is(err, ErrClientPoisoned) {
+		t.Fatalf("err = %v, want ErrClientPoisoned", err)
+	}
+}
+
+// nopWriteCloser turns an io.Writer into an io.WriteCloser whose Close is a
+// no-op. Used in tests where a stdin pipe substitute is needed but no real
+// process consumes from it.
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }

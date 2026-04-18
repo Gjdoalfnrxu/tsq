@@ -1,6 +1,7 @@
 package typecheck
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -131,7 +132,22 @@ func appendUnique(xs []string, x string) []string {
 // inspect stats.SymbolErrors / stats.TypeErrors to detect a broken pipeline
 // even when len(facts) == 0.
 func (e *Enricher) EnrichFile(filePath string, positions []Position) ([]TypeFact, EnrichStats, error) {
+	return e.EnrichFileCtx(context.Background(), filePath, positions)
+}
+
+// EnrichFileCtx is the ctx-aware variant of EnrichFile. ctx is threaded into
+// each underlying tsgo RPC so a long-running per-file enrichment is interrupted
+// promptly on SIGINT or --timeout (issue #115). Cancellation is also checked
+// between RPCs to avoid issuing further calls after ctx is done.
+//
+// On cancellation, the in-flight RPC is forcibly unblocked by closing the
+// client's stdin (see Client.callCtx). The Enricher should not be reused after
+// a cancelled call — Close it and rebuild from a fresh Client.
+func (e *Enricher) EnrichFileCtx(ctx context.Context, filePath string, positions []Position) ([]TypeFact, EnrichStats, error) {
 	var stats EnrichStats
+	if err := ctx.Err(); err != nil {
+		return nil, stats, err
+	}
 	proj, err := e.getProject(filePath)
 	if err != nil {
 		return nil, stats, fmt.Errorf("enricher: get project for %s: %w", filePath, err)
@@ -146,6 +162,9 @@ func (e *Enricher) EnrichFile(filePath string, positions []Position) ([]TypeFact
 
 	var facts []TypeFact
 	for _, pos := range positions {
+		if err := ctx.Err(); err != nil {
+			return facts, stats, err
+		}
 		offset, ok := offsetForLineCol(lineStarts, pos.Line, pos.Col)
 		if !ok {
 			stats.OffsetErrors++
@@ -153,8 +172,11 @@ func (e *Enricher) EnrichFile(filePath string, positions []Position) ([]TypeFact
 		}
 
 		stats.SymbolQueries++
-		sym, err := e.client.GetSymbolAtOffset(proj, filePath, offset)
+		sym, err := e.client.GetSymbolAtOffsetCtx(ctx, proj, filePath, offset)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return facts, stats, ctxErr
+			}
 			stats.SymbolErrors++
 			continue
 		}
@@ -164,8 +186,11 @@ func (e *Enricher) EnrichFile(filePath string, positions []Position) ([]TypeFact
 		}
 
 		stats.TypeQueries++
-		typeInfo, err := e.client.GetTypeOfSymbol(proj, sym.Handle)
+		typeInfo, err := e.client.GetTypeOfSymbolCtx(ctx, proj, sym.Handle)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return facts, stats, ctxErr
+			}
 			stats.TypeErrors++
 			continue
 		}
@@ -179,8 +204,11 @@ func (e *Enricher) EnrichFile(filePath string, positions []Position) ([]TypeFact
 		// the fact (we can still link the type handle); we just leave the
 		// display blank and count it.
 		stats.TypeToString++
-		display, err := e.client.TypeToString(proj, typeInfo.Handle)
+		display, err := e.client.TypeToStringCtx(ctx, proj, typeInfo.Handle)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return facts, stats, ctxErr
+			}
 			stats.TypeToStrErr++
 			display = typeInfo.DisplayName // legacy mocks may still set this
 		}

@@ -2,7 +2,9 @@ package typecheck
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -10,7 +12,48 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// ErrClientPoisoned is returned by callCtx (and therefore every Ctx-aware
+// query method) once a previous RPC has been cancelled. Once a Client is
+// poisoned it stays poisoned for the rest of its lifetime — the underlying
+// stdin has been closed and the tsgo subprocess is shutting down (or has
+// already exited). Callers must construct a fresh Client to continue
+// type-checking. See issue #115 / PR #117 review-round-2 (B1).
+var ErrClientPoisoned = errors.New("typecheck: client poisoned by prior cancellation")
+
+// killAfterCancel is the grace period between closing stdin on cancellation
+// and force-killing the tsgo subprocess. Most healthy tsgo builds exit on
+// stdin close within a few hundred ms; the kill fallback exists for hung
+// processes, ignored SIGPIPE, or OS-level buffering that would otherwise
+// leak the doCall goroutine forever (B3).
+//
+// Stored as an atomic.Pointer so tests can safely override the grace window
+// without racing the cancellation goroutine in callCtx that reads it. The
+// production default is set in init(); accessors getKillAfterCancel /
+// setKillAfterCancel encapsulate the load/store. See PR #117 review round 3.
+var killAfterCancel atomic.Pointer[time.Duration]
+
+func init() {
+	d := 2 * time.Second
+	killAfterCancel.Store(&d)
+}
+
+func getKillAfterCancel() time.Duration {
+	if p := killAfterCancel.Load(); p != nil {
+		return *p
+	}
+	return 2 * time.Second
+}
+
+// setKillAfterCancel replaces the grace window and returns the previous
+// value, allowing callers (tests) to restore it via t.Cleanup.
+func setKillAfterCancel(d time.Duration) time.Duration {
+	prev := getKillAfterCancel()
+	killAfterCancel.Store(&d)
+	return prev
+}
 
 // Client communicates with a tsgo --api --async subprocess via JSON-RPC 2.0
 // using standard LSP Content-Length framing.
@@ -31,6 +74,18 @@ type Client struct {
 	// updateSnapshot. Required as a parameter for nearly every subsequent
 	// query method on the upstream API. Updated under mu.
 	snapshot string
+
+	// poisoned is set (atomically, under no lock) when callCtx aborts an
+	// in-flight RPC by closing stdin. Once set it stays set for the lifetime
+	// of the Client; every subsequent doCall / callCtx returns
+	// ErrClientPoisoned immediately rather than queueing on c.mu behind the
+	// stuck reader. See ErrClientPoisoned and issue #115 / PR #117 (B1).
+	poisoned atomic.Bool
+
+	// killOnce guards the cmd.Process.Kill() fallback path (B3) so multiple
+	// concurrent cancellations cannot race each other into double-kill or
+	// double-timer-start.
+	killOnce sync.Once
 }
 
 // Snapshot returns the most recent snapshot handle the client knows about.
@@ -89,8 +144,87 @@ func (c *Client) Close() error {
 
 // call sends a JSON-RPC request and reads the response.
 func (c *Client) call(method string, params interface{}) (json.RawMessage, error) {
+	return c.callCtx(context.Background(), method, params)
+}
+
+// callCtx is like call but honours ctx cancellation. Because the underlying
+// stdio is blocking and shared (guarded by c.mu), true mid-RPC cancellation
+// requires unblocking the read. We run the blocking call in a goroutine and
+// race it against ctx.Done(); on cancellation we close stdin so the tsgo
+// subprocess exits and the goroutine's read unblocks. The Client is
+// effectively dead after such a cancellation — callers must not reuse it
+// (issue #115 fix: previously a per-file RPC could hang indefinitely past
+// SIGINT or --timeout).
+func (c *Client) callCtx(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+	if c.poisoned.Load() {
+		return nil, ErrClientPoisoned
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type result struct {
+		raw json.RawMessage
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		raw, err := c.doCall(method, params)
+		done <- result{raw, err}
+	}()
+	select {
+	case r := <-done:
+		return r.raw, r.err
+	case <-ctx.Done():
+		// Mark the client poisoned BEFORE closing stdin. Order matters:
+		// any caller that races in after us must see poisoned=true and bail
+		// out at the top of doCall/callCtx rather than queue on c.mu behind
+		// the stuck reader (B1). We do not take c.mu here — the in-flight
+		// doCall holds it until its readResponse unblocks via stdin close.
+		c.poisoned.Store(true)
+		// Closing stdin is the primary unblock mechanism: tsgo sees EOF on
+		// its input and exits, which closes stdout and unblocks our reader.
+		// stdin.Close is safe on an already-closed pipe.
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
+		// B3: stdin-close is best-effort. If tsgo is hung, ignores SIGPIPE,
+		// or its output is sitting in OS buffers, the doCall goroutine
+		// would leak forever holding c.mu. After a grace period, force-kill
+		// the subprocess. sync.Once means concurrent cancellations don't
+		// race into multiple Kill calls or multiple timers.
+		c.killOnce.Do(func() {
+			go func() {
+				select {
+				case <-done:
+					// doCall completed within the grace window — no kill needed.
+					return
+				case <-time.After(getKillAfterCancel()):
+					if c.cmd != nil && c.cmd.Process != nil {
+						_ = c.cmd.Process.Kill()
+					}
+				}
+			}()
+		})
+		return nil, ctx.Err()
+	}
+}
+
+// doCall performs the blocking JSON-RPC call previously inlined in call().
+// Split out so callCtx can race it against ctx.Done().
+func (c *Client) doCall(method string, params interface{}) (json.RawMessage, error) {
+	// Fast-fail before queueing on c.mu. A previous cancellation may have
+	// closed stdin and left the prior doCall blocked on its read; we must
+	// not pile up behind it (B1).
+	if c.poisoned.Load() {
+		return nil, ErrClientPoisoned
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Re-check after acquiring the lock — poison could have been set while
+	// we were waiting.
+	if c.poisoned.Load() {
+		return nil, ErrClientPoisoned
+	}
 
 	id := c.nextID.Add(1)
 
@@ -366,11 +500,17 @@ func (c *Client) GetTypeAtOffset(project, file string, offset uint32) (*TypeInfo
 // GetSymbolAtOffset returns the symbol response at a byte offset in a file.
 // Same wire-shape notes as GetTypeAtOffset.
 func (c *Client) GetSymbolAtOffset(project, file string, offset uint32) (*SymbolInfo, error) {
+	return c.GetSymbolAtOffsetCtx(context.Background(), project, file, offset)
+}
+
+// GetSymbolAtOffsetCtx is the ctx-aware variant of GetSymbolAtOffset. See
+// callCtx for cancellation semantics.
+func (c *Client) GetSymbolAtOffsetCtx(ctx context.Context, project, file string, offset uint32) (*SymbolInfo, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.call("getSymbolAtPosition", map[string]interface{}{
+	raw, err := c.callCtx(ctx, "getSymbolAtPosition", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
 		"file":     file,
@@ -389,11 +529,16 @@ func (c *Client) GetSymbolAtOffset(project, file string, offset uint32) (*Symbol
 // GetTypeOfSymbol returns the type of a symbol.
 // Wire: GetTypeOfSymbolParams{ snapshot, project, symbol }.
 func (c *Client) GetTypeOfSymbol(project string, symbolHandle string) (*TypeInfo, error) {
+	return c.GetTypeOfSymbolCtx(context.Background(), project, symbolHandle)
+}
+
+// GetTypeOfSymbolCtx is the ctx-aware variant of GetTypeOfSymbol.
+func (c *Client) GetTypeOfSymbolCtx(ctx context.Context, project string, symbolHandle string) (*TypeInfo, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.call("getTypeOfSymbol", map[string]interface{}{
+	raw, err := c.callCtx(ctx, "getTypeOfSymbol", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
 		"symbol":   symbolHandle,
@@ -458,11 +603,16 @@ func (c *Client) GetBaseTypes(project string, typeHandle string) ([]TypeInfo, er
 // Upstream (handleTypeToString, session.go:1352) returns a bare JSON string —
 // e.g. `"string"` or `"Box<number>"` — NOT an object with a displayName field.
 func (c *Client) TypeToString(project string, typeHandle string) (string, error) {
+	return c.TypeToStringCtx(context.Background(), project, typeHandle)
+}
+
+// TypeToStringCtx is the ctx-aware variant of TypeToString.
+func (c *Client) TypeToStringCtx(ctx context.Context, project string, typeHandle string) (string, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.call("typeToString", map[string]interface{}{
+	raw, err := c.callCtx(ctx, "typeToString", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
 		"type":     typeHandle,
