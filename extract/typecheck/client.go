@@ -28,7 +28,32 @@ var ErrClientPoisoned = errors.New("typecheck: client poisoned by prior cancella
 // stdin close within a few hundred ms; the kill fallback exists for hung
 // processes, ignored SIGPIPE, or OS-level buffering that would otherwise
 // leak the doCall goroutine forever (B3).
-var killAfterCancel = 2 * time.Second
+//
+// Stored as an atomic.Pointer so tests can safely override the grace window
+// without racing the cancellation goroutine in callCtx that reads it. The
+// production default is set in init(); accessors getKillAfterCancel /
+// setKillAfterCancel encapsulate the load/store. See PR #117 review round 3.
+var killAfterCancel atomic.Pointer[time.Duration]
+
+func init() {
+	d := 2 * time.Second
+	killAfterCancel.Store(&d)
+}
+
+func getKillAfterCancel() time.Duration {
+	if p := killAfterCancel.Load(); p != nil {
+		return *p
+	}
+	return 2 * time.Second
+}
+
+// setKillAfterCancel replaces the grace window and returns the previous
+// value, allowing callers (tests) to restore it via t.Cleanup.
+func setKillAfterCancel(d time.Duration) time.Duration {
+	prev := getKillAfterCancel()
+	killAfterCancel.Store(&d)
+	return prev
+}
 
 // Client communicates with a tsgo --api --async subprocess via JSON-RPC 2.0
 // using standard LSP Content-Length framing.
@@ -173,7 +198,7 @@ func (c *Client) callCtx(ctx context.Context, method string, params interface{})
 				case <-done:
 					// doCall completed within the grace window — no kill needed.
 					return
-				case <-time.After(killAfterCancel):
+				case <-time.After(getKillAfterCancel()):
 					if c.cmd != nil && c.cmd.Process != nil {
 						_ = c.cmd.Process.Kill()
 					}

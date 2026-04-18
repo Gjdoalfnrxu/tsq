@@ -841,10 +841,11 @@ func TestClient_CallCtxCancellationUnblocksStdinReader(t *testing.T) {
 	})
 
 	// Shrink the kill-fallback grace window so the test can verify the
-	// process was killed without waiting the production 2s.
-	origKillAfter := killAfterCancel
-	killAfterCancel = 200 * time.Millisecond
-	t.Cleanup(func() { killAfterCancel = origKillAfter })
+	// process was killed without waiting the production 2s. Using the
+	// atomic accessor avoids racing the cancellation goroutine in callCtx
+	// that reads the same value (PR #117 review round 3, nit #2).
+	origKillAfter := setKillAfterCancel(200 * time.Millisecond)
+	t.Cleanup(func() { setKillAfterCancel(origKillAfter) })
 
 	c := &Client{
 		cmd:    cmd,
