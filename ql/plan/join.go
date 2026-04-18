@@ -195,6 +195,74 @@ func isTinySeed(lit datalog.Literal, bound map[string]bool, sizeHints map[string
 	return false
 }
 
+// pickTinySeed implements the tiny-seed override (issues #98, #109).
+//
+// Among unplaced eligible literals that qualify as tiny seeds (per
+// isTinySeed), it returns the index of the preferred candidate, or -1 if
+// there is no qualifying candidate.
+//
+// Selection rule:
+//  1. A hinted candidate (sizeHints[pred] known and > 0) strictly beats
+//     an unhinted candidate, regardless of size. This is the issue #109
+//     fix: an unhinted EDB with a discriminative constant arg (which
+//     qualifies as tiny via the constant-arg branch of isTinySeed) could
+//     in reality be 8M rows. We have weaker evidence about its true size
+//     than for a relation with a recorded sizeHint, so we must not let
+//     the unhinted candidate beat a hinted-tiny one. On main this is
+//     masked by the accident that defaultSizeHint (1000) happens to be
+//     larger than every hint that passes the tinySeedThreshold gate; that
+//     accidental masking is precisely what would silently regress under a
+//     refactor that changed defaultUnhintedSize.
+//  2. Among same-hinted-status candidates, the smaller effective size
+//     wins. Unhinted candidates use defaultUnhintedSize for tiebreak.
+//
+// defaultUnhintedSize is parameterised so the regression test for #109
+// can drive it directly and demonstrate that the hinted-preference rule
+// is encoded explicitly rather than emerging from coincidence.
+func pickTinySeed(
+	body []datalog.Literal,
+	placed []bool,
+	bound map[string]bool,
+	sizeHints map[string]int,
+	defaultUnhintedSize int,
+) int {
+	tinyIdx := -1
+	tinySize := 0
+	tinyHinted := false
+	for i, lit := range body {
+		if placed[i] {
+			continue
+		}
+		if !isEligible(lit, bound) {
+			continue
+		}
+		if !isTinySeed(lit, bound, sizeHints) {
+			continue
+		}
+		sz, ok := sizeHints[lit.Atom.Predicate]
+		hinted := ok && sz > 0
+		if !hinted {
+			sz = defaultUnhintedSize
+		}
+		better := false
+		switch {
+		case tinyIdx == -1:
+			better = true
+		case hinted && !tinyHinted:
+			// Hinted strictly beats unhinted regardless of size (#109).
+			better = true
+		case hinted == tinyHinted && sz < tinySize:
+			better = true
+		}
+		if better {
+			tinyIdx = i
+			tinySize = sz
+			tinyHinted = hinted
+		}
+	}
+	return tinyIdx
+}
+
 // orderJoins implements greedy join ordering for a rule body.
 //
 // Selection rule per slot:
@@ -218,30 +286,8 @@ func orderJoins(body []datalog.Literal, sizeHints map[string]int) []JoinStep {
 		bestNegBound := 0
 		bestSize := 0
 
-		// Pass 1 — tiny-seed override (issue #98). Pick the smallest tiny
-		// candidate by known sizeHint (defaultSizeHint when unknown) so that
-		// e.g. a known-7 literal beats an unknown-but-with-constants literal.
-		tinyIdx := -1
-		tinySize := 0
-		for i, lit := range body {
-			if placed[i] {
-				continue
-			}
-			if !isEligible(lit, bound) {
-				continue
-			}
-			if !isTinySeed(lit, bound, sizeHints) {
-				continue
-			}
-			sz, ok := sizeHints[lit.Atom.Predicate]
-			if !ok || sz <= 0 {
-				sz = defaultSizeHint
-			}
-			if tinyIdx == -1 || sz < tinySize {
-				tinyIdx = i
-				tinySize = sz
-			}
-		}
+		// Pass 1 — tiny-seed override (issue #98 + #109). See pickTinySeed.
+		tinyIdx := pickTinySeed(body, placed, bound, sizeHints, defaultSizeHint)
 		if tinyIdx != -1 {
 			bestIdx = tinyIdx
 		} else {

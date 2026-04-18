@@ -381,6 +381,62 @@ func TestJoinTinySeedConstantArgWinsWithoutHint(t *testing.T) {
 	}
 }
 
+// TestJoinHintedTinyBeatsUnhintedConstantArg is the regression for issue
+// #109: when both a hinted-tiny relation and an unhinted-but-constant-arg
+// relation qualify as "tiny seed" candidates for the same slot, the one
+// backed by an explicit size hint must win.
+//
+// Setup matches the issue body exactly:
+//
+//	P(x) :- Big("k", x), Tiny(x).
+//	    Big:  no sizeHint, has a constant arg ("k"). Could in reality be
+//	          an 8M-row EDB with a discriminative constant.
+//	    Tiny: sizeHint=5 — genuinely tiny.
+//
+// Both qualify as tiny seeds (Big via constant-arg branch, Tiny via known
+// hint ≤ threshold). Tiny must win slot 0; Big must land at slot 1.
+//
+// On main this passes only by accident: the tiebreak compares
+// `sz < tinySize` and substitutes defaultSizeHint=1000 for unhinted, so
+// hinted=5 < 1000 wins by coincidence. A future refactor changing that
+// fallback (or an unhinted relation that really is huge) would regress.
+// The fix: prefer hinted candidates explicitly. This test pins that
+// preference even when the unhinted candidate's effective size would be
+// smaller.
+func TestJoinHintedTinyBeatsUnhintedConstantArg(t *testing.T) {
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: atom("P", "x"),
+				Body: []datalog.Literal{
+					posLitConst("Big", "k", "x"),
+					posLit("Tiny", "x"),
+				},
+			},
+		},
+	}
+	hints := map[string]int{"Tiny": 5} // Big intentionally unhinted.
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	r := ep.Strata[0].Rules[0]
+	if len(r.JoinOrder) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(r.JoinOrder))
+	}
+	got := []string{
+		r.JoinOrder[0].Literal.Atom.Predicate,
+		r.JoinOrder[1].Literal.Atom.Predicate,
+	}
+	if got[0] != "Tiny" {
+		t.Errorf("slot 0: expected Tiny (hinted=5) to beat Big (unhinted, constant arg); got %s; full order: %v",
+			got[0], got)
+	}
+	if got[1] != "Big" {
+		t.Errorf("slot 1: expected Big to land last; got %s; full order: %v", got[1], got)
+	}
+}
+
 // TestJoinNegativeLiteralPlacedAfterVarsBound.
 func TestJoinNegativeLiteralPlacedAfterVarsBound(t *testing.T) {
 	// P(x) :- A(x), not B(x).
