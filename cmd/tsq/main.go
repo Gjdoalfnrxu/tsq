@@ -141,6 +141,19 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 1
 	}
 
+	// Absolutise --dir at the CLI boundary (issue #110). The walker stores
+	// file paths verbatim into the File relation; if --dir is relative, every
+	// downstream consumer that needs an absolute path (notably tsgo enrichment,
+	// whose DocumentIdentifier rejects relative paths with "source file not
+	// found") sees relative entries and breaks. Resolving once here keeps the
+	// File relation consistent regardless of how the user invoked the CLI.
+	absDir, err := filepath.Abs(*dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: resolve --dir %q: %v\n", *dir, err)
+		return 1
+	}
+	*dir = absDir
+
 	fmt.Fprintf(stderr, "extracting from %s (requires CGO_ENABLED=1 for tree-sitter)...\n", *dir)
 
 	database := db.NewDB()

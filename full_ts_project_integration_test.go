@@ -18,11 +18,14 @@
 //     and tsgo populated ResolvedType. Skipped if tsgo is unavailable on
 //     the host (so CI on bare clones is not broken).
 //
-// The tsgo branch additionally documents a real CLI gotcha: relative --dir
-// paths cause every getSymbolAtPosition query to error out because the file
-// paths in the File relation are not absolutised before being passed to tsgo
-// via RegisterFiles. The test passes an absolute --dir to work around this;
-// the gotcha is recorded in the PR body so it can be filed as its own issue.
+// Historical note: the tsgo branch documented a CLI gotcha (issue #110) where
+// relative --dir paths broke every getSymbolAtPosition query because file
+// paths in the File relation were not absolutised before being handed to tsgo
+// via RegisterFiles. The fix lives in cmdExtract (absolutise *dir at the CLI
+// boundary), and the dedicated regression guard is
+// TestCLI_ExtractRelativeDir_TsgoEnrichment in
+// extract_relative_dir_integration_test.go. This test now uses the fixture
+// path as-is without a workaround.
 package integration_test
 
 import (
@@ -34,21 +37,15 @@ import (
 	"testing"
 )
 
-// fullTSProjectDir returns the absolute path to the fixture. tsgo enrichment
-// requires absolute paths end-to-end (see file header).
-//
-// TODO(#110): remove the filepath.Abs workaround once tsq absolutises *dir in
-// cmdExtract. Today, passing a relative --dir produces relative entries in the
-// File relation, which tsgo's DocumentIdentifier resolution rejects with
-// "source file not found" for every position query.
+// fullTSProjectDir returns the path to the fixture, joined off the repo root.
+// cliRepoRoot is already absolute (resolved from runtime.Caller), so this is
+// absolute by construction — no filepath.Abs needed. Issue #110 (CLI now
+// absolutises --dir) means this test would still pass if the path were
+// relative, but keeping it absolute matches the rest of the integration suite.
 func fullTSProjectDir(t *testing.T) string {
 	t.Helper()
 	root := cliRepoRoot(t)
-	abs, err := filepath.Abs(filepath.Join(root, "testdata", "projects", "full-ts-project"))
-	if err != nil {
-		t.Fatalf("abs fixture path: %v", err)
-	}
-	return abs
+	return filepath.Join(root, "testdata", "projects", "full-ts-project")
 }
 
 // detectTsgoForTest mirrors typecheck.DetectTsgo's first two checks (TSGO_PATH
