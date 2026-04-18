@@ -456,54 +456,114 @@ func TestWithMagicSetAuto_NoBindingsIsNotFallback(t *testing.T) {
 // TestWithMagicSetAutoOpts_StrictSurfacesPlanError (issue #112) asserts
 // that strict mode returns the underlying planning error rather than
 // silently falling back to plain Plan.
+//
+// Runs over two fixtures: the first is the canonical wildcard-in-body
+// unsafe-rule shape; the second is a renamed-identifier variant on the
+// same code path (see fixture comment below). The second fixture is a
+// smoke check that the assertion isn't hard-coded to predicate names,
+// not a structurally-distinct failure mode. A genuinely different
+// failure-shape fixture is left as a follow-up (#124 review minor).
 func TestWithMagicSetAutoOpts_StrictSurfacesPlanError(t *testing.T) {
-	rules := []datalog.Rule{
+	cases := []struct {
+		name string
+		prog *datalog.Program
+	}{
 		{
-			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
-				{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+			name: "unsafe_head_via_wildcard_2arg",
+			prog: &datalog.Program{
+				Rules: []datalog.Rule{
+					{
+						Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+							{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+						},
+					},
+				},
+				Query: &datalog.Query{
+					Select: []datalog.Term{datalog.Var{Name: "x"}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+					},
+				},
 			},
 		},
 		{
-			Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
-			},
-		},
-		{
-			Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
-			},
-		},
-	}
-	prog := &datalog.Program{
-		Rules: rules,
-		Query: &datalog.Query{
-			Select: []datalog.Term{datalog.Var{Name: "x"}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+			// Renamed-identifier variant of the first fixture with a
+			// 3-arg base relation tacked on. The unsafe-rule trigger is
+			// still a wildcard-bearing body literal feeding a head var
+			// (`Mid(_, w)` -> `Leaf(w)`), so this exercises the same
+			// isSafe code path as the first case. Kept as a smoke check
+			// that the strict-mode assertion isn't hard-coded to
+			// predicate names like P/Q/R; not a structurally-distinct
+			// failure mode. Finding a genuinely different planner-error
+			// shape that's reachable through the magic-set augmented
+			// program needs its own investigation — see #124 review.
+			name: "unsafe_head_via_wildcard_3arg",
+			prog: &datalog.Program{
+				Rules: []datalog.Rule{
+					{
+						Head: datalog.Atom{Predicate: "Top", Args: []datalog.Term{datalog.Var{Name: "k"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Mid", Args: []datalog.Term{datalog.Var{Name: "k"}, datalog.Var{Name: "u"}}}},
+							{Positive: true, Atom: datalog.Atom{Predicate: "Leaf", Args: []datalog.Term{datalog.Var{Name: "u"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "Leaf", Args: []datalog.Term{datalog.Var{Name: "w"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Mid", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "w"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "Mid", Args: []datalog.Term{datalog.Var{Name: "p"}, datalog.Var{Name: "q"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Triple", Args: []datalog.Term{datalog.Var{Name: "p"}, datalog.Var{Name: "q"}, datalog.Var{Name: "r"}}}},
+						},
+					},
+				},
+				Query: &datalog.Query{
+					Select: []datalog.Term{datalog.Var{Name: "k"}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "Top", Args: []datalog.Term{datalog.IntConst{Value: 7}}}},
+					},
+				},
 			},
 		},
 	}
 
-	ep, _, errs := WithMagicSetAutoOpts(prog, nil, MagicSetOptions{Strict: true})
-	if len(errs) == 0 {
-		t.Fatalf("expected strict mode to surface planning errors from the augmented program, got none")
-	}
-	if ep != nil {
-		t.Fatalf("expected nil ExecutionPlan in strict failure; got non-nil")
-	}
-	sawUnsafeHead := false
-	for _, e := range errs {
-		if strings.Contains(e.Error(), "unsafe rule") {
-			sawUnsafeHead = true
-			break
-		}
-	}
-	if !sawUnsafeHead {
-		t.Fatalf("expected strict-mode error to surface unsafe-rule cause, got: %v", errs)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, _, errs := WithMagicSetAutoOpts(tc.prog, nil, MagicSetOptions{Strict: true})
+			if len(errs) == 0 {
+				t.Fatalf("expected strict mode to surface planning errors from the augmented program, got none")
+			}
+			if ep != nil {
+				t.Fatalf("expected nil ExecutionPlan in strict failure; got non-nil")
+			}
+			sawUnsafeHead := false
+			for _, e := range errs {
+				if strings.Contains(e.Error(), "unsafe rule") {
+					sawUnsafeHead = true
+					break
+				}
+			}
+			if !sawUnsafeHead {
+				t.Fatalf("expected strict-mode error to surface unsafe-rule cause, got: %v", errs)
+			}
+		})
 	}
 }
 
@@ -526,4 +586,78 @@ func TestWithMagicSetAutoOpts_StrictHappyPathUnchanged(t *testing.T) {
 	if len(inf.Bindings) == 0 {
 		t.Fatalf("expected bindings to be inferred under strict mode happy path")
 	}
+}
+
+// TestWithMagicSetAutoOpts_ArityMismatchSamePredDifferentArity pins the
+// behaviour of the arity-mismatch guard in WithMagicSetAutoOpts.
+//
+// Scenario: a single IDB pred P/2 appears twice in the query body with
+// different bound-column counts — `P(1, y)` (1 bound position) and
+// `P(2, 3)` (2 bound positions). InferQueryBindings records
+// bindings[P] from the first occurrence (1 position) but appends a seed
+// rule for each occurrence using its own boundCols length, so the second
+// seed rule's head arity (magic_P/2) disagrees with the recorded binding
+// arity (1). The arity guard in WithMagicSetAutoOpts catches this.
+//
+// Strict mode must surface the arity-mismatch error; non-strict mode
+// must fall back to plain Plan with FallbackReason populated.
+func TestWithMagicSetAutoOpts_ArityMismatchSamePredDifferentArity(t *testing.T) {
+	mkProg := func() *datalog.Program {
+		return &datalog.Program{
+			Rules: []datalog.Rule{
+				{
+					Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+					},
+				},
+			},
+			Query: &datalog.Query{
+				Select: []datalog.Term{datalog.Var{Name: "y"}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "y"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 2}, datalog.IntConst{Value: 3}}}},
+				},
+			},
+		}
+	}
+
+	t.Run("strict_surfaces_arity_mismatch", func(t *testing.T) {
+		ep, _, errs := WithMagicSetAutoOpts(mkProg(), nil, MagicSetOptions{Strict: true})
+		if ep != nil {
+			t.Fatalf("expected nil ExecutionPlan in strict failure; got non-nil")
+		}
+		if len(errs) == 0 {
+			t.Fatalf("expected strict mode to surface arity-mismatch error, got none")
+		}
+		sawArity := false
+		for _, e := range errs {
+			if strings.Contains(e.Error(), "arity mismatch") {
+				sawArity = true
+				break
+			}
+		}
+		if !sawArity {
+			t.Fatalf("expected strict-mode error to mention arity mismatch, got: %v", errs)
+		}
+	})
+
+	t.Run("nonstrict_falls_back_with_reason", func(t *testing.T) {
+		ep, inf, errs := WithMagicSetAutoOpts(mkProg(), nil, MagicSetOptions{})
+		if len(errs) != 0 {
+			t.Fatalf("non-strict mode must swallow planning errors and return a working plan; got errs=%v", errs)
+		}
+		if ep == nil {
+			t.Fatalf("expected non-nil ExecutionPlan from plain-Plan fallback")
+		}
+		if !inf.Fallback {
+			t.Fatalf("expected Fallback=true on arity-mismatch fallback path")
+		}
+		if inf.FallbackReason == nil {
+			t.Fatalf("expected FallbackReason to be populated; got nil")
+		}
+		if !strings.Contains(inf.FallbackReason.Error(), "arity mismatch") {
+			t.Fatalf("expected FallbackReason to mention arity mismatch, got: %v", inf.FallbackReason)
+		}
+	})
 }

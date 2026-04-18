@@ -277,6 +277,19 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 	// arity declared for its predicate. A mismatch means the inference and
 	// the transform disagree about the magic-pred shape; prefer the safe
 	// plain plan over a broken augmented program.
+	//
+	// NOTE (#124 follow-up): this guard IS reachable from real input. The
+	// inference loop in InferQueryBindings records bindings[pred] only on
+	// the first occurrence of pred in the query body (`if !exists`), but
+	// appends a fresh seed rule for every occurrence using the *current*
+	// iteration's len(boundCols). When the same IDB pred appears twice
+	// with different bound-column counts (e.g. body `P(1,y), P(2,3)` over
+	// `P/2`), the second seed rule's head arity disagrees with the
+	// recorded binding arity. This guard catches that asymmetry. The
+	// long-term fix likely belongs in InferQueryBindings (widen or skip
+	// the second seed); until then strict mode surfaces the mismatch and
+	// non-strict falls back to plain Plan with FallbackReason populated.
+	// Test coverage: TestWithMagicSetAutoOpts_ArityMismatchSamePredDifferentArity.
 	for _, sr := range inf.SeedRules {
 		// magic_<pred> -> <pred>
 		predName := sr.Head.Predicate
