@@ -268,6 +268,22 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts MagicSetOptions) (*ExecutionPlan, QueryBindingInference, []error) {
 	idb := IDBPredicates(prog)
 	inf := InferQueryBindings(prog, idb)
+
+	// Augment query-side inference with rule-body backward demand
+	// (P3a-derived magic-set seeds for synth-disj / synth-neg shapes).
+	// This closes the gap where a synthesised IDB like `_disj_2` is
+	// called from a rule whose context binds the head args, but the
+	// query body doesn't reference `_disj_2` directly. Without this
+	// augmentation, the magic-set transform would never fire for
+	// `_disj_2` and its body would compute every tuple of B⋈C⋈D
+	// before the binding cap fires (Mastodon `_disj_2` failure mode,
+	// roadmap "Magic-set on synth-disj" section).
+	demandBindings, demandSeeds := InferRuleBodyDemandBindings(prog, idb, sizeHints)
+	if len(demandBindings) > 0 {
+		inf.Bindings = MergeBindings(inf.Bindings, demandBindings)
+		inf.SeedRules = append(inf.SeedRules, demandSeeds...)
+	}
+
 	if len(inf.Bindings) == 0 {
 		ep, errs := Plan(prog, sizeHints)
 		return ep, inf, errs
