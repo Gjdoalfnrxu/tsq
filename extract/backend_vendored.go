@@ -380,12 +380,18 @@ func (b *VendoredBackend) rpc(ctx context.Context, method string, params interfa
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Write request with Content-Length header (LSP-style framing).
+	// Write request with Content-Length header (LSP-style framing). A write
+	// failure here means stdin is broken (subprocess exited, pipe closed) —
+	// poison so subsequent callers don't retry against a dead pipe and so we
+	// don't leave a half-written framed message that would desync the next
+	// reader.
 	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
 	if _, err := io.WriteString(b.tsgoIn, header); err != nil {
+		b.poisoned.Store(true)
 		return nil, fmt.Errorf("write header: %w", err)
 	}
 	if _, err := b.tsgoIn.Write(data); err != nil {
+		b.poisoned.Store(true)
 		return nil, fmt.Errorf("write body: %w", err)
 	}
 
