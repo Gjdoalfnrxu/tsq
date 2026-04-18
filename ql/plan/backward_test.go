@@ -212,6 +212,62 @@ func TestInferBackwardDemand_MixedArityIgnored(t *testing.T) {
 	}
 }
 
+// Adversarial-review Finding 1 on PR #143: the query body must count
+// as a caller of any IDB it references. If only rule bodies are walked,
+// demand can be over-tightened to a column the query does NOT bind.
+//
+// Setup:
+//   - Rule defines P(x, y) :- Edge(x, y).  (IDB)
+//   - Rule caller R(y) :- P(1, y).         (binds P col 0 via constant)
+//   - Query   :- P(a, b).                  (binds NEITHER column)
+//
+// Pre-fix: only rule callers walked → demand[P] = [0].
+// Post-fix: query intersected in → demand[P] = [] (P col 0 dropped
+// because the query, a real caller, does not bind it).
+func TestInferBackwardDemand_QueryAsCallerDropsUnboundCol(t *testing.T) {
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{v("x"), v("y")}},
+				Body: []datalog.Literal{atom("Edge", v("x"), v("y"))}},
+			{Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{v("y")}},
+				Body: []datalog.Literal{atom("P", ic(1), v("y"))}},
+		},
+		Query: &datalog.Query{
+			Select: []datalog.Term{v("a"), v("b")},
+			Body:   []datalog.Literal{atom("P", v("a"), v("b"))},
+		},
+	}
+	d := InferBackwardDemand(prog, nil)
+	got, ok := d["P"]
+	if !ok {
+		t.Fatalf("expected P observed (query is a caller), got %v", d)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty demand for P (query binds nothing), got %v", got)
+	}
+}
+
+// Companion: when the query DOES bind the same column, demand survives.
+func TestInferBackwardDemand_QueryAndRuleAgreeOnDemand(t *testing.T) {
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{v("x"), v("y")}},
+				Body: []datalog.Literal{atom("Edge", v("x"), v("y"))}},
+			{Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{v("y")}},
+				Body: []datalog.Literal{atom("P", ic(1), v("y"))}},
+		},
+		Query: &datalog.Query{
+			Select: []datalog.Term{v("b")},
+			Body:   []datalog.Literal{atom("P", ic(2), v("b"))},
+		},
+	}
+	d := InferBackwardDemand(prog, nil)
+	got, ok := d["P"]
+	if !ok || len(got) != 1 || got[0] != 0 {
+		t.Fatalf("expected P demand = [0] (rule and query both bind col 0), got %v", got)
+	}
+}
+
 // --- orderJoinsWithDemand end-to-end ----------------------------------------
 
 // Taint-shaped: a rule body with a small-extent sink-literal and a

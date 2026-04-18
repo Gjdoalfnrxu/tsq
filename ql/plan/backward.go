@@ -138,6 +138,50 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 		changed = false
 		iter++
 
+		// The query body is a first-class caller of any IDB it references.
+		// Treating it as such tightens the all-callers intersect: a column
+		// the rule callers happen to bind but the query does not is NOT
+		// safely demand-bound at planning time. Adversarial-review
+		// Finding 1 on PR #143.
+		//
+		// The query has no head, so headBoundVars is empty. We synthesise
+		// a Rule with an empty head and the query body so the same
+		// bodyContextGroundedVars / literalBoundCols / intersect path
+		// reused below applies uniformly.
+		if prog.Query != nil && len(prog.Query.Body) > 0 {
+			queryRule := datalog.Rule{
+				Head: datalog.Atom{},
+				Body: prog.Query.Body,
+			}
+			queryHeadBound := map[string]bool{}
+			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, queryHeadBound)
+			for _, lit := range prog.Query.Body {
+				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
+					continue
+				}
+				pred := lit.Atom.Predicate
+				if _, isIDB := idbArity[pred]; !isIDB {
+					continue
+				}
+				if mixedArity[pred] {
+					continue
+				}
+				observed := literalBoundCols(lit, ctxBoundVars)
+				if !initialised[pred] {
+					demand[pred] = append([]int(nil), observed...)
+					initialised[pred] = true
+					changed = true
+					continue
+				}
+				prev := demand[pred]
+				next := intersectSortedCols(prev, observed)
+				if !sameCols(prev, next) {
+					demand[pred] = next
+					changed = true
+				}
+			}
+		}
+
 		for _, rule := range prog.Rules {
 			// Compute which of this rule's own head vars are demand-bound.
 			// On the first pass, treat them as unbound (nothing proven
