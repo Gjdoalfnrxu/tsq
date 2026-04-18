@@ -1,0 +1,21 @@
+{
+  "name": "full-ts-project-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Realistic-shape TypeScript project fixture for tsq integration tests",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.14.202",
+    "@types/react": "^18.2.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}
