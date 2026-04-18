@@ -246,6 +246,25 @@ func TestCLI_FullTSProject_EndToEnd(t *testing.T) {
 	if strings.Contains(stderr, "facts=0 ") {
 		t.Errorf("tsgo produced zero facts — PR #84 regression or environment problem; stderr:\n%s", stderr)
 	}
+	// Issue #115: tighter assertions on the enrichment summary.
+	// A pipeline that fails 90% of files can still report `facts > 0`; the
+	// new failedFiles=/totalFiles= fields let CI catch that case here.
+	if !strings.Contains(stderr, "failedFiles=0") {
+		t.Errorf("expected failedFiles=0 on the realistic fixture (issue #115); stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "totalFiles=") {
+		t.Errorf("expected totalFiles= field in summary line (issue #115); stderr:\n%s", stderr)
+	}
+	// symbolErrors should be 0 on a clean fixture — every queried position
+	// either resolves a symbol or returns empty (which is counted separately
+	// as SymbolEmpty, not SymbolErrors). RPC errors here would mean the wire
+	// format regressed again. Summary format:
+	//   "symbolQueries=N (errors=E) typeQueries=M (errors=F)".
+	// We require at least one "(errors=0)" — the symbol bucket on a clean
+	// project must be RPC-clean.
+	if !strings.Contains(stderr, "(errors=0)") {
+		t.Errorf("expected at least one (errors=0) in summary, indicating clean RPC (issue #115); stderr:\n%s", stderr)
+	}
 
 	// Query 3 — type-info-derived facts. The Type relation (ResolvedType
 	// under the hood) is populated ONLY by tsgo enrichment. If the tsconfig

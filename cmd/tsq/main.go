@@ -262,10 +262,50 @@ func resolveTSConfig(flagVal, dir string, stderr io.Writer) string {
 	return typecheck.FindTSConfig(dir)
 }
 
+// enrichRunner is the narrow surface of *typecheck.Enricher that the per-file
+// loop in enrichWithTsgo actually depends on. Pulled into an interface so the
+// loop can be exercised with a fake in tests (issue #115).
+type enrichRunner interface {
+	RegisterFiles(paths []string)
+	EnrichFile(filePath string, positions []typecheck.Position) ([]typecheck.TypeFact, typecheck.EnrichStats, error)
+	Close() error
+}
+
+// enrichFailureRatioThreshold is the maximum allowed ratio of per-file
+// enrichment failures before enrichWithTsgo returns a hard error.
+//
+// Rationale: a small number of per-file failures can legitimately occur
+// (e.g. malformed source, a transient tsgo error) and should not fail the
+// whole extraction. But if more than half of files fail, the pipeline is
+// effectively broken and silently aggregating those failures (as the
+// pre-issue-#115 code did) means CI tests that only assert `facts > 0`
+// would happily pass with a 90% failure rate. 0.5 is a deliberate
+// "majority works" floor — tighten if real-world runs prove tolerant of a
+// stricter bound. Only meaningful when totalFiles >= enrichFailureMinFiles.
+const enrichFailureRatioThreshold = 0.5
+
+// enrichFailureMinFiles is the minimum number of files that must be
+// processed before the failure-ratio check kicks in. Below this we don't
+// have enough signal to distinguish "broken pipeline" from "tiny project
+// with one bad file", and the ratio check would be hair-trigger.
+const enrichFailureMinFiles = 4
+
 // enrichWithTsgo runs tsgo type enrichment over extracted files in the database.
 // It queries tsgo for types at variable declaration and parameter positions,
 // then populates ResolvedType, SymbolType, and ExprType relations.
-func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tsconfigPath string, stderr io.Writer) error {
+//
+// ctx cancellation is checked at the top of each per-file iteration so a
+// SIGINT or --timeout during a long enrichment loop interrupts promptly
+// rather than running to completion (issue #115). Per-file errors are
+// counted and surfaced as a hard error if the failure ratio exceeds
+// enrichFailureRatioThreshold (also issue #115 — the previous code only
+// logged warnings, so a 90%-failure run still exited 0).
+func enrichWithTsgo(ctx context.Context, database *db.DB, tsgoPath, rootDir, tsconfigPath string, stderr io.Writer) error {
+	// Cheap pre-flight: if ctx is already cancelled, don't even spin up tsgo.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("enrichWithTsgo: %w", err)
+	}
+
 	client, err := typecheck.NewClient(tsgoPath, rootDir)
 	if err != nil {
 		return fmt.Errorf("start tsgo: %w", err)
@@ -299,9 +339,17 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 		}
 		allPaths = append(allPaths, fp)
 	}
+
+	return runEnrichLoop(ctx, enricher, allPaths, database, stderr)
+}
+
+// runEnrichLoop is the per-file enrichment body, separated from enrichWithTsgo
+// so it can be tested with a fake enrichRunner. See issue #115.
+func runEnrichLoop(ctx context.Context, enricher enrichRunner, allPaths []string, database *db.DB, stderr io.Writer) error {
 	enricher.RegisterFiles(allPaths)
 
 	var aggSymQ, aggSymErr, aggTypQ, aggTypErr, aggFacts int
+	var failedFiles, processedFiles int
 	// Dedup ResolvedType emissions across all files: identical TypeHandles must
 	// produce a single ResolvedType row. Without this guard the same primitive
 	// (e.g. "string") is emitted once per occurrence, multiplying row counts
@@ -309,15 +357,24 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 	// map in extract/typecheck/enricher.go:WriteTypeFacts.
 	seenTypes := make(map[string]bool)
 	for _, filePath := range allPaths {
+		// Issue #115: honour ctx cancellation between files. Without this,
+		// SIGINT or --timeout cannot interrupt a long enrichment loop —
+		// the loop runs to completion regardless.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enrichWithTsgo: cancelled after %d/%d files: %w", processedFiles, len(allPaths), err)
+		}
+
 		// Collect positions: variable declarations and parameters
 		positions := collectEnrichmentPositions(database, filePath)
 		if len(positions) == 0 {
 			continue
 		}
+		processedFiles++
 
 		facts, stats, err := enricher.EnrichFile(filePath, positions)
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: tsgo enrich %s: %v\n", filePath, err)
+			failedFiles++
 			continue
 		}
 		aggSymQ += stats.SymbolQueries
@@ -362,14 +419,26 @@ func enrichWithTsgo(_ context.Context, database *db.DB, tsgoPath, rootDir, tscon
 	}
 
 	fmt.Fprintf(stderr,
-		"tsgo type enrichment complete: facts=%d symbolQueries=%d (errors=%d) typeQueries=%d (errors=%d)\n",
-		aggFacts, aggSymQ, aggSymErr, aggTypQ, aggTypErr,
+		"tsgo type enrichment complete: facts=%d symbolQueries=%d (errors=%d) typeQueries=%d (errors=%d) failedFiles=%d totalFiles=%d\n",
+		aggFacts, aggSymQ, aggSymErr, aggTypQ, aggTypErr, failedFiles, processedFiles,
 	)
 	if aggSymQ > 0 && aggFacts == 0 {
 		fmt.Fprintf(stderr,
 			"warning: tsgo answered %d symbol queries but produced zero type facts; downstream enrichment is not working — check tsgo binary and tsconfig\n",
 			aggSymQ,
 		)
+	}
+
+	// Issue #115: surface a hard error when the per-file failure ratio
+	// exceeds the threshold. The previous code silently aggregated all
+	// per-file errors into stderr warnings, so a regression that broke 90%
+	// of files would still exit 0 — and any CI test that only asserted
+	// `facts > 0` would happily pass.
+	if processedFiles >= enrichFailureMinFiles {
+		ratio := float64(failedFiles) / float64(processedFiles)
+		if ratio > enrichFailureRatioThreshold {
+			return fmt.Errorf("tsgo enrichment: %d/%d files failed (ratio=%.2f > threshold=%.2f); pipeline likely broken", failedFiles, processedFiles, ratio, enrichFailureRatioThreshold)
+		}
 	}
 	return nil
 }
