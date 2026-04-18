@@ -494,16 +494,26 @@ func TestPlan_BackwardInference_RetiresBridgeTrustChannel(t *testing.T) {
 	steps := orderJoinsWithDemand(datalog.Atom{Predicate: "Alert",
 		Args: []datalog.Term{v("src"), v("sink")}}, body, hints, nil)
 	first := steps[0].Literal.Atom.Predicate
-	if first == "FlowStar" {
-		t.Fatalf("shape 1: FlowStar as seed — planner regressed. Order: %v", predicateOrder(steps))
+	// Adversarial-review Finding 6 on PR #143: hard equality, not a
+	// soft "anything-but-FlowStar" assertion. Source (12) and Sink (7)
+	// both qualify as tiny via the (a) branch of isTinySeed
+	// (sz <= tinySeedThreshold = 32). pickTinySeed's tiebreak is
+	// "hinted strictly beats unhinted, then smaller size wins" — both
+	// are hinted, so the smaller wins: Sink (7) < Source (12). Pin
+	// that explicitly so any future regression in pickTinySeed's
+	// tiebreak is caught here, not silently absorbed.
+	if first != "Sink" {
+		t.Fatalf("shape 1: expected Sink first (smaller hint wins tiebreak among "+
+			"tiny-seeded Source/Sink), got %q (full order: %v)", first, predicateOrder(steps))
 	}
 
 	// Shape 2: multi-hop through an intermediate IDB.
 	//   Alert(src, sink) :- TaintedField(src, f), FlowStar(f, sink), Sink(sink).
-	// The crucial case: TaintedField is small (the class extent), FlowStar
-	// is large, Sink is small. Backward demand from Alert into the body
-	// gives us the same answer as a BackwardTracker wrap would: seed on
-	// one of the small relations, then let FlowStar probe.
+	// The crucial case: TaintedField is small-ish (50, > tinySeedThreshold
+	// of 32), FlowStar is large, Sink is small (7, qualifies as tiny).
+	// pickTinySeed: only Sink qualifies (TaintedField's hint > 32 → branch
+	// (a) of isTinySeed fails; no constants, no shared bound vars).
+	// Sink wins outright.
 	body2 := []datalog.Literal{
 		atom("FlowStar", v("f"), v("sink")),
 		atom("TaintedField", v("src"), v("f")),
@@ -512,8 +522,40 @@ func TestPlan_BackwardInference_RetiresBridgeTrustChannel(t *testing.T) {
 	hints2 := map[string]int{"FlowStar": 500000, "TaintedField": 50, "Sink": 7}
 	steps2 := orderJoinsWithDemand(datalog.Atom{Predicate: "Alert",
 		Args: []datalog.Term{v("src"), v("sink")}}, body2, hints2, nil)
-	if steps2[0].Literal.Atom.Predicate == "FlowStar" {
-		t.Fatalf("shape 2: FlowStar as seed. Order: %v", predicateOrder(steps2))
+	if steps2[0].Literal.Atom.Predicate != "Sink" {
+		t.Fatalf("shape 2: expected Sink first (only tiny-qualifying literal), got %q "+
+			"(full order: %v)", steps2[0].Literal.Atom.Predicate, predicateOrder(steps2))
+	}
+}
+
+// Adversarial-review Finding 5 on PR #143: SmallExtentThreshold = 5000
+// is a hard threshold. Boundary tests at 4999/5000/5001 pin the
+// inclusive ceiling so a refactor that flips to exclusive comparison
+// (`<` vs `<=`) is caught immediately.
+func TestSmallExtentThreshold_Boundary(t *testing.T) {
+	cases := []struct {
+		name  string
+		size  int
+		small bool
+	}{
+		{"below threshold", 4999, true},
+		{"exact threshold", 5000, true}, // <= is inclusive
+		{"above threshold", 5001, false},
+		{"zero treated as unknown", 0, false}, // isSmallExtent guards on sz>0
+		{"negative treated as unknown", -1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hints := map[string]int{"P": tc.size}
+			got := isSmallExtent("P", hints)
+			if got != tc.small {
+				t.Fatalf("size=%d: expected isSmallExtent=%v, got %v", tc.size, tc.small, got)
+			}
+		})
+	}
+	// Missing key.
+	if isSmallExtent("Absent", map[string]int{}) {
+		t.Fatal("absent predicate should not be treated as small extent")
 	}
 }
 

@@ -30,6 +30,17 @@
 // planner falls through to normal greedy scoring. This preserves all
 // current plans as a lower bound — P3a can only strictly improve seed
 // selection, never regress it.
+//
+// Interaction with P2a (materialised class extents). Rules that the
+// estimator hook materialises as eager class extents are stripped from
+// the program by EstimateAndPlanWithExtents BEFORE Plan() (and therefore
+// InferBackwardDemand) sees it. As a result those predicates are absent
+// from idbArity here and are treated as base relations for demand
+// purposes — exactly what callers want, since the materialised relation
+// is supplied to the evaluator as a base-like input. Their cardinality
+// still enters via sizeHints, so they can still serve as small-extent
+// grounding atoms in callers' bodies even though they themselves are
+// not demand-inferred.
 package plan
 
 import (
@@ -44,6 +55,22 @@ import (
 // predicate as "small" is just that we pre-bind variables the planner
 // would probably have preferred anyway. The constant mirrors the
 // smallIDBThreshold from the roadmap's Phase 3a section.
+//
+// Tuning notes (Adversarial-review Finding 5 on PR #143):
+//   - The 5000 ceiling sits well above P2b's sampling estimator's
+//     typical error band, so a sampled-down value (e.g. true 7000
+//     reported as 4900) tipping into "small" is bounded — at worst the
+//     planner pre-binds vars the greedy scorer would also have
+//     preferred. It does not produce an unsafe plan.
+//   - This constant is co-tuned with tinySeedThreshold (32) and
+//     defaultSizeHint (1000): SmallExtentThreshold > defaultSizeHint
+//     is intentional so an unhinted IDB does NOT spuriously qualify as
+//     a small extent (defaultSizeHint = 1000 < 5000 means we'd over-
+//     classify; this is why isSmallExtent requires the hint to be
+//     KNOWN — see implementation).
+//   - Boundary semantics are inclusive: sz <= SmallExtentThreshold.
+//     See isSmallExtent and the boundary tests at 4999/5000/5001 in
+//     backward_test.go.
 const SmallExtentThreshold = 5000
 
 // DemandMap records, per predicate name, the argument positions whose
@@ -445,13 +472,6 @@ func sortUniqueInts(xs []int) []int {
 		}
 	}
 	return out
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // orderJoinsWithDemand is the demand-aware form of orderJoins. It
