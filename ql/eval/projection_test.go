@@ -162,40 +162,77 @@ func TestEval_ProjectionPushdown_BindingMapShrinks(t *testing.T) {
 // on a wide chain with a narrow head, peak per-binding row size with
 // projection on must be ≥2x smaller than with projection off.
 //
-// Without projection, the binding at the LAST step carries every var
-// bound so far (x0..xN, N+1 keys). With projection, every step's
-// LiveVars caps the per-row width.
+// We instrument projectBindings via a package-level test hook to observe
+// the actual runtime width of every output binding produced under the
+// projection regime. This proves the *implementation* honours the plan
+// (a buggy projectBindings that ignored keep, or a buggy planner that
+// over-shrunk LiveVars and broke evaluation, would both surface here)
+// rather than asserting a property of LiveVars talking to itself.
 func TestEval_ProjectionPushdown_PeakRowSizeReduction(t *testing.T) {
-	const n = 8
+	const n, k = 8, 3
 	prog := makeChainProgram(n)
 	hints := map[string]int{}
 	for i := 0; i < n; i++ {
-		hints[fmt.Sprintf("A%d", i)] = 100
+		hints[fmt.Sprintf("A%d", i)] = k * k
 	}
 	ep, errs := plan.Plan(prog, hints)
 	if len(errs) != 0 {
 		t.Fatalf("plan: %v", errs)
 	}
 	steps := ep.Strata[0].Rules[0].JoinOrder
-	// Without projection: per-row width = cumulative bound count after each
-	// step. Peak = (n + 1) at the last step (x0..xN).
-	peakOff := n + 1
-	// With projection: per-row width capped by LiveVars at each step.
-	peakOn := 0
+
+	// Planner-side ceiling: max LiveVars across steps. The runtime peak
+	// per-binding width must not exceed this.
+	plannedPeak := 0
 	for _, s := range steps {
-		if len(s.LiveVars) > peakOn {
-			peakOn = len(s.LiveVars)
+		if len(s.LiveVars) > plannedPeak {
+			plannedPeak = len(s.LiveVars)
 		}
 	}
-	if peakOn == 0 {
-		t.Fatal("LiveVars never populated")
+	if plannedPeak == 0 {
+		t.Fatal("LiveVars never populated by planner")
 	}
-	ratio := float64(peakOff) / float64(peakOn)
+
+	// Without projection: per-row width = cumulative bound count after the
+	// last step = n + 1 (x0..xN). This is the baseline we shrink against.
+	peakOff := n + 1
+
+	// Install observer to capture the actual runtime peak per-binding width.
+	observedPeak := 0
+	prev := eval.GetProjectBindingsObserver()
+	eval.SetProjectBindingsObserver(func(width int) {
+		if width > observedPeak {
+			observedPeak = width
+		}
+	})
+	t.Cleanup(func() { eval.SetProjectBindingsObserver(prev) })
+
+	rels := makeChainRelations(n, k)
+	if _, err := eval.Rule(context.Background(), ep.Strata[0].Rules[0], rels, 0); err != nil {
+		t.Fatalf("Rule: %v", err)
+	}
+
+	if observedPeak == 0 {
+		t.Fatal("projectBindings never invoked — projection pushdown not active")
+	}
+	// Implementation honours the plan: every output binding fits within
+	// the planner's LiveVars ceiling.
+	if observedPeak > plannedPeak {
+		t.Errorf("runtime per-binding width exceeds planner ceiling: observed=%d planned=%d",
+			observedPeak, plannedPeak)
+	}
+	// Projection actually shrinks runtime bindings vs the unprojected baseline.
+	if observedPeak >= peakOff {
+		t.Errorf("projection failed to shrink bindings: observed=%d off-baseline=%d",
+			observedPeak, peakOff)
+	}
+	ratio := float64(peakOff) / float64(observedPeak)
 	if ratio < 2.0 {
-		t.Errorf("peak row size reduction below 2x target: off=%d on=%d ratio=%.2f",
-			peakOff, peakOn, ratio)
+		t.Errorf("peak row size reduction below 2x target: off=%d observed=%d ratio=%.2f",
+			peakOff, observedPeak, ratio)
 	}
-	t.Logf("peak per-binding width: off=%d on=%d (%.2fx reduction)", peakOff, peakOn, ratio)
+	t.Logf("peak per-binding width: off=%d observed=%d planned=%d (%.2fx reduction)",
+		peakOff, observedPeak, plannedPeak, ratio)
 }
 
 // BenchmarkEval_Chain8_ProjectionOn vs Off — the spec target: at least

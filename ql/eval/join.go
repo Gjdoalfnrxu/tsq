@@ -200,6 +200,15 @@ func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, de
 	return current, nil
 }
 
+// projectBindingsObserver is a test hook. When non-nil, it is invoked once
+// per output binding produced by projectBindings with the actual key count
+// of that binding. Production code leaves this nil; tests in this package
+// set it via t.Cleanup to observe runtime per-row width and verify that
+// projection actually shrinks bindings (not just that the planner annotates
+// LiveVars correctly). Not safe for concurrent use; tests serialise by
+// virtue of running one Rule call at a time.
+var projectBindingsObserver func(width int)
+
 // projectBindings narrows every binding to only the variables in keep
 // (P3b — projection pushdown). When keep is nil, returns input unchanged
 // so legacy callers building plans by hand (without LiveVars) get the
@@ -237,6 +246,9 @@ func projectBindings(bindings []binding, keep []string) []binding {
 			}
 		}
 		out[i] = nb
+		if projectBindingsObserver != nil {
+			projectBindingsObserver(len(nb))
+		}
 	}
 	return out
 }
