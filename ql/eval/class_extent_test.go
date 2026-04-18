@@ -105,6 +105,99 @@ func TestMaterialiseClassExtents_ArityShadowSkipped(t *testing.T) {
 	}
 }
 
+// TestMaterialiseClassExtents_NameShadowDifferentArity — the production
+// CodeQL char-pred shape `class Symbol extends @symbol { Symbol() {
+// Symbol(this,_,_,_) } }` desugars to a head `Symbol/1` whose body
+// references base `Symbol/4`. These share a name but NOT an arity.
+//
+// The arity-shadow exclusion must NOT fire here: `Symbol/4` is a real,
+// fully-populated base relation, not an IDB head. A name-only shadow
+// check would silently exclude this pattern (and every taint bridge
+// fixture that uses it: TaintSink, TaintSource, Sanitizer, etc.) from
+// materialisation. This test pins the arity-aware shadowing semantics.
+func TestMaterialiseClassExtents_NameShadowDifferentArity(t *testing.T) {
+	// head: Symbol(this) :- Symbol(this, _, _, _).  ClassExtent.
+	headRule := datalog.Rule{
+		Head: datalog.Atom{Predicate: "Symbol", Args: []datalog.Term{datalog.Var{Name: "this"}}},
+		Body: []datalog.Literal{{Positive: true, Atom: datalog.Atom{Predicate: "Symbol", Args: []datalog.Term{
+			datalog.Var{Name: "this"}, datalog.Wildcard{}, datalog.Wildcard{}, datalog.Wildcard{},
+		}}}},
+		ClassExtent: true,
+	}
+	prog := &datalog.Program{Rules: []datalog.Rule{headRule}}
+
+	// Base Symbol/4 with three concrete tuples.
+	base4 := eval.NewRelation("Symbol", 4)
+	base4.Add(eval.Tuple{eval.IntVal{V: 10}, eval.IntVal{V: 0}, eval.IntVal{V: 0}, eval.IntVal{V: 0}})
+	base4.Add(eval.Tuple{eval.IntVal{V: 20}, eval.IntVal{V: 0}, eval.IntVal{V: 0}, eval.IntVal{V: 0}})
+	base4.Add(eval.Tuple{eval.IntVal{V: 30}, eval.IntVal{V: 0}, eval.IntVal{V: 0}, eval.IntVal{V: 0}})
+	base := map[string]*eval.Relation{"Symbol": base4}
+
+	mats, updates := eval.MaterialiseClassExtents(prog, base, nil, 0)
+
+	got, ok := mats["Symbol/1"]
+	if !ok {
+		t.Fatalf("Symbol/1 not materialised — name-shadow exclusion fired despite different arity; mats=%v", mats)
+	}
+	if got.Len() != 3 {
+		t.Errorf("materialised Symbol/1 len: want 3 (projection of base Symbol/4), got %d", got.Len())
+	}
+	if updates["Symbol"] != 3 {
+		t.Errorf("updates[Symbol]: want 3, got %d", updates["Symbol"])
+	}
+	// Verify projection correctness: each materialised tuple is the
+	// first column of the corresponding base tuple.
+	wantVals := map[int64]bool{10: true, 20: true, 30: true}
+	gotTuples := got.Tuples()
+	for _, tup := range gotTuples {
+		if len(tup) != 1 {
+			t.Errorf("materialised tuple has wrong arity: want 1, got %d (tup=%v)", len(tup), tup)
+			continue
+		}
+		iv, ok := tup[0].(eval.IntVal)
+		if !ok {
+			t.Errorf("materialised tuple element not IntVal: %v", tup[0])
+			continue
+		}
+		if !wantVals[iv.V] {
+			t.Errorf("unexpected materialised value: %d", iv.V)
+		}
+	}
+}
+
+// TestMaterialiseClassExtents_TaintSinkBridgeShape — direct mirror of
+// the bridge `TaintSink` pattern in bridge/tsq_taint.qll:
+//
+//	class TaintSink extends @taint_sink { TaintSink() { TaintSink(this, _) } }
+//
+// Head `TaintSink/1` with body `TaintSink/2`. Same name-shadow issue
+// as the Symbol case; here we pin it specifically with arity 2 to
+// cover the second prevalent bridge shape.
+func TestMaterialiseClassExtents_TaintSinkBridgeShape(t *testing.T) {
+	headRule := datalog.Rule{
+		Head: datalog.Atom{Predicate: "TaintSink", Args: []datalog.Term{datalog.Var{Name: "this"}}},
+		Body: []datalog.Literal{{Positive: true, Atom: datalog.Atom{Predicate: "TaintSink", Args: []datalog.Term{
+			datalog.Var{Name: "this"}, datalog.Wildcard{},
+		}}}},
+		ClassExtent: true,
+	}
+	prog := &datalog.Program{Rules: []datalog.Rule{headRule}}
+
+	base2 := eval.NewRelation("TaintSink", 2)
+	base2.Add(eval.Tuple{eval.IntVal{V: 100}, eval.IntVal{V: 1}})
+	base2.Add(eval.Tuple{eval.IntVal{V: 200}, eval.IntVal{V: 2}})
+	base := map[string]*eval.Relation{"TaintSink": base2}
+
+	mats, _ := eval.MaterialiseClassExtents(prog, base, nil, 0)
+	got, ok := mats["TaintSink/1"]
+	if !ok {
+		t.Fatalf("TaintSink/1 not materialised — bridge fixture pattern excluded; mats=%v", mats)
+	}
+	if got.Len() != 2 {
+		t.Errorf("materialised TaintSink/1 len: want 2, got %d", got.Len())
+	}
+}
+
 // TestEvaluate_MaterialisedExtent_NotReEvaluated is the load-bearing
 // P2a behaviour test: an injected materialised class extent is used by
 // downstream rules as if it were a base relation, and the extent's own

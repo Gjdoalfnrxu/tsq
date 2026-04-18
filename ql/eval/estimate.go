@@ -107,28 +107,35 @@ func MaterialiseClassExtents(
 	}
 
 	// "Truly base" = registered base relation AND no IDB rule defines a
-	// head with the same name. The exclusion matters because the pipeline
-	// has the arity-shadow case where a name (e.g. `LocalFlow`) is both a
-	// schema relation AND the head of system-injected rules that
-	// populate it from other facts (relkey disambiguates by arity at
-	// eval time, but for materialisation we need to know "is this thing
-	// fully populated already?"). A class extent body that touches a
-	// shadowed name would be materialised against the EMPTY base copy
-	// before the IDB rules run, then stripped from the program — leaving
-	// the extent permanently empty. We avoid that by treating
-	// schema-registered names with IDB rules as not-yet-trustworthy.
+	// head with the same name+arity. The exclusion matters because the
+	// pipeline has the arity-shadow case where a name (e.g. `LocalFlow`)
+	// is both a schema relation AND the head of system-injected rules
+	// that populate it from other facts. A class extent body that
+	// touches a same-arity shadowed name would be materialised against
+	// the EMPTY base copy before the IDB rules run, then stripped from
+	// the program — leaving the extent permanently empty.
+	//
+	// Crucially, this map is arity-keyed (relKey), not name-keyed. The
+	// production CodeQL pattern `class Symbol extends @symbol { Symbol()
+	// { Symbol(this,_,_,_) } }` emits a head `Symbol/1` whose body
+	// references base `Symbol/4` — same name, different arity. A
+	// name-only key would shadow `Symbol/4` and silently exclude every
+	// real bridge fixture (`TaintSink`, `TaintSource`, `Sanitizer`,
+	// `TaintedSym`, `TaintedField`) from materialisation. Arity-keyed
+	// shadowing only fires for the genuine same-name+same-arity IDB
+	// case (e.g. `LocalFlow/3` head shadowing `LocalFlow/3` base).
 	headPreds := make(map[string]bool, len(prog.Rules))
 	for _, rule := range prog.Rules {
-		headPreds[rule.Head.Predicate] = true
+		headPreds[relKey(rule.Head.Predicate, len(rule.Head.Args))] = true
 	}
 	basePreds := make(map[string]bool, len(baseRels))
 	for _, rel := range baseRels {
 		if rel == nil {
 			continue
 		}
-		if headPreds[rel.Name] {
-			// Schema name that an IDB rule also produces — arity-shadow
-			// case. Skip for materialisation safety.
+		if headPreds[relKey(rel.Name, rel.Arity)] {
+			// Schema name+arity that an IDB rule also produces — genuine
+			// arity-shadow case. Skip for materialisation safety.
 			continue
 		}
 		basePreds[rel.Name] = true
