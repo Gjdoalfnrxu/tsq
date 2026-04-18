@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -11,7 +12,23 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// ErrClientPoisoned is returned by callCtx (and therefore every Ctx-aware
+// query method) once a previous RPC has been cancelled. Once a Client is
+// poisoned it stays poisoned for the rest of its lifetime — the underlying
+// stdin has been closed and the tsgo subprocess is shutting down (or has
+// already exited). Callers must construct a fresh Client to continue
+// type-checking. See issue #115 / PR #117 review-round-2 (B1).
+var ErrClientPoisoned = errors.New("typecheck: client poisoned by prior cancellation")
+
+// killAfterCancel is the grace period between closing stdin on cancellation
+// and force-killing the tsgo subprocess. Most healthy tsgo builds exit on
+// stdin close within a few hundred ms; the kill fallback exists for hung
+// processes, ignored SIGPIPE, or OS-level buffering that would otherwise
+// leak the doCall goroutine forever (B3).
+var killAfterCancel = 2 * time.Second
 
 // Client communicates with a tsgo --api --async subprocess via JSON-RPC 2.0
 // using standard LSP Content-Length framing.
@@ -32,6 +49,18 @@ type Client struct {
 	// updateSnapshot. Required as a parameter for nearly every subsequent
 	// query method on the upstream API. Updated under mu.
 	snapshot string
+
+	// poisoned is set (atomically, under no lock) when callCtx aborts an
+	// in-flight RPC by closing stdin. Once set it stays set for the lifetime
+	// of the Client; every subsequent doCall / callCtx returns
+	// ErrClientPoisoned immediately rather than queueing on c.mu behind the
+	// stuck reader. See ErrClientPoisoned and issue #115 / PR #117 (B1).
+	poisoned atomic.Bool
+
+	// killOnce guards the cmd.Process.Kill() fallback path (B3) so multiple
+	// concurrent cancellations cannot race each other into double-kill or
+	// double-timer-start.
+	killOnce sync.Once
 }
 
 // Snapshot returns the most recent snapshot handle the client knows about.
@@ -102,6 +131,9 @@ func (c *Client) call(method string, params interface{}) (json.RawMessage, error
 // (issue #115 fix: previously a per-file RPC could hang indefinitely past
 // SIGINT or --timeout).
 func (c *Client) callCtx(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+	if c.poisoned.Load() {
+		return nil, ErrClientPoisoned
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -118,14 +150,36 @@ func (c *Client) callCtx(ctx context.Context, method string, params interface{})
 	case r := <-done:
 		return r.raw, r.err
 	case <-ctx.Done():
-		// Unblock the in-flight read by closing stdin so tsgo exits.
-		// Best-effort — Close is safe to call on an already-closed pipe;
-		// errors here are subordinate to the cancellation we are reporting.
-		c.mu.Lock()
+		// Mark the client poisoned BEFORE closing stdin. Order matters:
+		// any caller that races in after us must see poisoned=true and bail
+		// out at the top of doCall/callCtx rather than queue on c.mu behind
+		// the stuck reader (B1). We do not take c.mu here — the in-flight
+		// doCall holds it until its readResponse unblocks via stdin close.
+		c.poisoned.Store(true)
+		// Closing stdin is the primary unblock mechanism: tsgo sees EOF on
+		// its input and exits, which closes stdout and unblocks our reader.
+		// stdin.Close is safe on an already-closed pipe.
 		if c.stdin != nil {
 			_ = c.stdin.Close()
 		}
-		c.mu.Unlock()
+		// B3: stdin-close is best-effort. If tsgo is hung, ignores SIGPIPE,
+		// or its output is sitting in OS buffers, the doCall goroutine
+		// would leak forever holding c.mu. After a grace period, force-kill
+		// the subprocess. sync.Once means concurrent cancellations don't
+		// race into multiple Kill calls or multiple timers.
+		c.killOnce.Do(func() {
+			go func() {
+				select {
+				case <-done:
+					// doCall completed within the grace window — no kill needed.
+					return
+				case <-time.After(killAfterCancel):
+					if c.cmd != nil && c.cmd.Process != nil {
+						_ = c.cmd.Process.Kill()
+					}
+				}
+			}()
+		})
 		return nil, ctx.Err()
 	}
 }
@@ -133,8 +187,19 @@ func (c *Client) callCtx(ctx context.Context, method string, params interface{})
 // doCall performs the blocking JSON-RPC call previously inlined in call().
 // Split out so callCtx can race it against ctx.Done().
 func (c *Client) doCall(method string, params interface{}) (json.RawMessage, error) {
+	// Fast-fail before queueing on c.mu. A previous cancellation may have
+	// closed stdin and left the prior doCall blocked on its read; we must
+	// not pile up behind it (B1).
+	if c.poisoned.Load() {
+		return nil, ErrClientPoisoned
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Re-check after acquiring the lock — poison could have been set while
+	// we were waiting.
+	if c.poisoned.Load() {
+		return nil, ErrClientPoisoned
+	}
 
 	id := c.nextID.Add(1)
 

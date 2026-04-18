@@ -257,14 +257,18 @@ func (p *partialFailEnricher) EnrichFileCtx(ctx context.Context, filePath string
 		typecheck.EnrichStats{SymbolQueries: 1, TypeQueries: 1, FactsEmitted: 1}, nil
 }
 
-// TestRunEnrichLoop_BlockingRPCCancellation models a tsgo RPC that hangs —
-// the fake's EnrichFileCtx blocks on ctx.Done() rather than returning quickly.
-// Without ctx threaded into the underlying RPC (the bug the original PR fix
-// missed), the loop would only check ctx between files and a single hung RPC
-// would hold the whole pipeline past SIGINT / --timeout indefinitely.
+// TestRunEnrichLoop_CtxThreadedIntoEnrichFileCtx verifies that the loop
+// threads its ctx into the per-file enrichRunner.EnrichFileCtx call. With
+// ctx threaded, a fake enricher blocking on ctx.Done() unblocks promptly on
+// cancel; without it, the loop would only check ctx between files and a
+// hung RPC would hold the pipeline past SIGINT / --timeout indefinitely.
 //
-// This test confirms the blocking RPC is interrupted within 250ms of cancel.
-func TestRunEnrichLoop_BlockingRPCCancellation(t *testing.T) {
+// SCOPE NOTE (PR #117 review B2): this test only proves the *loop* passes
+// ctx into EnrichFileCtx — it does NOT exercise the typecheck.Client.callCtx
+// stdin-close mechanism, because the fake bypasses callCtx entirely. The
+// real-RPC unblock path is covered separately by
+// TestClient_CallCtxCancellationUnblocksStdinReader in extract/typecheck.
+func TestRunEnrichLoop_CtxThreadedIntoEnrichFileCtx(t *testing.T) {
 	files := []string{"/fake/blocking.ts"}
 	database := buildDBForFiles(t, files)
 
@@ -272,9 +276,10 @@ func TestRunEnrichLoop_BlockingRPCCancellation(t *testing.T) {
 	fake := &fakeEnricher{}
 	entered := make(chan struct{})
 	fake.onCall = func(ctx context.Context, _ string) {
-		// Signal the test that we're inside the "RPC". Then block until
-		// ctx is cancelled — this is the moral equivalent of a tsgo RPC
-		// stuck in stdin/stdout that only ctx-aware cancellation can break.
+		// Signal the test that we're inside the "RPC", then await the
+		// loop-threaded ctx. If ctx threading is broken, this would hang
+		// forever (the outer-test ctx that triggers cancel is the same
+		// ctx we get here only because the loop forwarded it).
 		close(entered)
 		<-ctx.Done()
 	}
