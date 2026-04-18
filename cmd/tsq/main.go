@@ -512,6 +512,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	maxIterations := fs.Int("max-iterations", eval.DefaultMaxIterations, "max semi-naive fixpoint iterations per stratum before erroring (0 = unlimited; see issue #79)")
 	allowPartial := fs.Bool("allow-partial", false, "if --max-iterations is hit, log a warning and return partial results instead of erroring (legacy behaviour)")
 	magicSets := fs.Bool("magic-sets", false, "enable the magic-set query rewrite (default: disabled, opt-in for one release). Magic sets prune irrelevant tuples on selective queries against recursive predicates (e.g. taint with a constant source), often 10-1000x speedup when bindings are inferable. Default-off until we have benchmark evidence that the transform fires on real workloads without regression (issue #87).")
+	magicSetsStrict := fs.Bool("magic-sets-strict", false, "fail (rather than silently falling back to plain Plan) if the magic-set augmented program cannot be planned. Use in CI to surface transform regressions; ignored when --magic-sets is off. See issue #112.")
 	// Deprecated alias: --no-magic-sets used to gate the default-on behaviour.
 	// Kept as a no-op flag so existing scripts don't break; it has no effect now
 	// that magic sets are opt-in. Will be removed once a release has shipped.
@@ -541,7 +542,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	// Read and compile the query.
-	bopts := buildOptions{useMagicSets: *magicSets}
+	bopts := buildOptions{useMagicSets: *magicSets, magicSetsStrict: *magicSetsStrict, warnOut: stderr}
 	if *verbose {
 		bopts.verboseOut = stderr
 	}
@@ -662,8 +663,10 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 // Zero value disables magic sets (preserving the prior plan.Plan behaviour)
 // and emits no verbose logging.
 type buildOptions struct {
-	useMagicSets bool
-	verboseOut   io.Writer // if non-nil, magic-set-fired diagnostics are written here
+	useMagicSets    bool
+	magicSetsStrict bool      // when true, surfaces magic-set planning errors instead of silently falling back (issue #112)
+	verboseOut      io.Writer // if non-nil, magic-set-fired diagnostics (verbose) are written here
+	warnOut         io.Writer // if non-nil, magic-set-fallback warnings (always-on) are written here
 }
 
 func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
@@ -721,10 +724,19 @@ func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Modu
 	var planErrors []error
 	if opts.useMagicSets {
 		var inf plan.QueryBindingInference
-		execPlan, inf, planErrors = plan.WithMagicSetAuto(prog, sizeHints)
-		if opts.verboseOut != nil && len(inf.Bindings) > 0 {
+		execPlan, inf, planErrors = plan.WithMagicSetAutoOpts(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict})
+		switch {
+		case inf.Fallback:
+			// Always surface a fallback warning to warnOut (not gated on
+			// --verbose). Silent fallback was the bug in issue #112; the
+			// observability fix is unconditional. The strict path returns
+			// an error instead and never reaches this branch.
+			if opts.warnOut != nil {
+				fmt.Fprintf(opts.warnOut, "warning: magic-set transform produced an unplannable program; fell back to plain Plan (reason: %v)\n", inf.FallbackReason)
+			}
+		case opts.verboseOut != nil && len(inf.Bindings) > 0:
 			fmt.Fprintf(opts.verboseOut, "magic-set: transform applied; bindings=%v seed_rules=%d\n", inf.Bindings, len(inf.SeedRules))
-		} else if opts.verboseOut != nil {
+		case opts.verboseOut != nil:
 			fmt.Fprintln(opts.verboseOut, "magic-set: no inferable query bindings; using plain plan")
 		}
 	} else {
