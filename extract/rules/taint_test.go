@@ -651,6 +651,75 @@ func TestTaintAlert_Rule6b_FlowToSinkAlerts(t *testing.T) {
 	}
 }
 
+// TestTaintAlert_VarDeclSource_CompoundSink covers the descendant variant of
+// SinkRefSym in Rule 6b. Models a compound sink shape `db.query('SELECT ' + x)`
+// where the sink expression is a CallArg whose subtree (a BinaryExpression)
+// contains the tainted identifier — there is NO direct ExprMayRef on the sink
+// expression itself, only on a descendant. The descendant SinkRefSym rule
+// (taint.go:212-219) is the only path that can reach this alert.
+//
+// Mutation contract: commenting out the descendant SinkRefSym rule body must
+// fail this test. Validated manually during PR #126 adversarial review.
+func TestTaintAlert_VarDeclSource_CompoundSink(t *testing.T) {
+	// Source: req.body initialises sym 10 via VarDecl; FieldRead-shaped
+	// (no ExprMayRef on srcExpr 100), forces Rule 6b.
+	// Sink: db.query('SELECT ' + x) — sink expression 200 is the CallArg
+	// (a BinaryExpression). Its descendant 250 is the identifier `x`,
+	// which ExprMayRefs sym 10. Critically NO ExprMayRef(200, 10).
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSource": makeRel("TaintSource", 2, iv(100), sv("http_input")),
+		"VarDecl":     makeRel("VarDecl", 4, iv(50), iv(10), iv(100), iv(0)),
+		"TaintSink":   makeRel("TaintSink", 2, iv(200), sv("sql")),
+		// Only the descendant identifier resolves to sym 10.
+		// No ExprMayRef(200, 10) — sink expression itself never refs the sym.
+		"ExprMayRef": makeRel("ExprMayRef", 2, iv(250), iv(10)),
+		// AST containment: sink expr 200 (BinaryExpression) contains
+		// descendant 250 (the identifier `x` in `'SELECT ' + x`).
+		"Contains": makeRel("Contains", 2, iv(200), iv(250)),
+		"SymInFunction": makeRel("SymInFunction", 2,
+			iv(10), iv(1),
+		),
+		"ExprInFunction": makeRel("ExprInFunction", 2,
+			iv(200), iv(1),
+			iv(250), iv(1),
+		),
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+		Body:   []datalog.Literal{pos("TaintAlert", v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	if !resultContains(rs, iv(100), iv(200), sv("http_input"), sv("sql")) {
+		t.Errorf("expected TaintAlert(100, 200, http_input, sql) via descendant SinkRefSym "+
+			"(compound sink — sink subtree contains tainted ident, no direct ExprMayRef on sink), "+
+			"got %v", rs.Rows)
+	}
+}
+
+// TestSinkRefSym_DescendantOnly is a focused unit on the descendant
+// SinkRefSym rule head: with only Contains + ExprMayRef on the descendant
+// (and TaintSink on the parent), SinkRefSym must derive (sinkExpr, sym).
+// Direct counterpart absent.
+func TestSinkRefSym_DescendantOnly(t *testing.T) {
+	baseRels := taintBaseRels(map[string]*eval.Relation{
+		"TaintSink":  makeRel("TaintSink", 2, iv(200), sv("sql")),
+		"ExprMayRef": makeRel("ExprMayRef", 2, iv(250), iv(10)),
+		"Contains":   makeRel("Contains", 2, iv(200), iv(250)),
+	})
+
+	query := &datalog.Query{
+		Select: []datalog.Term{v("sinkExpr"), v("sym")},
+		Body:   []datalog.Literal{pos("SinkRefSym", v("sinkExpr"), v("sym"))},
+	}
+
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	if !resultContains(rs, iv(200), iv(10)) {
+		t.Errorf("expected SinkRefSym(200, 10) via descendant rule, got %v", rs.Rows)
+	}
+}
+
 // TestTaintRulesValidate verifies all taint rules pass the planner's validation.
 func TestTaintRulesValidate(t *testing.T) {
 	for i, r := range TaintRules() {
@@ -670,15 +739,45 @@ func TestTaintRulesStratify(t *testing.T) {
 	}
 }
 
-// TestTaintRulesCount verifies we produce exactly 14 taint rules.
-// Count breakdown: 5 propagation (1, 1b, 2, 4, 5) + 2 sanitization (3, 3b)
-// + 1 main alert (Rule 6) + 6 VarDecl-init alert support rules from the
-// issue #113 fix (2 SinkContains transitive closure + 2 SinkRefSym
-// helpers direct/descendant + 2 TaintAlert variants A direct / B flow).
-func TestTaintRulesCount(t *testing.T) {
+// TestTaintRulesHeads asserts the specific rule heads present in TaintRules,
+// not just the count. A bare count assertion is a vacuous tripwire — refactors
+// that split one rule and drop another would silently balance out. Asserting
+// heads + multiplicities catches that class of accident while still tolerating
+// rule body refactors.
+//
+// Expected multiplicities (from the Rule N comments in taint.go):
+//
+//	TaintedSym    × 4 (Rules 1, 1b, 2, 5)
+//	SanitizedEdge × 2 (Rules 3, 3b)
+//	TaintedField  × 1 (Rule 4)
+//	TaintAlert    × 3 (Rule 6 main + Rule 6b variants A direct / B flow)
+//	SinkContains  × 2 (Rule 6b helper transitive closure base + step)
+//	SinkRefSym    × 2 (Rule 6b helper direct + descendant)
+//
+// Total: 14.
+func TestTaintRulesHeads(t *testing.T) {
 	rules := TaintRules()
-	if len(rules) != 14 {
-		t.Errorf("expected 14 taint rules, got %d", len(rules))
+	got := map[string]int{}
+	for _, r := range rules {
+		got[r.Head.Predicate]++
+	}
+	want := map[string]int{
+		"TaintedSym":    4,
+		"SanitizedEdge": 2,
+		"TaintedField":  1,
+		"TaintAlert":    3,
+		"SinkContains":  2,
+		"SinkRefSym":    2,
+	}
+	for head, n := range want {
+		if got[head] != n {
+			t.Errorf("rule head %q: want %d, got %d (full: %v)", head, n, got[head], got)
+		}
+	}
+	for head := range got {
+		if _, ok := want[head]; !ok {
+			t.Errorf("unexpected rule head %q (count %d) in TaintRules — update want map if intentional", head, got[head])
+		}
 	}
 }
 
