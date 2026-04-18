@@ -541,8 +541,28 @@ func (d *desugarer) desugarTopLevelPredicate(pd *ast.PredicateDecl) []datalog.Ru
 	}
 
 	var body []datalog.Literal
+
+	// Type constraints for each typed parameter. This anchors the planner's
+	// joins on the class extent, mirroring how `from` and `exists` decls inject
+	// their type literal (see desugarSelect / desugarExists). Without this,
+	// `predicate p(UseStateSetterCall c) { ... }` would leave `c` untyped and
+	// the planner has no extent to seed from.
+	for _, param := range pd.Params {
+		typeName := param.Type.String()
+		if typeName == "" || isPrimitive(typeName) {
+			continue
+		}
+		body = append(body, datalog.Literal{
+			Positive: true,
+			Atom: datalog.Atom{
+				Predicate: typeName,
+				Args:      []datalog.Term{datalog.Var{Name: param.Name}},
+			},
+		})
+	}
+
 	if pd.Body != nil {
-		body = d.desugarFormula(*pd.Body, gen)
+		body = append(body, d.desugarFormula(*pd.Body, gen)...)
 	}
 
 	return []datalog.Rule{{Head: head, Body: body}}
