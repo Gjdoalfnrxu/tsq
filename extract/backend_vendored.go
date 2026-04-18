@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,49 @@ import (
 
 // DefaultRPCTimeout is the default timeout for individual RPC calls to the tsgo subprocess.
 const DefaultRPCTimeout = 30 * time.Second
+
+// ErrBackendPoisoned is returned by rpc() once a previous call timed out or was
+// cancelled mid-flight. The vendored backend shares a single json.Decoder over
+// the tsgo subprocess's stdout; when an RPC abandons its read goroutine on
+// timeout, that orphan goroutine is still blocked on Decode and would race the
+// next caller's decoder goroutine on the same byte stream — producing
+// ID-mismatch errors at best and a torn JSON stream at worst (see issue #134).
+//
+// Rather than try to recover, we mark the backend poisoned, close stdin to
+// unblock the orphan Decode, and refuse all subsequent RPCs. Callers that need
+// a fresh tsgo session must construct a new VendoredBackend. Mirrors the
+// poisoning discipline in extract/typecheck/client.go (issue #115 / PR #117).
+var ErrBackendPoisoned = errors.New("vendored backend: poisoned by prior RPC timeout or cancellation")
+
+// rpcKillAfterCancel is the grace period between closing tsgo's stdin on RPC
+// cancellation and force-killing the subprocess. Matches the rationale in
+// extract/typecheck/client.go: most healthy tsgo builds exit on stdin close
+// within a few hundred ms; the kill fallback exists for hung processes that
+// would otherwise leak the orphan Decode goroutine forever.
+//
+// Stored as an atomic.Pointer so tests can override the grace window without
+// racing the cancellation goroutine.
+var rpcKillAfterCancel atomic.Pointer[time.Duration]
+
+func init() {
+	d := 2 * time.Second
+	rpcKillAfterCancel.Store(&d)
+}
+
+func getRPCKillAfterCancel() time.Duration {
+	if p := rpcKillAfterCancel.Load(); p != nil {
+		return *p
+	}
+	return 2 * time.Second
+}
+
+// setRPCKillAfterCancel replaces the grace window and returns the previous
+// value, allowing tests to restore it via t.Cleanup.
+func setRPCKillAfterCancel(d time.Duration) time.Duration {
+	prev := getRPCKillAfterCancel()
+	rpcKillAfterCancel.Store(&d)
+	return prev
+}
 
 // VendoredBackend implements ExtractorBackend using a combination of tree-sitter
 // for AST walking and the tsgo CLI (typescript-go) for type checking and symbol
@@ -51,6 +95,20 @@ type VendoredBackend struct {
 
 	// tsgoAvailable is true if tsgo was found and started successfully.
 	tsgoAvailable bool
+
+	// poisoned is set (atomically, no lock required) when an RPC abandons its
+	// Decode goroutine via timeout or ctx cancellation. Once set it stays set
+	// for the lifetime of the backend; every subsequent rpc() returns
+	// ErrBackendPoisoned immediately rather than racing a fresh Decode
+	// goroutine against the stuck orphan on the shared json.Decoder. See
+	// ErrBackendPoisoned and issue #134.
+	poisoned atomic.Bool
+
+	// killOnce guards the cmd.Process.Kill() fallback path so concurrent
+	// timeouts cannot race into double-kill or double-timer-start. (RPCs are
+	// already serialised by tsgoMu, but the kill goroutine outlives the
+	// caller's mutex hold, so we still need this guard.)
+	killOnce sync.Once
 }
 
 // jsonRPCRequest is a JSON-RPC 2.0 request envelope.
@@ -287,11 +345,26 @@ func (b *VendoredBackend) startTsgo(_ context.Context) error {
 }
 
 // rpc sends a JSON-RPC request and waits for the response.
-// Caller must hold tsgoMu. The call is bounded by DefaultRPCTimeout and
-// respects the caller's context cancellation.
+//
+// Caller must hold tsgoMu (all current callers do). The call is bounded by
+// DefaultRPCTimeout and respects the caller's context cancellation.
+//
+// Poisoning discipline (issue #134): the vendored backend shares a single
+// json.Decoder across all RPCs. If we abandoned the Decode goroutine on
+// timeout, the next RPC would spawn a second Decode goroutine on the same
+// stream — two goroutines racing on one decoder, with predictable corruption.
+// Instead, on timeout/cancel we mark the backend poisoned, close stdin to
+// unblock the orphan Decode (so the goroutine exits cleanly rather than
+// leaking forever), and force-kill the subprocess after a grace window if
+// stdin-close didn't unstick it. After poisoning, every subsequent rpc()
+// returns ErrBackendPoisoned. Mirrors extract/typecheck/client.go's
+// poisoned/killOnce pattern (issue #115 / PR #117).
 func (b *VendoredBackend) rpc(ctx context.Context, method string, params interface{}) (*jsonRPCResponse, error) {
 	if !b.tsgoAvailable {
 		return nil, ErrUnsupported
+	}
+	if b.poisoned.Load() {
+		return nil, ErrBackendPoisoned
 	}
 
 	id := b.reqID.Add(1)
@@ -334,15 +407,51 @@ func (b *VendoredBackend) rpc(ctx context.Context, method string, params interfa
 
 	select {
 	case <-rpcCtx.Done():
+		// Poison the backend BEFORE closing stdin. Order matters: any caller
+		// that races us to the next rpc() must observe poisoned=true and bail
+		// out at the top rather than spawn a competing Decode goroutine on
+		// the shared b.tsgoOut.
+		b.poisoned.Store(true)
+		// Close stdin so tsgo sees EOF, exits, closes its stdout, and the
+		// orphan Decode goroutine in `go func()` above unblocks (returning an
+		// error into ch, which is buffered so the send is non-blocking and
+		// the goroutine exits cleanly without leaking).
+		if b.tsgoIn != nil {
+			_ = b.tsgoIn.Close()
+		}
+		// Best-effort kill if stdin-close didn't unstick the subprocess. Use
+		// sync.Once so this only fires for the first poisoning event.
+		b.killOnce.Do(func() {
+			cmd := b.tsgoCmd
+			go func() {
+				select {
+				case <-ch:
+					// Decode unblocked within grace window — no kill needed.
+					return
+				case <-time.After(getRPCKillAfterCancel()):
+					if cmd != nil && cmd.Process != nil {
+						_ = cmd.Process.Kill()
+					}
+				}
+			}()
+		})
 		return nil, fmt.Errorf("rpc %s (id=%d): %w", method, id, rpcCtx.Err())
 	case result := <-ch:
 		if result.err != nil {
+			// Decode failures indicate the stream is no longer in a known
+			// state — poison so the next caller doesn't try to reuse the
+			// torn decoder.
+			b.poisoned.Store(true)
 			return nil, fmt.Errorf("decode response: %w", result.err)
 		}
 		resp := &result.resp
 
-		// Validate response ID matches the request.
+		// Validate response ID matches the request. A mismatch means the
+		// stream framing has drifted (an earlier orphan Decode lost a
+		// response, or tsgo emitted out-of-order). Either way the decoder is
+		// no longer trustworthy — poison and refuse subsequent calls.
 		if resp.ID != id {
+			b.poisoned.Store(true)
 			return nil, fmt.Errorf("rpc response id mismatch: got %d, want %d", resp.ID, id)
 		}
 

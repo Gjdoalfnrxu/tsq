@@ -463,3 +463,170 @@ func TestVendoredBackend_StderrCaptured(t *testing.T) {
 	// that the field is bytes.Buffer, not *os.File).
 	var _ bytes.Buffer = b.tsgoStderr
 }
+
+// TestVendoredBackend_RPC_TimeoutPoisonsBackend is the regression test for
+// issue #134. Before the fix, a timed-out RPC abandoned its Decode goroutine,
+// leaving the orphan blocked on the shared json.Decoder. The next rpc() call
+// would spawn a second Decode goroutine on the same byte stream — two
+// goroutines racing one decoder, producing ID-mismatch errors at best and
+// stream corruption at worst.
+//
+// The fix is to mark the backend poisoned on timeout and refuse subsequent
+// calls. This test asserts that exact behaviour:
+//  1. First rpc() with a ~immediately-cancelled context returns a context error.
+//  2. The backend is now poisoned.
+//  3. A second rpc() — even with a fresh, healthy context and a tsgo stdout
+//     pipe that is now serving valid responses — fails fast with
+//     ErrBackendPoisoned, NOT with an ID mismatch error caused by consuming
+//     request 1's late response.
+//
+// This test would FAIL on the pre-fix code: the second rpc() would consume
+// request 1's late response (id=1, wrong) and surface "id mismatch" — not
+// ErrBackendPoisoned — proving the orphan goroutine racing the new one.
+func TestVendoredBackend_RPC_TimeoutPoisonsBackend(t *testing.T) {
+	// Tighten the kill grace window so the test doesn't have to wait 2s for
+	// the (unused, in this test) kill goroutine to settle.
+	prev := setRPCKillAfterCancel(50 * time.Millisecond)
+	t.Cleanup(func() { setRPCKillAfterCancel(prev) })
+
+	b := &VendoredBackend{tsgoAvailable: true}
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	t.Cleanup(func() {
+		stdinR.Close()
+		stdoutW.Close()
+	})
+
+	b.tsgoIn = stdinW
+	b.tsgoOut = json.NewDecoder(stdoutR)
+
+	// Drain stdin so writes don't block the test.
+	go func() { _, _ = io.Copy(io.Discard, stdinR) }()
+
+	// First call: cancel ctx immediately. The Decode goroutine inside rpc()
+	// will block on stdoutR (we never write to stdoutW here) until poisoning
+	// closes stdin — which doesn't help unblock the Decode either. So the
+	// orphan goroutine is genuinely stuck on Decode at the moment we return
+	// from the first rpc(). That is the precondition for the bug.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := b.rpc(ctx, "first", nil)
+	if err == nil {
+		t.Fatal("first rpc with cancelled ctx: expected error, got nil")
+	}
+	if !b.poisoned.Load() {
+		t.Fatal("expected backend to be poisoned after timed-out rpc")
+	}
+
+	// Second call. On the pre-fix code, this would proceed past the check,
+	// spawn a fresh Decode goroutine racing the orphan, and we'd see an
+	// id-mismatch or decode error if anything ever arrived on the wire.
+	// Post-fix, it must fail fast with ErrBackendPoisoned and NOT spawn a
+	// new Decode goroutine at all.
+	_, err = b.rpc(context.Background(), "second", nil)
+	if !errors.Is(err, ErrBackendPoisoned) {
+		t.Fatalf("second rpc after timeout: want ErrBackendPoisoned, got %v", err)
+	}
+
+	// Even if we now feed a "valid" response onto the wire (simulating the
+	// late tsgo reply that caused the original bug), the backend must still
+	// refuse — because there is no way to know which request that response
+	// belongs to.
+	go func() {
+		resp := jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      1, // The id of the (now abandoned) first request.
+			Result:  json.RawMessage(`{}`),
+		}
+		_ = json.NewEncoder(stdoutW).Encode(resp)
+	}()
+	// Brief delay so the encode goroutine actually writes — without this
+	// the test passes for the wrong reason (nothing on the wire yet).
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = b.rpc(context.Background(), "third", nil)
+	if !errors.Is(err, ErrBackendPoisoned) {
+		t.Fatalf("third rpc with late response on wire: want ErrBackendPoisoned, got %v", err)
+	}
+}
+
+// TestVendoredBackend_RPC_DecodeErrorPoisonsBackend asserts that a decode
+// failure (torn JSON, IO error) also poisons the backend rather than leaving
+// it half-broken with a corrupt decoder state.
+func TestVendoredBackend_RPC_DecodeErrorPoisonsBackend(t *testing.T) {
+	b := &VendoredBackend{tsgoAvailable: true}
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	t.Cleanup(func() {
+		stdinR.Close()
+		stdoutR.Close()
+	})
+
+	b.tsgoIn = stdinW
+	b.tsgoOut = json.NewDecoder(stdoutR)
+
+	go func() { _, _ = io.Copy(io.Discard, stdinR) }()
+
+	// Write malformed JSON onto the stream.
+	go func() {
+		_, _ = stdoutW.Write([]byte("not valid json at all\n"))
+		stdoutW.Close()
+	}()
+
+	_, err := b.rpc(context.Background(), "test", nil)
+	if err == nil {
+		t.Fatal("expected decode error, got nil")
+	}
+	if !b.poisoned.Load() {
+		t.Fatal("expected backend to be poisoned after decode error")
+	}
+
+	_, err = b.rpc(context.Background(), "next", nil)
+	if !errors.Is(err, ErrBackendPoisoned) {
+		t.Fatalf("subsequent rpc after decode error: want ErrBackendPoisoned, got %v", err)
+	}
+}
+
+// TestVendoredBackend_RPC_IDMismatchPoisonsBackend asserts that an id-mismatch
+// response (which means the stream framing drifted) also poisons the backend.
+// The pre-existing TestVendoredBackend_RPC_MismatchedID test only checks that
+// the first call returns an error — this test additionally checks that the
+// backend refuses subsequent RPCs.
+func TestVendoredBackend_RPC_IDMismatchPoisonsBackend(t *testing.T) {
+	b := &VendoredBackend{tsgoAvailable: true}
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	t.Cleanup(func() {
+		stdinR.Close()
+		stdoutW.Close()
+	})
+
+	b.tsgoIn = stdinW
+	b.tsgoOut = json.NewDecoder(stdoutR)
+
+	go func() { _, _ = io.Copy(io.Discard, stdinR) }()
+	go func() {
+		resp := jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      99999,
+			Result:  json.RawMessage(`{}`),
+		}
+		_ = json.NewEncoder(stdoutW).Encode(resp)
+	}()
+
+	_, err := b.rpc(context.Background(), "first", nil)
+	if err == nil {
+		t.Fatal("expected mismatch error, got nil")
+	}
+	if !b.poisoned.Load() {
+		t.Fatal("expected backend to be poisoned after id mismatch")
+	}
+
+	_, err = b.rpc(context.Background(), "second", nil)
+	if !errors.Is(err, ErrBackendPoisoned) {
+		t.Fatalf("subsequent rpc after id mismatch: want ErrBackendPoisoned, got %v", err)
+	}
+}
