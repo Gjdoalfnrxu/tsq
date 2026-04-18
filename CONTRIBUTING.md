@@ -37,6 +37,18 @@ Every PR must:
 
 For each PR, a separate review agent runs the [adversarial review checklist](docs/ADVERSARIAL-REVIEW.md). The review must find and report any real problems before the PR merges. The implementing agent fixes issues found, then the reviewer re-checks.
 
+### Performance investigation
+
+`tsq query` exposes three flags for diagnosing slow or memory-hungry queries:
+
+- `--cpu-profile FILE` — writes a CPU profile for the duration of the query.
+- `--mem-profile FILE` — writes a heap profile after the query completes (post-GC).
+- `--mem-snapshot-dir DIR` — writes a heap profile every 10s while the query runs.
+
+Analyse with `go tool pprof FILE`. The snapshot dir is most useful for catching
+eval-time memory blow-ups that complete (or OOM) before the final `--mem-profile`
+gets written — see #130 for the real-world OOM that motivated these flags.
+
 ### Handover Documents
 
 When a phase completes, the implementing agent creates `HANDOVER-phase-N.md` at the repo root describing:

@@ -10,7 +10,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -518,6 +521,9 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	// that magic sets are opt-in. Will be removed once a release has shipped.
 	_ = fs.Bool("no-magic-sets", false, "deprecated, no-op (magic sets are now opt-in via --magic-sets)")
 	verbose := fs.Bool("verbose", false, "log diagnostic info to stderr (e.g. magic-set transform application)")
+	cpuProfile := fs.String("cpu-profile", "", "write a CPU profile to this `file` for the duration of the query (analyse with 'go tool pprof')")
+	memProfile := fs.String("mem-profile", "", "write a heap profile to this `file` after the query completes (analyse with 'go tool pprof')")
+	memSnapshotDir := fs.String("mem-snapshot-dir", "", "write a heap profile every 10s into this `dir` while the query runs; useful for diagnosing eval-time memory blow-ups (see issue #130)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -541,6 +547,72 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
+	// Profiling setup (see issue #130 for the real-world OOM that motivated
+	// these flags). All three are off by default and have zero overhead when
+	// not set. Failures here are treated as hard errors — if the user asked
+	// for a profile and we can't deliver it, silently dropping it would waste
+	// their next investigation run.
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: create cpu profile: %v\n", err)
+			return 1
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintf(stderr, "error: start cpu profile: %v\n", err)
+			return 1
+		}
+		defer pprof.StopCPUProfile()
+	}
+	if *memSnapshotDir != "" {
+		if err := os.MkdirAll(*memSnapshotDir, 0o755); err != nil {
+			fmt.Fprintf(stderr, "error: mkdir mem-snapshot-dir: %v\n", err)
+			return 1
+		}
+		// Serialise stderr writes from the snapshot goroutine through a
+		// dedicated mutex-guarded writer. The main goroutine writes to
+		// stderr concurrently from compileAndEval warnings, output
+		// formatters, etc.; bytes.Buffer (used by tests) and even
+		// os.Stderr line-buffering across goroutines is not race-free.
+		// The mutex ensures snapshot lines don't interleave with eval
+		// stderr lines.
+		snapStderr := &lockedWriter{w: stderr}
+		fmt.Fprintf(snapStderr, "[mem-snapshot-dir] writing heap profiles to %s every 10s\n", *memSnapshotDir)
+		// Heap snapshot ticker. Runs for the lifetime of the query; stops
+		// when ctx is cancelled (signal, timeout, or normal completion via
+		// the cancel deferred in run()). Each snapshot is named with its
+		// index and the current Sys MB so a quick `ls` reveals the growth
+		// curve without opening pprof.
+		go func() {
+			var ms runtime.MemStats
+			i := 0
+			t := time.NewTicker(10 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+				runtime.ReadMemStats(&ms)
+				fn := filepath.Join(*memSnapshotDir, fmt.Sprintf("heap-%03d-sys%dmb.prof", i, ms.Sys/(1024*1024)))
+				f, err := os.Create(fn)
+				if err != nil {
+					fmt.Fprintf(snapStderr, "snapshot %d: create: %v\n", i, err)
+					continue
+				}
+				if err := pprof.Lookup("heap").WriteTo(f, 0); err != nil {
+					fmt.Fprintf(snapStderr, "snapshot %d: write: %v\n", i, err)
+				}
+				f.Close()
+				fmt.Fprintf(snapStderr, "[snapshot %d] heapInuse=%dMB sys=%dMB heapAlloc=%dMB -> %s\n",
+					i, ms.HeapInuse/(1024*1024), ms.Sys/(1024*1024), ms.HeapAlloc/(1024*1024), fn)
+				i++
+			}
+		}()
+	}
+
 	// Read and compile the query.
 	bopts := buildOptions{useMagicSets: *magicSets, magicSetsStrict: *magicSetsStrict, warnOut: stderr}
 	if *verbose {
@@ -549,8 +621,10 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule, *maxIterations, *allowPartial, bopts)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
+		writeMemProfile(*memProfile, stderr)
 		return 1
 	}
+	defer writeMemProfile(*memProfile, stderr)
 
 	// Format output.
 	switch *format {
@@ -575,6 +649,43 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	return 0
+}
+
+// lockedWriter serialises Write calls with a mutex. Used to guard stderr
+// against the snapshot goroutine writing concurrently with the main
+// goroutine's stderr emissions; without this the test buffer (bytes.Buffer)
+// races and even os.Stderr can interleave partial lines from concurrent
+// writers.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// writeMemProfile writes a heap profile to path, if non-empty. Forces a GC
+// first so the profile reflects live (reachable) memory rather than alloc
+// debris. Errors are logged to stderr but do not fail the command — by the
+// time we get here the query has already produced (or not) its results,
+// and a profile-write failure shouldn't change the user-visible exit code.
+func writeMemProfile(path string, stderr io.Writer) {
+	if path == "" {
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: create mem profile: %v\n", err)
+		return
+	}
+	defer f.Close()
+	runtime.GC()
+	if err := pprof.Lookup("heap").WriteTo(f, 0); err != nil {
+		fmt.Fprintf(stderr, "warning: write mem profile: %v\n", err)
+	}
 }
 
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
