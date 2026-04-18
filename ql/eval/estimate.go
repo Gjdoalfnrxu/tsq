@@ -243,7 +243,9 @@ func MakeMaterialisingEstimatorHook(
 		mats, updates := MaterialiseClassExtents(prog, baseRels, sizeHints, maxBindingsPerRule)
 		extentNames := make(map[string]bool, len(mats))
 		for k, rel := range mats {
-			materialisedSink[k] = rel
+			if materialisedSink != nil {
+				materialisedSink[k] = rel
+			}
 			if rel != nil {
 				extentNames[rel.Name] = true
 			}
