@@ -22,27 +22,45 @@
  */
 
 /**
- * Transitive `FunctionContains`: holds if `node` is contained, directly
- * or via nested function literals, by `fn`. The base `FunctionContains`
- * relation is innermost-only (emitted in
+ * Transitive-ish `FunctionContains`: holds if `node` is contained,
+ * directly or via nested function literals, by `fn`. The base
+ * `FunctionContains` relation is innermost-only (emitted in
  * `extract/walker_v2.go:136-139`), so without this expansion the call
  * `setX(prev => arr.forEach(() => setY()))` would not pair the outer
  * `setX` updater with the inner `setY` call — the inner call's
  * `FunctionContains` row points at the `() => setY()` arrow, not at the
  * outer `prev => ...` arrow.
  *
- * Now written as true recursion (`Path :- Edge or Path, Edge`) and
- * evaluated by the seminaive engine. The previous depth-3 unroll was
- * historical — the engine's recursive-predicate path is exercised by
- * other rules and behaves correctly here. Recursion matches CodeQL's
- * `+` transitive-closure semantics and removes the silent depth ceiling.
+ * Hand-unrolled to depth 3 rather than written as true recursion. A
+ * recursive form was tried first and works correctly on small
+ * fixtures, but on the Mastodon corpus the recursive
+ * `functionContainsStar` IDB grows too large to size correctly
+ * pre-evaluation: the planner defaults its hint to 1000 (recursive IDBs
+ * are not materialised by the trivial-IDB pre-pass) and then picks a
+ * join order that blows the binding cap downstream. The unrolled form
+ * is a non-recursive IDB and gets a real cardinality estimate from the
+ * trivial-IDB pre-pass + sampling estimator (P2b), which keeps the
+ * planner honest. Three levels covers all known real-world useState
+ * updater patterns. If a fourth nesting level becomes load-bearing,
+ * lift this to a real recursive predicate AFTER fixing the recursive-IDB
+ * sizing path so the planner gets a real estimate (planner-roadmap
+ * follow-on).
  */
 predicate functionContainsStar(int fn, int node) {
     FunctionContains(fn, node)
     or
-    exists(int mid |
-        functionContainsStar(fn, mid) and
-        FunctionContains(mid, node)
+    exists(int mid1 |
+        FunctionContains(fn, mid1) and
+        Function(mid1, _, _, _, _, _) and
+        FunctionContains(mid1, node)
+    )
+    or
+    exists(int mid1, int mid2 |
+        FunctionContains(fn, mid1) and
+        Function(mid1, _, _, _, _, _) and
+        FunctionContains(mid1, mid2) and
+        Function(mid2, _, _, _, _, _) and
+        FunctionContains(mid2, node)
     )
 }
 
