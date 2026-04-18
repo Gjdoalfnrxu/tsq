@@ -492,8 +492,17 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				}
 			}
 			// Re-plan strata si+1..end and the final query.
+			//
+			// P3a: thread the demand map captured at initial Plan() time so
+			// demand-driven seed choice is preserved across the refresh.
+			// Demand is intentionally NOT recomputed here — re-running
+			// InferBackwardDemand mid-fixpoint would risk flapping (a hint
+			// crossing SmallExtentThreshold mid-evaluation could add or
+			// drop demand positions, producing a different plan than the
+			// one Plan() returned). Stable demand across the fixpoint
+			// matches the doc-stated property on RePlanStratumWithDemand.
 			for j := si + 1; j < len(execPlan.Strata); j++ {
-				plan.RePlanStratum(&execPlan.Strata[j], cfg.sizeHints)
+				plan.RePlanStratumWithDemand(&execPlan.Strata[j], cfg.sizeHints, execPlan.Demand)
 			}
 			if execPlan.Query != nil {
 				plan.RePlanQuery(execPlan.Query, cfg.sizeHints)

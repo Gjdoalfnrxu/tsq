@@ -6,9 +6,21 @@ import (
 )
 
 // ExecutionPlan is the output of the planner.
+//
+// Demand is the backward-demand map computed during the initial Plan() call
+// (see InferBackwardDemand and the P3a roadmap section). It is carried on
+// the plan so that between-strata refreshes (eval.Evaluate's loop after
+// each stratum's fixpoint) can re-plan with stable demand via
+// RePlanStratumWithDemand instead of dropping demand-driven seed choice
+// on the floor by using the demand-unaware RePlanStratum. May be nil
+// (meaning "no demand inferred / not applicable") — RePlanStratumWithDemand
+// treats a nil DemandMap as empty and degrades to plain RePlanStratum
+// behaviour, which preserves existing call sites that build an
+// ExecutionPlan by hand in tests.
 type ExecutionPlan struct {
 	Strata []Stratum
 	Query  *PlannedQuery // nil if no select clause
+	Demand DemandMap
 }
 
 // Stratum is a set of rules that can be evaluated together (same SCC or dependent group).
@@ -265,7 +277,7 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 	// a lower bound.
 	demand := InferBackwardDemand(prog, sizeHints)
 
-	ep := &ExecutionPlan{}
+	ep := &ExecutionPlan{Demand: demand}
 	for _, stratum := range strata {
 		ps := Stratum{}
 		for _, rule := range stratum {
