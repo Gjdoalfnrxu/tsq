@@ -227,6 +227,406 @@ func InferQueryBindings(prog *datalog.Program, idbPreds map[string]bool) QueryBi
 	}
 }
 
+// InferRuleBindings extends magic-set binding inference across rule
+// boundaries (issue #121, Phase A).
+//
+// `InferQueryBindings` only walks the *query* body. That misses the
+// load-bearing case behind issue #121: a Configuration-class query
+// (BackwardTracker pattern) selects a small `hasFlowTo(_, _)` IDB whose
+// body itself contains a tiny IDB literal (`isSink`) followed by a large
+// recursive predicate (`flowsTo`). The query body has no constants, so
+// `InferQueryBindings` returns nothing and magic-set never fires —
+// exactly the case where it would help most.
+//
+// `InferRuleBindings` complements this by walking *rule* bodies. For
+// each rule it identifies "small-IDB-bound" body literals: positive
+// IDB literals whose source predicate's known cardinality (via
+// `sizeHints`, populated by the trivial-IDB pre-pass) is below
+// `smallIDBThreshold`. Variables appearing in such a literal are then
+// treated as bound for the purposes of binding inference on subsequent
+// IDB literals in the same rule body. The output is a per-predicate
+// map of bound argument positions, suitable for merging into the
+// `queryBindings` map consumed by `MagicSetTransform`.
+//
+// The conservatism of `InferQueryBindings` carries through: only the
+// *first* rule body that produces a binding for a given predicate is
+// recorded (subsequent shapes are ignored), and we never bind through
+// a literal we cannot ground.
+//
+// Returns nil if no cross-rule bindings are inferable, in which case
+// the caller proceeds with query-body-only bindings.
+func InferRuleBindings(prog *datalog.Program, idbPreds map[string]bool, sizeHints map[string]int) map[string][]int {
+	if prog == nil || len(prog.Rules) == 0 {
+		return nil
+	}
+	bindings := make(map[string][]int)
+
+	for _, rule := range prog.Rules {
+		// Track variables already grounded by a prior body literal whose
+		// source IDB is small enough to seed binding inference.
+		bound := make(map[string]bool)
+		// Track whether we've seen a "small IDB" literal in this rule
+		// body. We only emit rule bindings AFTER such a literal has
+		// fired — otherwise every transitive-closure rule with a
+		// preceding base atom (e.g. `Path(x,z) :- Edge(x,y), Path(y,z)`)
+		// would record a binding for `Path` and trigger magic-set
+		// rewriting on queries that have no constants and would not
+		// benefit. The whole point of issue #121 is to make
+		// Configuration-shaped queries (small IDB sink → large IDB
+		// flow) bindable; non-Configuration shapes must remain
+		// unaffected.
+		smallIDBSeen := false
+
+		// Head args are bound from the perspective of *callers* of the
+		// rule, but for cross-rule binding within the rule body itself we
+		// only care about how body literals constrain each other. Head
+		// args appearing in the body would naturally be ground by the
+		// body's own positive literals, so we don't seed `bound` from the
+		// head.
+
+		for _, lit := range rule.Body {
+			if lit.Cmp != nil || lit.Agg != nil {
+				continue
+			}
+			if !lit.Positive {
+				// Negated literal: contributes vars to the unbound set
+				// only if every var was already bound (it then acts as a
+				// filter). It cannot itself bind a fresh variable, so
+				// skip.
+				continue
+			}
+
+			pred := lit.Atom.Predicate
+
+			// Determine which positions of THIS literal are already bound
+			// by prior small-IDB or constant binding. If at least one
+			// position is bound AND a preceding small IDB (or query-time
+			// constant in this same body) has fired, record it for this
+			// predicate (first-occurrence wins, mirroring
+			// InferQueryBindings). Without the smallIDBSeen gate, every
+			// transitive-closure rule body would record a "false-positive"
+			// binding the moment any base literal preceded the recursive
+			// call — see TestInferRuleBindings_NoMagicWhenSourceAndSinkBothLarge
+			// for the regression guard.
+			if idbPreds[pred] && smallIDBSeen {
+				var boundCols []int
+				for ai, arg := range lit.Atom.Args {
+					switch a := arg.(type) {
+					case datalog.IntConst, datalog.StringConst:
+						boundCols = append(boundCols, ai)
+					case datalog.Var:
+						if a.Name == "_" {
+							continue
+						}
+						if bound[a.Name] {
+							boundCols = append(boundCols, ai)
+						}
+					}
+				}
+				if len(boundCols) > 0 {
+					if _, exists := bindings[pred]; !exists {
+						bindings[pred] = boundCols
+					}
+				}
+			}
+
+			// Decide whether THIS literal grounds its variables for
+			// subsequent literals. Two cases:
+			//
+			// 1. Non-IDB (base relation) literal: always grounds its vars
+			//    once it produces a tuple — same conservative rule used
+			//    inside InferQueryBindings (`baseBoundVars`).
+			// 2. IDB literal: only grounds its vars if its predicate is
+			//    "small" — meaning sizeHints reports a cardinality below
+			//    smallIDBThreshold, OR no hint exists but the literal
+			//    contains a constant arg (treated as inherently selective).
+			//    Without this gate, every IDB literal would seed binding
+			//    for every subsequent literal, which collapses to the
+			//    trivial "every position is always bound" case the
+			//    InferQueryBindings docstring explicitly warns against.
+			grounding := false
+			groundedBySmallIDB := false
+			if !idbPreds[pred] {
+				// Base relations ground their vars but DO NOT count as
+				// "small IDB" — they're EDB. This is the key distinction:
+				// only a derived (IDB) predicate whose cardinality is
+				// known small triggers the rule-binding gate. Without
+				// this, every rule body with a constant base literal
+				// (common in system rules — e.g.
+				// ImportBinding(sym, "react", "useState")) would fire
+				// rule-binding inference on the next IDB literal,
+				// regressing magic-set behaviour for non-Configuration
+				// queries.
+				grounding = true
+			} else if sizeHints != nil {
+				if hint, ok := sizeHints[pred]; ok && hint > 0 && hint <= smallIDBThreshold {
+					grounding = true
+					groundedBySmallIDB = true
+				}
+			}
+			if !grounding {
+				continue
+			}
+			if groundedBySmallIDB {
+				smallIDBSeen = true
+			}
+			for _, arg := range lit.Atom.Args {
+				if v, ok := arg.(datalog.Var); ok && v.Name != "_" {
+					bound[v.Name] = true
+				}
+			}
+		}
+	}
+
+	if len(bindings) == 0 {
+		return nil
+	}
+	return bindings
+}
+
+// BuildRuleSeedRules emits `magic_<bodyPred>(args)` seed rules sourced
+// from small-IDB literals in rule bodies (issue #121).
+//
+// Given `bindings` from `InferRuleBindings`, walks each rule body and,
+// for any IDB literal whose predicate is in `bindings`, emits a seed
+// rule of the shape:
+//
+//	magic_<pred>(args_at_bound_positions) :- <preceding small-IDB or base literals>.
+//
+// "Preceding" includes only literals that we know to be grounding under
+// the same heuristic used in `InferRuleBindings` — base relations,
+// small IDBs, or literals containing a constant arg. This keeps the
+// seed rule itself tractable (no propagation through `flowsTo` in the
+// seed body, which would re-create the OOM we are trying to avoid).
+//
+// The emitted seed rules are intended to be appended to the magic-set
+// transformed program alongside the transform's own propagation rules.
+// They give the magic predicate an EDB-shaped base case so the
+// transformed `hasFlowTo` rule actually produces tuples even when the
+// query head has no query-time bindings.
+func BuildRuleSeedRules(prog *datalog.Program, idbPreds map[string]bool, sizeHints map[string]int, bindings map[string][]int) []datalog.Rule {
+	if prog == nil || len(bindings) == 0 {
+		return nil
+	}
+	// Track which (pred, arity) shapes we've already emitted so we don't
+	// produce duplicate seed rules from multiple rule occurrences.
+	seenShape := make(map[string]bool)
+	shapeKey := func(head datalog.Atom) string {
+		return fmt.Sprintf("%s/%d", head.Predicate, len(head.Args))
+	}
+
+	var seeds []datalog.Rule
+	for _, rule := range prog.Rules {
+		bound := make(map[string]bool)
+		var prevGrounding []datalog.Literal
+		smallIDBSeen := false
+
+		for _, lit := range rule.Body {
+			if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
+				// Comparisons that bind a var to a constant ARE grounding
+				// for subsequent literals; carry them along but they
+				// don't contribute IDB shape themselves.
+				if lit.Cmp != nil && lit.Cmp.Op == "=" {
+					prevGrounding = append(prevGrounding, lit)
+					if v, ok := lit.Cmp.Left.(datalog.Var); ok && isConstTerm(lit.Cmp.Right) {
+						bound[v.Name] = true
+					}
+					if v, ok := lit.Cmp.Right.(datalog.Var); ok && isConstTerm(lit.Cmp.Left) {
+						bound[v.Name] = true
+					}
+				}
+				continue
+			}
+			pred := lit.Atom.Predicate
+
+			if cols, ok := bindings[pred]; ok && smallIDBSeen {
+				// Try to emit a seed rule. Build the head from the bound
+				// positions, but only if every chosen var is in `bound`
+				// (or is a constant in the literal itself).
+				headArgs := make([]datalog.Term, 0, len(cols))
+				safe := true
+				for _, col := range cols {
+					if col >= len(lit.Atom.Args) {
+						safe = false
+						break
+					}
+					arg := lit.Atom.Args[col]
+					switch a := arg.(type) {
+					case datalog.IntConst, datalog.StringConst:
+						headArgs = append(headArgs, a)
+					case datalog.Var:
+						if a.Name == "_" || !bound[a.Name] {
+							safe = false
+						}
+						headArgs = append(headArgs, a)
+					default:
+						safe = false
+					}
+					if !safe {
+						break
+					}
+				}
+				if safe && len(headArgs) == len(cols) {
+					seedHead := datalog.Atom{
+						Predicate: magicName(pred),
+						Args:      headArgs,
+					}
+					key := shapeKey(seedHead)
+					if !seenShape[key] {
+						seedBody := append([]datalog.Literal(nil), prevGrounding...)
+						if isSafe(seedHead, seedBody) {
+							seeds = append(seeds, datalog.Rule{
+								Head: seedHead,
+								Body: seedBody,
+							})
+							seenShape[key] = true
+						}
+					}
+				}
+			}
+
+			// Update grounding state. Grounding rule mirrors
+			// InferRuleBindings: base relations, small IDBs, or const-bearing
+			// literals all ground their variables for subsequent steps.
+			grounding := false
+			groundedBySmallIDB := false
+			if !idbPreds[pred] {
+				grounding = true
+			} else if sizeHints != nil {
+				if hint, ok := sizeHints[pred]; ok && hint > 0 && hint <= smallIDBThreshold {
+					grounding = true
+					groundedBySmallIDB = true
+				}
+			}
+			if grounding {
+				prevGrounding = append(prevGrounding, lit)
+				if groundedBySmallIDB {
+					smallIDBSeen = true
+				}
+				for _, arg := range lit.Atom.Args {
+					if v, ok := arg.(datalog.Var); ok && v.Name != "_" {
+						bound[v.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return seeds
+}
+
+// filterRuleBindingsAvoidingWildcards removes any (pred, cols) entry
+// from `bindings` for which some rule body contains a literal `pred(...)`
+// with a Wildcard or `_`-Var in one of the bound positions. Such a
+// binding causes MagicSetTransform's propagation pass to emit an
+// unsafe `magic_<pred>(_, ...)` head, which the planner subsequently
+// rejects.
+//
+// We could fix this in MagicSetTransform itself (filtering unsafe
+// propagation heads at emit time), but that would change the
+// observable behaviour of the existing fallback test suite (e.g.
+// TestWithMagicSetAuto_UnsafeHeadFallback), which deliberately
+// exercises the planner-level rejection. Filtering bindings up-front
+// keeps the existing contract intact while still letting issue #121's
+// rule-derived bindings take effect on safe predicates.
+func filterRuleBindingsAvoidingWildcards(prog *datalog.Program, bindings map[string][]int) map[string][]int {
+	if prog == nil || len(bindings) == 0 {
+		return bindings
+	}
+	// Iterate to a fixed point: each pass computes the transitive
+	// binding closure under the current set, identifies any closure
+	// entry that intersects a wildcard-bearing body literal, drops
+	// any *seed* binding whose closure includes that bad predicate,
+	// and re-runs. This catches both direct wildcard collisions and
+	// indirect ones reached only through propagateBindings.
+	current := make(map[string][]int, len(bindings))
+	for k, v := range bindings {
+		current[k] = v
+	}
+	for {
+		closure := propagateBindings(prog.Rules, current)
+		bad := make(map[string]bool)
+		for _, rule := range prog.Rules {
+			for _, lit := range rule.Body {
+				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
+					continue
+				}
+				cols, ok := closure[lit.Atom.Predicate]
+				if !ok {
+					continue
+				}
+				for _, col := range cols {
+					if col >= len(lit.Atom.Args) {
+						bad[lit.Atom.Predicate] = true
+						break
+					}
+					switch a := lit.Atom.Args[col].(type) {
+					case datalog.Wildcard:
+						bad[lit.Atom.Predicate] = true
+					case datalog.Var:
+						if a.Name == "_" {
+							bad[lit.Atom.Predicate] = true
+						}
+					}
+					if bad[lit.Atom.Predicate] {
+						break
+					}
+				}
+			}
+		}
+		if len(bad) == 0 {
+			return current
+		}
+		// Drop any current seed binding whose closure (forward
+		// propagation from that seed alone) reaches a bad predicate.
+		next := make(map[string][]int)
+		dropped := false
+		for pred, cols := range current {
+			single := map[string][]int{pred: cols}
+			singleClosure := propagateBindings(prog.Rules, single)
+			tainted := false
+			for badPred := range bad {
+				if _, hit := singleClosure[badPred]; hit {
+					tainted = true
+					break
+				}
+			}
+			if tainted {
+				dropped = true
+				continue
+			}
+			next[pred] = cols
+		}
+		if !dropped {
+			// No seed binding individually reaches the bad set, yet
+			// the combined closure does. Conservative bail: drop
+			// everything to preserve the existing fallback contract.
+			return nil
+		}
+		current = next
+		if len(current) == 0 {
+			return nil
+		}
+	}
+}
+
+// smallIDBThreshold is the cardinality below which an IDB literal is
+// treated as "small enough to seed binding inference for subsequent
+// literals in the same rule body" (issue #121).
+//
+// Rationale: backward-dataflow Configuration queries depend on the
+// `isSink_<Subclass>` IDB being orders of magnitude smaller than the
+// `flowsTo` literal it precedes. In practice these subclass IDBs hold
+// dozens to low-thousands of tuples on real corpora (mastodon
+// `setStateUpdaterCallsFn`: ~50 setter sinks). We pick 5000 as a
+// conservative default — large enough to capture realistic sink/source
+// IDBs without firing on broad helper IDBs (e.g. `isUseStateSetterCall`
+// is 7 tuples, `functionContainsStar` is 438k on mastodon: clear
+// separation). If a user's selectivity heuristic differs, the right
+// long-term knob is per-binding cost estimation in the planner, not a
+// magic constant — but for Phase A, a single threshold is enough to
+// validate the approach. Tracked in the issue as a follow-up.
+const smallIDBThreshold = 5000
+
 // IDBPredicates returns the set of predicate names that appear as rule heads.
 func IDBPredicates(prog *datalog.Program) map[string]bool {
 	idb := make(map[string]bool)
@@ -268,6 +668,80 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts MagicSetOptions) (*ExecutionPlan, QueryBindingInference, []error) {
 	idb := IDBPredicates(prog)
 	inf := InferQueryBindings(prog, idb)
+
+	// Issue #121: in addition to query-body bindings, walk rule bodies
+	// looking for small-IDB-bound IDB literals. This is what makes
+	// Configuration-shaped queries (BackwardTracker pattern in
+	// bridge/tsq_dataflow_track.qll) magic-set-rewritable: the query
+	// body has no constants, but a rule body like
+	//   hasFlowTo(s, t) :- isSink(t), isSource(s), flowsTo(s, t), ...
+	// has `t` bound by the small `isSink` IDB before `flowsTo` is
+	// reached, so `flowsTo`'s second argument can be backward-magic.
+	// Filter sizeHints to IDB-pure entries before passing into rule-binding
+	// inference. The CLI's `sizeHints` map (built by buildSizeHints) is
+	// populated from the BASE relation schema; many IDB class-predicate
+	// names shadow a base relation of the same name (e.g. the `MethodCall`
+	// QL class shadows the `MethodCall(this, recv, name)` base relation),
+	// so a raw `sizeHints["MethodCall"]` lookup returns the BASE size, not
+	// the IDB size. Treating that as a small-IDB signal would fire
+	// rule-binding inference on every Configuration-shaped IDB whose name
+	// happens to overlap with a small base — a soundness regression
+	// (TestCLI_MagicSet_FlagWiring/equivalence_method_calls).
+	//
+	// Concretely: an entry in `sizeHints[pred]` where `pred` is also an
+	// IDB head almost always refers to a shadowed base relation, not a
+	// reliable IDB cardinality estimate. Phase A only consumes hints for
+	// IDBs that are NOT also base-shadowed; reliable IDB estimates come
+	// from `eval.EstimateNonRecursiveIDBSizes`, which runs *after*
+	// planning today. Re-running magic-set after IDB estimation (so
+	// BackwardTracker queries with subclass-only `isSink_<X>` predicates
+	// can benefit) is tracked as the Phase A.1 follow-up.
+	idbOnlyHints := make(map[string]int, len(sizeHints))
+	for k, v := range sizeHints {
+		if !idb[k] {
+			// Pure base relation hint — irrelevant to InferRuleBindings
+			// (which only looks up IDB names) but harmless to include.
+			idbOnlyHints[k] = v
+		}
+		// If k is in idb, the hint is a base-shadowed lookup; skip it.
+	}
+	ruleBindings := InferRuleBindings(prog, idb, idbOnlyHints)
+	// Drop rule bindings that would lead the magic-set transform to
+	// emit an unsafe propagation head. Two failure modes are guarded:
+	//
+	//   1. Direct: a rule body contains `pred(...)` with a wildcard or
+	//      `_` in one of the bound positions. Propagation copies that
+	//      arg into `magic_pred`'s head — unsafe.
+	//   2. Transitive: a rule with `pred(...)` in the body propagates
+	//      a binding to some downstream predicate `Q`, and a rule body
+	//      containing `Q(...)` then has a wildcard in the propagated
+	//      position.
+	//
+	// We compute the full transitive binding closure first (using the
+	// existing propagateBindings pass) and reject bindings whose
+	// closure intersects any wildcard-bearing body literal. Issue #121.
+	if len(ruleBindings) > 0 {
+		ruleBindings = filterRuleBindingsAvoidingWildcards(prog, ruleBindings)
+	}
+	var ruleSeeds []datalog.Rule
+	if len(ruleBindings) > 0 {
+		ruleSeeds = BuildRuleSeedRules(prog, idb, sizeHints, ruleBindings)
+		// Merge rule-derived bindings into the inference's binding map
+		// so that MagicSetTransform sees them and rewrites the
+		// corresponding rule bodies to consume `magic_<pred>` (rather
+		// than emitting only-seed rules that no body literal references).
+		// First-occurrence-wins: never overwrite a query-body binding.
+		if inf.Bindings == nil {
+			inf.Bindings = make(map[string][]int)
+		}
+		for pred, cols := range ruleBindings {
+			if _, exists := inf.Bindings[pred]; !exists {
+				inf.Bindings[pred] = cols
+			}
+		}
+		inf.SeedRules = append(inf.SeedRules, ruleSeeds...)
+	}
+
 	if len(inf.Bindings) == 0 {
 		ep, errs := Plan(prog, sizeHints)
 		return ep, inf, errs

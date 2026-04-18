@@ -661,3 +661,140 @@ func TestWithMagicSetAutoOpts_ArityMismatchSamePredDifferentArity(t *testing.T) 
 		}
 	})
 }
+
+// --- Issue #121 Phase A: rule-body binding inference --------------------------------
+
+// progBackwardConfigShape constructs a program shaped like the BackwardTracker
+// pattern: a small `isSink` IDB followed by a recursive `flowsTo` IDB followed
+// by an `isSource` IDB. This is the load-bearing case that motivated rule-body
+// binding inference (issue #121).
+func progBackwardConfigShape() *datalog.Program {
+	rules := []datalog.Rule{
+		// Edge(x, y) is the base relation
+		// flowsTo(s, t) :- Edge(s, t).
+		{
+			Head: datalog.Atom{Predicate: "flowsTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+		// flowsTo(s, t) :- Edge(s, m), flowsTo(m, t).
+		{
+			Head: datalog.Atom{Predicate: "flowsTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Edge", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "flowsTo", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+		// isSink(t) :- Sink(t).  -- IDB seeded by a base 'Sink'
+		{
+			Head: datalog.Atom{Predicate: "isSink", Args: []datalog.Term{datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Sink", Args: []datalog.Term{datalog.Var{Name: "t"}}}},
+			},
+		},
+		// hasFlowTo(s, t) :- isSink(t), flowsTo(s, t).
+		{
+			Head: datalog.Atom{Predicate: "hasFlowTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "isSink", Args: []datalog.Term{datalog.Var{Name: "t"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "flowsTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+	}
+	return &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "hasFlowTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+	}
+}
+
+func TestInferRuleBindings_BackwardConfigurationShape(t *testing.T) {
+	prog := progBackwardConfigShape()
+	idb := IDBPredicates(prog)
+	// Mark isSink as small (well below smallIDBThreshold).
+	hints := map[string]int{"isSink": 5}
+	got := InferRuleBindings(prog, idb, hints)
+	cols, ok := got["flowsTo"]
+	if !ok {
+		t.Fatalf("expected rule-binding for flowsTo (sink-bound), got: %v", got)
+	}
+	// `t` is bound by isSink(t); flowsTo(s, t) → second arg is bound.
+	if len(cols) != 1 || cols[0] != 1 {
+		t.Fatalf("expected flowsTo binding [1] (sink position), got %v", cols)
+	}
+}
+
+func TestInferRuleBindings_NoMagicWhenSourceAndSinkBothLarge(t *testing.T) {
+	prog := progBackwardConfigShape()
+	idb := IDBPredicates(prog)
+	// No size hints at all → no IDB qualifies as small → no rule bindings.
+	got := InferRuleBindings(prog, idb, nil)
+	if len(got) != 0 {
+		t.Fatalf("expected no rule bindings without small-IDB hints, got: %v", got)
+	}
+	// Same when hints exceed the threshold.
+	got = InferRuleBindings(prog, idb, map[string]int{"isSink": 1_000_000})
+	if len(got) != 0 {
+		t.Fatalf("expected no rule bindings when isSink is large, got: %v", got)
+	}
+}
+
+func TestInferRuleBindings_DoesNotFireOnTransitiveClosurePath(t *testing.T) {
+	// The `Path(x,z) :- Edge(x,y), Path(y,z)` shape from earlier tests
+	// must not record a rule binding even though `Edge` (a base) precedes
+	// `Path` in the body. The smallIDBSeen gate prevents this.
+	prog := progPathClosure(nil, "x", "y")
+	idb := IDBPredicates(prog)
+	got := InferRuleBindings(prog, idb, map[string]int{"Path": 5})
+	if len(got) != 0 {
+		t.Fatalf("expected no rule bindings on plain transitive closure, got: %v", got)
+	}
+}
+
+func TestBuildRuleSeedRules_ConfigurationShapeProducesSeed(t *testing.T) {
+	prog := progBackwardConfigShape()
+	idb := IDBPredicates(prog)
+	hints := map[string]int{"isSink": 5}
+	bindings := InferRuleBindings(prog, idb, hints)
+	seeds := BuildRuleSeedRules(prog, idb, hints, bindings)
+	if len(seeds) == 0 {
+		t.Fatalf("expected at least one seed rule for flowsTo, got none")
+	}
+	found := false
+	for _, s := range seeds {
+		if s.Head.Predicate == "magic_flowsTo" {
+			found = true
+			if len(s.Head.Args) != 1 {
+				t.Errorf("expected magic_flowsTo seed of arity 1, got %d", len(s.Head.Args))
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no magic_flowsTo seed rule emitted; got: %v", seeds)
+	}
+}
+
+func TestFilterRuleBindingsAvoidingWildcards_DropsDirectWildcardCollision(t *testing.T) {
+	// Construct a program where a rule body literal P(_, y) collides with a
+	// proposed binding {P: [0]}.
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "y"}}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Wildcard{}, datalog.Var{Name: "y"}}}},
+				},
+			},
+		},
+	}
+	in := map[string][]int{"P": {0}}
+	out := filterRuleBindingsAvoidingWildcards(prog, in)
+	if _, ok := out["P"]; ok {
+		t.Fatalf("expected P binding to be filtered out due to wildcard at col 0, got: %v", out)
+	}
+}

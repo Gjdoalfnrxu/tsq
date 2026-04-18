@@ -19,6 +19,7 @@ func TestLoadBridgeReturnsAllFiles(t *testing.T) {
 		"tsq_symbols.qll",
 		"tsq_callgraph.qll",
 		"tsq_dataflow.qll",
+		"tsq_dataflow_track.qll",
 		"tsq_summaries.qll",
 		"tsq_composition.qll",
 		"tsq_taint.qll",
