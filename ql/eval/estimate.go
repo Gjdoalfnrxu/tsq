@@ -2,10 +2,44 @@ package eval
 
 import (
 	"context"
+	"math/rand"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
+
+// SamplingEnabled toggles the Wander-Join sampling pre-pass inside
+// EstimateNonRecursiveIDBSizes. Default is ON (P2b). A package-level
+// switch (rather than a per-call argument) keeps the EstimatorHook
+// signature stable across the planner boundary; callers that want
+// strict materialised-only semantics for a benchmark or regression
+// test set this to false at process start.
+//
+// The toggle is consulted at the top of each pre-pass invocation; it
+// is not goroutine-safe to flip it concurrently with an in-flight
+// pre-pass, but flipping once at process init is safe.
+var SamplingEnabled = true
+
+// SamplingMaterialiseThreshold is the upper bound on a sampled
+// cardinality estimate at which the pre-pass will still proceed to
+// materialise the IDB. Above this threshold we record the sampled
+// hint and skip materialisation entirely — the load-bearing P2b win
+// for `_disj_2`-shape IDBs that would otherwise OOM in the pre-pass.
+//
+// Concretely: an IDB whose true size is ~500k and whose body is a
+// chain of large EDB joins blows ~5GB through the existing
+// materialising path even with the binding cap engaged (the cap fires
+// AFTER intermediate bindings are allocated; the sampled estimate
+// fires BEFORE any binding allocation). Choosing 50k as the
+// threshold means anything plausibly small enough to be a "tiny seed"
+// or to participate in cheap downstream materialisation is still
+// materialised, while genuinely large IDBs are estimated and skipped.
+const SamplingMaterialiseThreshold = 50000
+
+// SamplingK is the per-rule sample budget for the pre-pass. K=1024
+// matches DefaultSampleK; exposed separately so a benchmark or test
+// can tighten it without touching the algorithm constant.
+var SamplingK = DefaultSampleK
 
 // EstimateNonRecursiveIDBSizes pre-computes the cardinality of every
 // "trivially evaluable" derived predicate in prog (see plan.IdentifyTrivialIDBs)
@@ -307,7 +341,66 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 
 	keyed := keyRels(baseRels)
 
+	// Deterministic-by-default sampling rng for the whole pre-pass: a
+	// fresh fixed-seed source so two pre-pass invocations on the same
+	// program produce the same hint values (the planner's ordering
+	// rules are deterministic, so the planner output stays
+	// deterministic too). Per-rule walks share this rng — that's fine,
+	// they don't interleave (the loop is serial).
+	sampleRng := rand.New(rand.NewSource(1))
+
 	for _, t := range trivials {
+		// P2b — Wander-Join sampling pre-pass.
+		//
+		// Strategy: try sampling first. If the sampled estimate is
+		// above SamplingMaterialiseThreshold we record the sampled
+		// hint and SKIP materialisation entirely — this is the load-
+		// bearing OOM avoidance, since the materialising path can
+		// allocate gigabytes of intermediate bindings even with the
+		// per-rule cap engaged. If the sampled estimate is small (or
+		// sampling cannot run on this rule shape), fall through to
+		// the existing materialising path so downstream trivial rules
+		// that reference this IDB can still resolve their own
+		// sample/materialise decisions against a real relation.
+		if SamplingEnabled {
+			sampledOK := false
+			sampled := 0
+			for _, rule := range t.Rules {
+				planned := plan.SingleRule(rule, sizeHints)
+				est, ok := SampleJoinCardinality(planned, keyed, SamplingK, sampleRng)
+				if !ok {
+					sampledOK = false
+					break
+				}
+				// Multiple rules with the same head are unioned in
+				// the materialising path; sampled cardinalities
+				// upper-bound the union sum (no dedup info from
+				// sampling, but a sum is still an unbiased upper
+				// bound for planner scoring). For the OOM-avoidance
+				// contract we err on the side of overestimating.
+				sampled += est
+				sampledOK = true
+			}
+			if sampledOK && sampled > SamplingMaterialiseThreshold {
+				if cur, exists := sizeHints[t.Name]; !exists || sampled > cur {
+					sizeHints[t.Name] = sampled
+				}
+				updates[t.Name] = sampled
+				// Skip materialisation: downstream rules that
+				// reference this IDB will themselves fail to sample
+				// (no extent to draw from) and fall back to the
+				// materialising path. That path will then hit the
+				// binding cap on this very IDB body and fail-soft
+				// per the existing best-effort contract — exactly
+				// the behaviour we want, since by hypothesis the
+				// IDB is too large to materialise.
+				continue
+			}
+			// If sampling produced a small estimate, fall through to
+			// materialise normally; no extra cost since the
+			// materialising path would have run anyway.
+		}
+
 		head := NewRelation(t.Name, t.Arity)
 		failed := false
 		for _, rule := range t.Rules {
