@@ -10,45 +10,28 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
-// TestP2bRegression_DisjShapeBoundedPlanTime mirrors the mastodon
-// `_disj_2 = 419k` shape that motivated P2b: a derived predicate
-// defined as the disjunction (multi-rule head) of several large EDB
-// joins, consumed by a downstream rule. With sampling OFF the
-// pre-pass materialises ~hundreds of thousands of intermediate
-// tuples and (without the binding cap) OOMs; with sampling ON it
-// produces a hint, skips materialisation, and finishes in bounded
-// time.
+// buildDisjShape returns the synthetic Mastodon `_disj_2 = 419k`-style
+// regression program. The join product is intentionally scaled to
+// EXCEED the binding cap used by the test (100_000): A has 1000 tuples
+// (x, 1) and B has 1000 tuples (1, k), so Disj(x, z) :- A(x, y), B(y,
+// z) materialises 1,000,000 tuples.
 //
-// We assert two things:
-//  1. Pre-pass + plan time stays comfortably bounded (loose check;
-//     the strict contract is qualitative — sampling MUST not be in
-//     the same order of magnitude as materialising).
-//  2. The downstream consumer rule's planner output places a small
-//     seed first, NOT the large disj IDB — proving the sampled hint
-//     reaches the planner.
-//
-// Full Mastodon-scale data is out of scope for CI; the synthetic
-// shape preserves the structural property (large-IDB consumer) at
-// 1000s of tuples instead of hundreds of thousands.
-func TestP2bRegression_DisjShapeBoundedPlanTime(t *testing.T) {
-	// Build EDBs.
-	A := eval.NewRelation("A", 2) // ~1000 tuples, dense join
+// This is the load-bearing scaling decision: the materialising pre-
+// pass MUST hit the binding cap and bail (leaving no hint), so the
+// only way `Disj` ends up with a hint ≥ 50_000 is if the sampling
+// estimator is actually running and emitting it.
+func buildDisjShape() (*datalog.Program, map[string]*eval.Relation, map[string]int) {
+	A := eval.NewRelation("A", 2)
 	B := eval.NewRelation("B", 2)
 	for x := int64(0); x < 1000; x++ {
 		A.Add(eval.Tuple{eval.IntVal{V: x}, eval.IntVal{V: 1}})
 	}
-	for k := int64(0); k < 100; k++ {
+	for k := int64(0); k < 1000; k++ {
 		B.Add(eval.Tuple{eval.IntVal{V: 1}, eval.IntVal{V: k}})
 	}
-	// Tiny seed extent — the predicate the planner SHOULD pick first
-	// once it knows _disj is large.
 	Tiny := eval.NewRelation("Tiny", 1)
 	Tiny.Add(eval.Tuple{eval.IntVal{V: 1}})
 
-	// Disj(x, z) :- A(x, y), B(y, z). — a single rule that produces
-	// the join (single-rule "disjunction" — a multi-rule version
-	// would behave the same since the sampler estimates each rule
-	// and sums).
 	disjRule := datalog.Rule{
 		Head: datalog.Atom{Predicate: "Disj", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "z"}}},
 		Body: []datalog.Literal{
@@ -56,12 +39,6 @@ func TestP2bRegression_DisjShapeBoundedPlanTime(t *testing.T) {
 			{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "y"}, datalog.Var{Name: "z"}}}},
 		},
 	}
-	// Consumer(x) :- Tiny(x), Disj(x, z). — the planner should
-	// place Tiny first and probe Disj by x. Without a Disj hint it
-	// would fall through to defaultSizeHint (1000), which still
-	// leaves Tiny winning by tiny-seed override; the load-bearing
-	// test is that the sampled hint for Disj is LARGE so any future
-	// regression in tiny-seed override doesn't silently re-OOM.
 	consumerRule := datalog.Rule{
 		Head: datalog.Atom{Predicate: "Consumer", Args: []datalog.Term{datalog.Var{Name: "x"}}},
 		Body: []datalog.Literal{
@@ -70,13 +47,36 @@ func TestP2bRegression_DisjShapeBoundedPlanTime(t *testing.T) {
 		},
 	}
 	prog := &datalog.Program{Rules: []datalog.Rule{disjRule, consumerRule}}
-
 	base := map[string]*eval.Relation{"A": A, "B": B, "Tiny": Tiny}
 	hints := map[string]int{"A": A.Len(), "B": B.Len(), "Tiny": Tiny.Len()}
+	return prog, base, hints
+}
 
+// disjShapeBindingCap is the per-rule binding cap fed into
+// EstimateAndPlan for the regression: comfortably below the 1M join
+// product so the materialising path is guaranteed to bail.
+const disjShapeBindingCap = 100_000
+
+// TestP2bRegression_DisjShapeBoundedPlanTime mirrors the mastodon
+// `_disj_2 = 419k` shape that motivated P2b. The join product
+// (1_000_000) is deliberately ABOVE disjShapeBindingCap (100_000) so
+// the materialising pre-pass cannot complete — only the sampling
+// estimator can produce a hint.
+//
+// Asserts:
+//  1. Pre-pass + plan time stays bounded.
+//  2. `Disj` ends up with a sampled hint ≥ 50_000 (true=1_000_000).
+//  3. The Consumer rule's planner output places Tiny first.
+//
+// The companion test below (sampling disabled) asserts that the SAME
+// shape produces NO Disj hint, proving sampling is the load-bearing
+// piece.
+func TestP2bRegression_DisjShapeBoundedPlanTime(t *testing.T) {
+	prog, base, hints := buildDisjShape()
 	hook := eval.MakeEstimatorHook(base)
+
 	start := time.Now()
-	execPlan, planErrs := plan.EstimateAndPlan(prog, hints, 100000, hook, plan.Plan)
+	execPlan, planErrs := plan.EstimateAndPlan(prog, hints, disjShapeBindingCap, hook, plan.Plan)
 	dur := time.Since(start)
 
 	if len(planErrs) > 0 {
@@ -90,15 +90,16 @@ func TestP2bRegression_DisjShapeBoundedPlanTime(t *testing.T) {
 	}
 	t.Logf("EstimateAndPlan wall: %s", dur)
 
-	// Disj sampled hint should be in the right ballpark — true size is
-	// 1000 * 100 = 100000. Generous tolerance.
-	disjHint := hints["Disj"]
-	if disjHint < 50000 {
-		t.Errorf("Disj sampled hint %d below expected ≥50000 (true=100000); sampler may not be reaching the consumer", disjHint)
+	// True join size is 1_000_000. Generous tolerance — sampling is a
+	// noisy estimate but MUST be far above the 50_000 floor.
+	disjHint, ok := hints["Disj"]
+	if !ok {
+		t.Fatalf("Disj hint missing — sampler did not run on the multi-rule disj shape (cap=%d)", disjShapeBindingCap)
+	}
+	if disjHint < 50_000 {
+		t.Errorf("Disj sampled hint %d below expected ≥50_000 (true=1_000_000); sampler may not be reaching the consumer", disjHint)
 	}
 
-	// Find the Consumer rule in the plan and verify its first join
-	// step is on Tiny, not Disj.
 	var consumerPlanned *plan.PlannedRule
 	for si := range execPlan.Strata {
 		for ri := range execPlan.Strata[si].Rules {
@@ -120,11 +121,43 @@ func TestP2bRegression_DisjShapeBoundedPlanTime(t *testing.T) {
 	}
 }
 
+// TestP2bRegression_DisjShape_SamplingOff_BindingCapHits is the
+// discriminator: with sampling disabled on the SAME shape, the
+// materialising pre-pass MUST hit the binding cap and bail, leaving
+// `Disj` unestimated. This proves the previous test's success was
+// load-bearing on the sampling path, not an artefact of the shape
+// fitting under the cap.
+func TestP2bRegression_DisjShape_SamplingOff_BindingCapHits(t *testing.T) {
+	prevEnabled := eval.SamplingEnabled
+	eval.SamplingEnabled = false
+	t.Cleanup(func() { eval.SamplingEnabled = prevEnabled })
+
+	prog, base, hints := buildDisjShape()
+	hook := eval.MakeEstimatorHook(base)
+
+	execPlan, planErrs := plan.EstimateAndPlan(prog, hints, disjShapeBindingCap, hook, plan.Plan)
+	if len(planErrs) > 0 {
+		t.Fatalf("plan errors: %v", planErrs)
+	}
+	if execPlan == nil {
+		t.Fatal("nil execution plan")
+	}
+
+	// With sampling off, the materialising pre-pass tries to evaluate
+	// Disj fully, hits disjShapeBindingCap (1M product vs 100k cap),
+	// and bails — leaving NO hint for Disj. (A zero-valued hint also
+	// satisfies the discriminator; the contract is "not the sampled
+	// large value".)
+	if h, ok := hints["Disj"]; ok && h >= 50_000 {
+		t.Errorf("Disj hint = %d with sampling OFF — expected unset or small (binding cap should have fired); "+
+			"this means the regression test no longer discriminates sampling vs materialising", h)
+	}
+}
+
 // TestP2bRegression_SamplingDisabledStillWorks: with sampling off,
-// the consumer plan must still be correct (we have other defences:
-// tiny-seed override, between-strata refresh). This test is a guard
-// that flipping the sampling switch does not break end-to-end
-// evaluation.
+// trivial single-rule IDBs that fit under the cap must still be
+// materialised correctly. End-to-end smoke check that flipping the
+// flag does not break evaluation on small inputs.
 func TestP2bRegression_SamplingDisabledStillWorks(t *testing.T) {
 	prevEnabled := eval.SamplingEnabled
 	eval.SamplingEnabled = false
@@ -153,7 +186,6 @@ func TestP2bRegression_SamplingDisabledStillWorks(t *testing.T) {
 		t.Errorf("Q hint with sampling off: want 5, got %d", hints["Q"])
 	}
 
-	// And the rule should still evaluate correctly end-to-end.
 	rule := execPlan.Strata[0].Rules[0]
 	tuples, err := eval.Rule(context.Background(), rule, eval.RelsOf(A), 0)
 	if err != nil {
