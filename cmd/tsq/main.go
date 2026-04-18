@@ -714,7 +714,10 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	if err != nil {
 		return nil, fmt.Errorf("load base relations: %w", err)
 	}
-	updates := eval.EstimateNonRecursiveIDBSizes(prog, baseRels, sizeHints)
+	// Issue #130: the pre-pass must honour the user-supplied binding cap;
+	// otherwise an explody trivial-IDB can OOM the host before the main
+	// evaluator ever runs (mastodon corpus, setStateUpdaterCallsFn).
+	updates := eval.EstimateNonRecursiveIDBSizes(prog, baseRels, sizeHints, maxBindingsPerRule)
 	if len(updates) > 0 {
 		// Re-plan every stratum and the final query with the refreshed hints
 		// before evaluation begins. Without this the original execPlan

@@ -38,9 +38,17 @@ import (
 // are silently absorbed — the pre-pass is best-effort. If a "trivial" rule
 // itself OOMs we'd rather degrade to the default hint than fail compilation.
 //
+// maxBindingsPerRule is the per-rule binding cap applied to each trivial IDB
+// evaluation. Without it the pre-pass can fully materialise an N×M join just
+// to count head facts and OOM (issue #130 — mastodon corpus blew 30 GB RSS
+// inside this function on setStateUpdaterCallsFn). Pass 0 to disable the cap
+// (legacy behaviour, not recommended on real corpora). When the cap fires the
+// failed/break branch below treats the IDB as "could not estimate" and the
+// default hint applies — exactly the right semantics for a best-effort pass.
+//
 // Returns the slice of (name, computed-size) updates actually applied, for
 // observability/testing.
-func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Relation, sizeHints map[string]int) map[string]int {
+func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Relation, sizeHints map[string]int, maxBindingsPerRule int) map[string]int {
 	if sizeHints == nil {
 		sizeHints = map[string]int{}
 	}
@@ -69,7 +77,14 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 		failed := false
 		for _, rule := range t.Rules {
 			planned := plan.SingleRule(rule, sizeHints)
-			tuples, err := Rule(context.Background(), planned, keyed, 0) // no binding cap during pre-pass
+			// Apply the user-supplied binding cap so a pathological body
+			// (cross-product before a selective join) cannot eat all RAM
+			// here. On cap-exceeded the err branch below treats the IDB as
+			// unestimatable and falls through to the default hint. Issue
+			// #130: passing 0 here meant pre-pass evaluation was unbounded
+			// and OOMed on real corpora before the cap could ever fire on
+			// the main eval pass.
+			tuples, err := Rule(context.Background(), planned, keyed, maxBindingsPerRule)
 			if err != nil {
 				// Best-effort: skip this IDB entirely on any error so we
 				// don't half-populate hints. The default hint will apply
