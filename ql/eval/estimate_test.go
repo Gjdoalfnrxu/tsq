@@ -184,18 +184,29 @@ func TestEstimateNonRecursiveIDBSizesHonoursBindingCap(t *testing.T) {
 	base := map[string]*eval.Relation{"A": a, "B": b}
 	hints := map[string]int{"A": 200, "B": 200}
 
+	// Disable sampling so this test exercises the materialising path
+	// only — otherwise the sampling pre-pass may produce its own
+	// (possibly small) hint on this 200×200 cross product before the
+	// materialiser ever runs.
+	prevSampling := eval.SamplingEnabled
+	eval.SamplingEnabled = false
+	t.Cleanup(func() { eval.SamplingEnabled = prevSampling })
+
 	updates := eval.EstimateNonRecursiveIDBSizes(prog, base, hints, 1000)
 
 	// Bug case: cap ignored, full 40k cross-product computed.
 	if updates["Q"] == 40000 {
 		t.Fatalf("issue #130 regression: pre-pass ignored binding cap and materialised full %d-tuple cross-product", updates["Q"])
 	}
-	// Expected: cap fired, IDB skipped, no entry written.
-	if _, ok := updates["Q"]; ok {
-		t.Errorf("Q exceeded cap; expected best-effort skip, got updates[Q]=%d", updates["Q"])
+	// Updated contract (PR for #145 catalog): on cap-hit the pre-pass
+	// records a saturated-large hint (`SaturatedSizeHint`) so the
+	// planner can deprioritise this IDB as a seed instead of falling
+	// back to its default 1000-ish hint and picking it as a seed.
+	if updates["Q"] != eval.SaturatedSizeHint {
+		t.Errorf("Q cap-hit: want updates[Q]=%d (SaturatedSizeHint), got %d", eval.SaturatedSizeHint, updates["Q"])
 	}
-	if _, ok := hints["Q"]; ok {
-		t.Errorf("Q hint should be absent on cap-skip; got hints[Q]=%d", hints["Q"])
+	if hints["Q"] != eval.SaturatedSizeHint {
+		t.Errorf("Q cap-hit: want hints[Q]=%d (SaturatedSizeHint), got %d", eval.SaturatedSizeHint, hints["Q"])
 	}
 }
 
@@ -257,5 +268,99 @@ func TestEstimateNonRecursiveIDBSizesSkipsRecursive(t *testing.T) {
 	}
 	if _, ok := hints["Path"]; ok {
 		t.Errorf("Path hint should be absent, got %d", hints["Path"])
+	}
+}
+
+// TestEstimateNonRecursiveIDBSizes_CapHitWritesSaturatedHint is the
+// load-bearing assertion for the PR #145 catalog fix: when
+// materialisation hits the binding cap, the pre-pass writes
+// SaturatedSizeHint instead of leaving the hint at the planner's
+// default ~1000. Mirrors TestEstimateNonRecursiveIDBSizesHonoursBindingCap
+// but asserts on the new hint value contract.
+//
+// Mutation-killable: revert the cap-hit branch to `failed=true; break`
+// (the pre-PR behaviour) and this test fails.
+func TestEstimateNonRecursiveIDBSizes_CapHitWritesSaturatedHint(t *testing.T) {
+	prevSampling := eval.SamplingEnabled
+	eval.SamplingEnabled = false
+	t.Cleanup(func() { eval.SamplingEnabled = prevSampling })
+
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "x"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+				},
+			},
+		},
+	}
+	a := eval.NewRelation("A", 1)
+	b := eval.NewRelation("B", 1)
+	for i := int64(0); i < 200; i++ {
+		a.Add(eval.Tuple{eval.IntVal{V: i}})
+		b.Add(eval.Tuple{eval.IntVal{V: i + 10000}})
+	}
+	base := map[string]*eval.Relation{"A": a, "B": b}
+	hints := map[string]int{"A": 200, "B": 200}
+
+	updates := eval.EstimateNonRecursiveIDBSizes(prog, base, hints, 1000)
+
+	if updates["Q"] != eval.SaturatedSizeHint {
+		t.Errorf("cap-hit updates[Q] = %d, want %d (SaturatedSizeHint)", updates["Q"], eval.SaturatedSizeHint)
+	}
+	if hints["Q"] != eval.SaturatedSizeHint {
+		t.Errorf("cap-hit hints[Q] = %d, want %d (SaturatedSizeHint)", hints["Q"], eval.SaturatedSizeHint)
+	}
+	if hints["Q"] == 0 || hints["Q"] == 1000 {
+		t.Errorf("cap-hit hints[Q] regressed to placeholder/default value %d — planner will seed this rule and blow the cap", hints["Q"])
+	}
+}
+
+// TestEstimateNonRecursiveIDBSizes_CapHitMultiRuleHeadSaturates: two
+// rules under the same head, both blow the cap. The head must
+// saturate cleanly (no overflow, no double-saturation arithmetic).
+// Documents the multi-rule-head contract: union of saturated rules is
+// saturated.
+func TestEstimateNonRecursiveIDBSizes_CapHitMultiRuleHeadSaturates(t *testing.T) {
+	prevSampling := eval.SamplingEnabled
+	eval.SamplingEnabled = false
+	t.Cleanup(func() { eval.SamplingEnabled = prevSampling })
+
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "x"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+				},
+			},
+			{
+				Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "x"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+				},
+			},
+		},
+	}
+	a := eval.NewRelation("A", 1)
+	b := eval.NewRelation("B", 1)
+	for i := int64(0); i < 200; i++ {
+		a.Add(eval.Tuple{eval.IntVal{V: i}})
+		b.Add(eval.Tuple{eval.IntVal{V: i + 10000}})
+	}
+	base := map[string]*eval.Relation{"A": a, "B": b}
+	hints := map[string]int{"A": 200, "B": 200}
+
+	eval.EstimateNonRecursiveIDBSizes(prog, base, hints, 1000)
+
+	if hints["Q"] != eval.SaturatedSizeHint {
+		t.Errorf("multi-rule cap-hit head hints[Q] = %d, want %d (SaturatedSizeHint)", hints["Q"], eval.SaturatedSizeHint)
+	}
+	if hints["Q"] < 0 {
+		t.Errorf("multi-rule cap-hit overflowed: hints[Q] = %d (negative)", hints["Q"])
 	}
 }
