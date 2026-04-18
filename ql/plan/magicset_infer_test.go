@@ -869,6 +869,123 @@ func TestWithMagicSetAuto_RuleBindingActivationOnIDBHints(t *testing.T) {
 	}
 }
 
+// progCustomStepConfigShape mirrors progBackwardConfigShape but
+// substitutes the `flowsTo` IDB with a custom binary `step` IDB whose
+// body walks a `Contains` base relation (transitive closure). This is
+// the structural analogue of dataflow tracking — the load-bearing
+// claim of issue #121 Phase A.2 is that the magic-set inference is
+// agnostic to which binary relation the abstract `step` predicate
+// expands to.
+//
+// Schema:
+//   - base relations: `Contains(parent, child)`, `Sink(t)`
+//   - IDB rules:
+//     step(s, t) :- Contains(s, t).
+//     step(s, t) :- Contains(s, m), step(m, t).
+//     isSink(t) :- Sink(t).
+//     hasFlowTo(s, t) :- isSink(t), step(s, t).
+//
+// Same shape as progBackwardConfigShape with `flowsTo`→`step`,
+// `Edge`→`Contains`. If the rule-body binding inference works *only*
+// on the literal name `flowsTo`, this test fails — proving the
+// inference is name-agnostic and any binary `step` Configuration
+// works (Phase A.2 design intent).
+func progCustomStepConfigShape() *datalog.Program {
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "step", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Contains", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "step", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Contains", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "step", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "isSink", Args: []datalog.Term{datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Sink", Args: []datalog.Term{datalog.Var{Name: "t"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "hasFlowTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "isSink", Args: []datalog.Term{datalog.Var{Name: "t"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "step", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+	}
+	return &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "hasFlowTo", Args: []datalog.Term{datalog.Var{Name: "s"}, datalog.Var{Name: "t"}}}},
+			},
+		},
+	}
+}
+
+// TestIssue121_PlannerPicksBackwardBindingForCustomStep verifies the
+// load-bearing claim of issue #121 Phase A.2 (Option A): the magic-set
+// rule-body binding inference works for ANY binary `step` IDB, not
+// just the dataflow-default `flowsTo`. This is what lets
+// `BackwardTracker` subclasses override `step` (e.g. with
+// `functionContainsStar` for structural containment-walks like
+// `SetStateUpdaterTracker` in bridge/tsq_react.qll) and still benefit
+// from the magic-set rewrite.
+//
+// Asserts:
+//   - first pass (base-only hints): no `magic_step` seed rule emitted.
+//   - second pass (IDBSizeHints["isSink"]=5 supplied as if from
+//     EstimateNonRecursiveIDBSizes): `magic_step` seed rule appears,
+//     `step` is bound at column 1 (sink position).
+//
+// If this test fails (e.g. inference only fires on the literal name
+// `flowsTo`), the Phase A.2 generalization is broken and any
+// Configuration that overrides `step` will silently OOM on real
+// workloads.
+func TestIssue121_PlannerPicksBackwardBindingForCustomStep(t *testing.T) {
+	prog := progCustomStepConfigShape()
+
+	// First pass — no IDB hints, just bases. Expect no magic-set firing.
+	baseOnlyHints := map[string]int{"Contains": 100, "Sink": 5}
+	ep1, inf1, errs1 := WithMagicSetAutoOpts(prog, baseOnlyHints, MagicSetOptions{})
+	if len(errs1) > 0 {
+		t.Fatalf("first-pass plan errors: %v", errs1)
+	}
+	if _, present := inf1.Bindings["step"]; present {
+		t.Fatalf("first-pass: did not expect `step` binding without IDB hint, got: %v", inf1.Bindings)
+	}
+	if planContainsMagicSeed(ep1, "magic_step") {
+		t.Fatalf("first-pass: did not expect magic_step seed rule in plan without IDB hint")
+	}
+
+	// Second pass — supply `isSink` cardinality via the trusted IDB-hint
+	// channel. This mirrors the cmd/tsq/main.go re-plan path post
+	// EstimateNonRecursiveIDBSizes.
+	ep2, inf2, errs2 := WithMagicSetAutoOpts(prog, baseOnlyHints, MagicSetOptions{
+		IDBSizeHints: map[string]int{"isSink": 5},
+	})
+	if len(errs2) > 0 {
+		t.Fatalf("second-pass plan errors: %v", errs2)
+	}
+	cols, present := inf2.Bindings["step"]
+	if !present {
+		t.Fatalf("second-pass: expected `step` binding once isSink is sized, got: %v", inf2.Bindings)
+	}
+	if len(cols) != 1 || cols[0] != 1 {
+		t.Fatalf("second-pass: expected `step` bound at col 1 (sink position), got %v", cols)
+	}
+	if !planContainsMagicSeed(ep2, "magic_step") {
+		t.Fatalf("second-pass: expected magic_step seed rule in plan after IDB hint — magic-set inference must be agnostic to step-relation name")
+	}
+}
+
 // planContainsMagicSeed returns true iff some stratum in ep contains a
 // rule whose head predicate equals magicHead.
 func planContainsMagicSeed(ep *ExecutionPlan, magicHead string) bool {

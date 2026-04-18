@@ -79,33 +79,87 @@ predicate useStateSetterCallLine(int c, int line) {
     )
 }
 
+// NOTE: the v1 `setStateUpdaterCallsFn` predicate (forward-enumerated
+// `functionContainsStar`) was ripped out as part of issue #121 Phase A.2.
+// The query that called it (`testdata/queries/v2/find_setstate_updater_calls_fn.ql`)
+// has been rewritten in place to use `SetStateUpdaterTracker` below — a
+// Configuration-class form whose `step` override walks the same
+// containment graph but lets the planner magic-set-rewrite the small-IDB
+// sink side. Row-set parity with the v1 baseline (3 rows on
+// `testdata/projects/react-usestate`) is asserted by
+// `TestIssue121_BackwardSetStateQueryParityWithV1`.
+
 /**
- * Holds if `c` is a useState setter call whose first argument is a function
- * literal (arrow or function expression) whose body — including any
- * nested function literals — contains at least one inner Call. This is
- * the "updater function calls a function" pattern:
+ * Configuration-class form of the v1 `setStateUpdaterCallsFn` predicate
+ * (issue #121, Phase A.2). Re-expresses the "useState setter call whose
+ * arrow-fn arg contains an inner call" pattern as a `BackwardTracker`
+ * subclass that overrides `step` with structural containment instead of
+ * dataflow.
  *
- *   setX(prev => helper(prev))
- *   setX(prev => { mutate(); return prev; })
- *   setX(prev => arr.forEach(() => helper(prev)))   // nested case
+ * Why this shape:
+ *   - The v1 predicate forward-enumerated `functionContainsStar` (438k
+ *     tuples on Mastodon) and OOM'd. Issue #121 introduces a query
+ *     surface where the planner can magic-set-rewrite the small-IDB sink
+ *     side and walk the containment graph backward from the bound sink
+ *     symbol.
+ *   - `step` is overridden to `functionContainsStar(s, t) and Call(t, _, _)`
+ *     — a structural step rather than the default `flowsTo` dataflow
+ *     step. The magic-set inference is agnostic to which binary relation
+ *     `step` expands to (see `BackwardTracker` qldoc for the contract).
+ *   - `isSink` is the tiny IDB of inner-call symbols, on the order of
+ *     dozens-to-thousands of tuples even on Mastodon. Magic-set
+ *     propagation binds the sink position and prunes the containment
+ *     walk to those targets.
+ *   - `isSource` is the set of arrow-fn arg symbols of useState setter
+ *     calls — also tiny.
  *
- * The transitive `FunctionContains` is required because the extractor
- * emits the base `FunctionContains` relation only against the *innermost*
- * enclosing function. Without the transitive variant, the nested-arrow
- * positive case above would be silently missed.
+ * Result tuples are `(srcArgFn, innerCall)` pairs. The v2 query
+ * (`testdata/queries/v2/find_setstate_updater_calls_fn.ql`) projects
+ * these back to (callSym, line) for row-set parity with the v1
+ * baseline.
  */
-predicate setStateUpdaterCallsFn(int c, int line) {
+/**
+ * Helper for the v2 `setStateUpdaterCallsFn` query rewrite: maps a useState
+ * setter call's first-arg arrow-fn symbol back to the `(call, line)` pair
+ * the v1 query returned. Lives in the bridge because base relations
+ * (`CallArg`, `Call`, `Node`) are not in scope inside `.ql` query bodies
+ * directly — bridge predicates are the API surface.
+ */
+predicate setStateSetterCallForArg(int argFn, int c, int line) {
     isUseStateSetterCall(c) and
-    exists(int argFn, int innerCall |
-        CallArg(c, 0, argFn) and
-        Function(argFn, _, _, _, _, _) and
-        functionContainsStar(argFn, innerCall) and
-        Call(innerCall, _, _)
-    ) and
+    CallArg(c, 0, argFn) and
     exists(int callee |
         Call(c, callee, _) and
         Node(callee, _, _, line, _, _, _)
     )
+}
+
+class SetStateUpdaterTracker extends BackwardTracker {
+    override predicate isSink(int innerCall) {
+        Call(innerCall, _, _) and
+        exists(int argFn |
+            // Constrain sinks to inner calls reachable from some useState
+            // setter's arrow-fn arg under containment. This is what keeps
+            // the sink IDB small (~dozens on real corpora) — without it,
+            // every Call in the program is a candidate sink.
+            isUseStateSetterCall(_) and
+            functionContainsStar(argFn, innerCall) and
+            Function(argFn, _, _, _, _, _)
+        )
+    }
+
+    override predicate isSource(int argFn) {
+        exists(int c |
+            isUseStateSetterCall(c) and
+            CallArg(c, 0, argFn) and
+            Function(argFn, _, _, _, _, _)
+        )
+    }
+
+    override predicate step(int argFn, int innerCall) {
+        functionContainsStar(argFn, innerCall) and
+        Call(innerCall, _, _)
+    }
 }
 
 /**

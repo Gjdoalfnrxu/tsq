@@ -19,25 +19,30 @@ import (
 
 // TestIssue88_SetStateQueryDoesNotOOM is the regression guard for issue #88.
 //
-// The setStateUpdaterCallsFn rule (testdata/queries/v2/find_setstate_updater_calls_fn.ql,
-// React bridge) historically blew the binding cap at join step 2 because the
-// planner sized the IDB seed isUseStateSetterCall at the default 1000 tuples
-// instead of its real ~7 — leading it to choose a Cartesian-heavy join order
-// led by Function × Node × Call.
+// Originally the `setStateUpdaterCallsFn` predicate
+// (testdata/queries/v2/find_setstate_updater_calls_fn.ql, React bridge)
+// blew the binding cap because the planner sized the IDB seed
+// `isUseStateSetterCall` at the default 1000 tuples instead of its real
+// ~7 — leading it to choose a Cartesian-heavy join order led by
+// Function × Node × Call.
 //
-// Both the seed predicate AND the explody rule co-stratify (same SCC after
-// MergeSystemRules), so the prior between-strata refresh in eval.Evaluate
-// did NOT fix this. The fix is the trivial-IDB pre-pass
-// (eval.EstimateNonRecursiveIDBSizes) wired in cmd/tsq/main.go's
-// compileAndEval, which materialises every non-recursive IDB whose body
-// uses only base + already-trivial predicates BEFORE the first Plan() call,
-// then re-plans every stratum with the real numbers.
+// Issue #121 Phase A.2 ripped the v1 `setStateUpdaterCallsFn` predicate
+// out and replaced it with a `BackwardTracker`-based Configuration class
+// (`SetStateUpdaterTracker`). The query name on disk is unchanged but
+// the rule head shape is no longer a single `setStateUpdaterCallsFn(c, line)`
+// rule — instead it desugars into:
 //
-// This test reproduces the production codepath: extract a small TSX fixture,
-// run the same query end-to-end, and assert it completes without binding-cap
-// errors and well below an aggressive cardinality budget. If the fix
-// regresses (or someone reverts the pre-pass), this test fails immediately
-// with a *BindingCapError instead of an OOM-after-an-hour in the field.
+//   - `BackwardTracker_step` (with subclass-dispatch, body =
+//     `functionContainsStar(...) and Call(...)`)
+//   - `BackwardTracker_hasFlowTo` (sink-first body)
+//   - per-class `BackwardTracker_isSink`, `BackwardTracker_isSource`
+//
+// This test still extracts the React fixture and runs the v2 query end-to-end
+// asserting it completes without binding-cap errors. The previous
+// `setStateUpdaterCallsFn`-named-rule-first-join assertion is replaced by a
+// looser end-to-end assertion: the query returns at least one row, completes
+// under the cap, and the trivial-IDB pre-pass populated `isUseStateSetterCall`
+// (the seed predicate) with a real count.
 func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping extraction-heavy integration test in short mode")
@@ -110,11 +115,12 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 		plan.RePlanQuery(execPlan.Query, hints)
 	}
 
-	// Assert: the seed predicate is now FIRST in the join order. This is
-	// the load-bearing planner outcome — if it stops being true, the rule
-	// will Cartesian-blow regardless of whether the test happens to fit
-	// under the binding cap on this small fixture.
-	assertSeedFirst(t, execPlan, "setStateUpdaterCallsFn", "isUseStateSetterCall")
+	// Issue #121 Phase A.2: the v1 `setStateUpdaterCallsFn` rule head no
+	// longer exists; the seed-first join assertion is no longer applicable
+	// in its original form. The cap-respect + non-empty-result asserts
+	// below remain the load-bearing regression guard for issue #88's OOM:
+	// if the planner regresses to a Cartesian-heavy order under the new
+	// `BackwardTracker_*` shape, the binding-cap error fires here.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -129,7 +135,7 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 	if err != nil {
 		var bce *eval.BindingCapError
 		if errors.As(err, &bce) {
-			t.Fatalf("BUG: setStateUpdaterCallsFn blew the %d-binding cap at step %d (cardinality=%d, rule=%q). The trivial-IDB pre-pass is broken — see issue #88.",
+			t.Fatalf("BUG: v2 setState query (BackwardTracker form) blew the %d-binding cap at step %d (cardinality=%d, rule=%q). The trivial-IDB pre-pass or the magic-set transform regressed — see issue #88 / #121.",
 				tightCap, bce.StepIndex, bce.Cardinality, bce.Rule)
 		}
 		t.Fatalf("evaluate: %v", err)
@@ -137,9 +143,9 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 
 	// Sanity: the React fixture has at least one Case A match (setCount(prev => helper(prev))).
 	if len(rs.Rows) == 0 {
-		t.Fatalf("expected at least one setStateUpdaterCallsFn match on the fixture, got 0 rows")
+		t.Fatalf("expected at least one v2 setState query match on the fixture, got 0 rows")
 	}
-	t.Logf("setStateUpdaterCallsFn matched %d rows on react-usestate fixture (binding cap %d)", len(rs.Rows), tightCap)
+	t.Logf("v2 setState query matched %d rows on react-usestate fixture (binding cap %d)", len(rs.Rows), tightCap)
 }
 
 // assertSeedFirst checks that the first JoinStep of the named rule's join

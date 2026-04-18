@@ -53,18 +53,34 @@ predicate flowsTo(int srcSym, int sinkSym) {
  * A backward-dataflow query configuration.
  *
  * Subclass this and override `isSink` (and optionally `isSource`,
- * `isBarrier`) to declare a custom backward-tracking query. The
- * `hasFlowTo(srcSym, sinkSym)` predicate then holds for source/sink
- * pairs of `int` symbols connected via `flowsTo` (i.e., the system
- * `FlowStar` relation), filtered by the configuration's sink/source
- * choices and excluding sources marked as barriers.
+ * `isBarrier`, `step`) to declare a custom backward-tracking query.
+ * The `hasFlowTo(srcSym, sinkSym)` predicate then holds for
+ * source/sink pairs of `int` symbols connected via `step`, filtered
+ * by the configuration's sink/source choices and excluding sources
+ * marked as barriers.
  *
  * Body shape — sink-first by construction so that magic-set inference
- * binds `flowsTo`'s second argument (the sink) and propagates the
+ * binds the second argument of `step` (the sink) and propagates the
  * binding back into `isSource`:
  *
  *   hasFlowTo(s, t) :-
- *       isSink(t), isSource(s), flowsTo(s, t), not isBarrier(s).
+ *       isSink(t), isSource(s), step(s, t), not isBarrier(s).
+ *
+ * The default `step(s, t)` body is `flowsTo(s, t)` (i.e., the system
+ * `FlowStar` relation), which preserves Phase A's dataflow-tracking
+ * behaviour exactly. Subclasses may override `step` with any binary
+ * relation — for example, `functionContainsStar(s, t) and Call(t, _, _)`
+ * for a structural containment-walk Configuration (see
+ * `bridge/tsq_react.qll::SetStateUpdaterTracker`). The magic-set
+ * inference works for *any* binary `step` relation: the body is shaped
+ * so the planner's rule-body binding inference (issue #121 Phase A.1,
+ * `ql/plan/magicset_infer.go::InferRuleBindings`) propagates the
+ * binding from the small `isSink_<Subclass>` IDB into the second
+ * argument of the (subclass-specialised) `step` predicate, regardless
+ * of what relation that step expands to. The contract is that `step`
+ * is some derived binary IDB; the planner does not care whether its
+ * body recurses through `FlowStar`, `FunctionContains`, or anything
+ * else.
  *
  * The base class extends `@symbol` purely to satisfy the desugarer's
  * requirement that abstract classes have an entity-typed root for
@@ -80,7 +96,7 @@ abstract class BackwardTracker extends @symbol {
     /**
      * Holds if `srcSym` is a candidate source. Default is "any symbol",
      * which lets backward propagation drive source discovery directly
-     * from `isSink` via `flowsTo`. Override to constrain the source set.
+     * from `isSink` via `step`. Override to constrain the source set.
      */
     predicate isSource(int srcSym) {
         // any() over int isn't representable directly; over-approximate
@@ -95,18 +111,32 @@ abstract class BackwardTracker extends @symbol {
     predicate isBarrier(int sym) { none() }
 
     /**
+     * Holds if there is a step from `srcSym` to `sinkSym` under this
+     * configuration's notion of "reaches". Default body is `flowsTo`
+     * (the system `FlowStar` relation). Override to use a different
+     * binary relation — e.g. `functionContainsStar(srcSym, sinkSym)`
+     * for a structural containment-walk Configuration. The relation
+     * may be transitive in its own body (recommended) or single-step;
+     * `hasFlowTo` does not wrap `step` in a transitive closure,
+     * leaving that choice to the override.
+     */
+    predicate step(int srcSym, int sinkSym) {
+        flowsTo(srcSym, sinkSym)
+    }
+
+    /**
      * Holds if data flows from `srcSym` to `sinkSym` in this
      * configuration. Body is sink-first so that the planner's
      * rule-body binding inference (`InferRuleBindings` in
      * ql/plan/magicset_infer.go) propagates the binding from the
-     * (typically tiny) `isSink` IDB backward through `flowsTo` into
+     * (typically tiny) `isSink` IDB backward through `step` into
      * `isSource`. Forward-written equivalent OOMs on Mastodon —
      * see issue #121 for the load-bearing rationale.
      */
     predicate hasFlowTo(int srcSym, int sinkSym) {
         this.isSink(sinkSym) and
         this.isSource(srcSym) and
-        flowsTo(srcSym, sinkSym) and
+        this.step(srcSym, sinkSym) and
         not this.isBarrier(srcSym)
     }
 }
