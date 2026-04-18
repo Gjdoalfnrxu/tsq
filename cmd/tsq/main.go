@@ -785,24 +785,58 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 	return execPlan, mod, warnings, errs
 }
 
-// buildProgramWithProg is buildProgram with the post-merge *datalog.Program
-// also returned. It is used by `query` so the compileAndEval pipeline can run
-// the trivial-IDB pre-pass (eval.EstimateNonRecursiveIDBSizes) over the same
-// rule graph the planner sees, populate sizeHints with real derived-relation
-// counts, and re-plan. `check` does not need prog (no eval), so it keeps the
-// narrower buildProgram wrapper.
-func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int, opts buildOptions) (*plan.ExecutionPlan, *datalog.Program, *ast.Module, []resolve.Warning, []error) {
+// makeFunc returns a plan.Func that captures the magic-set wiring
+// (or its absence) implied by buildOptions. Extracted so that the same
+// inference + verbose/warn observability used by `check`'s buildProgramWithProg
+// path is also used by `query`'s EstimateAndPlan path. Without this, the
+// magic-set branch would only fire on the (now-discarded) pre-estimate plan
+// in buildProgramWithProg and `query` would always run plain Plan.
+func makeFunc(opts buildOptions) plan.Func {
+	if !opts.useMagicSets {
+		return plan.Plan
+	}
+	return func(prog *datalog.Program, sizeHints map[string]int) (*plan.ExecutionPlan, []error) {
+		ep, inf, errs := plan.WithMagicSetAutoOpts(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict})
+		switch {
+		case inf.Fallback:
+			// Always surface a fallback warning to warnOut (not gated on
+			// --verbose). Silent fallback was the bug in issue #112; the
+			// observability fix is unconditional. The strict path returns
+			// an error instead and never reaches this branch.
+			if opts.warnOut != nil {
+				fmt.Fprintf(opts.warnOut, "warning: magic-set transform produced an unplannable program; fell back to plain Plan (reason: %v)\n", inf.FallbackReason)
+			}
+		case opts.verboseOut != nil && len(inf.Bindings) > 0:
+			fmt.Fprintf(opts.verboseOut, "magic-set: transform applied; bindings=%v seed_rules=%d\n", inf.Bindings, len(inf.SeedRules))
+		case opts.verboseOut != nil:
+			fmt.Fprintln(opts.verboseOut, "magic-set: no inferable query bindings; using plain plan")
+		}
+		return ep, errs
+	}
+}
+
+// compileToProg runs the shared compile pipeline (parse → resolve → desugar →
+// MergeSystemRules) and returns the post-merge *datalog.Program WITHOUT
+// invoking the planner. Used by compileAndEval, which then calls
+// plan.EstimateAndPlan to do the single estimate-then-plan pass with real
+// IDB cardinalities (replaces the prior two-pass plan-then-replan ceremony).
+//
+// `check` still goes through buildProgram (which plans) because it needs to
+// surface plan-time errors without loading a fact DB. `query` does not need
+// the compile-time plan at all — it only ever uses the estimate-aware plan
+// produced by EstimateAndPlan downstream.
+func compileToProg(src, file string, importLoader func(string) (*ast.Module, error)) (*datalog.Program, *ast.Module, []resolve.Warning, []error) {
 	// Parse.
 	p := parse.NewParser(src, file)
 	mod, err := p.Parse()
 	if err != nil {
-		return nil, nil, nil, nil, []error{fmt.Errorf("parse: %w", err)}
+		return nil, nil, nil, []error{fmt.Errorf("parse: %w", err)}
 	}
 
 	// Resolve.
 	resolved, err := resolve.Resolve(mod, importLoader)
 	if err != nil {
-		return nil, nil, mod, nil, []error{fmt.Errorf("resolve: %w", err)}
+		return nil, mod, nil, []error{fmt.Errorf("resolve: %w", err)}
 	}
 	warnings := resolved.Warnings
 	if len(resolved.Errors) > 0 {
@@ -810,7 +844,7 @@ func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Modu
 		for _, e := range resolved.Errors {
 			errs = append(errs, fmt.Errorf("resolve: %w", e))
 		}
-		return nil, nil, mod, warnings, errs
+		return nil, mod, warnings, errs
 	}
 
 	// Desugar.
@@ -820,14 +854,28 @@ func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Modu
 		for _, e := range dsErrors {
 			errs = append(errs, fmt.Errorf("desugar: %w", e))
 		}
-		return nil, nil, mod, warnings, errs
+		return nil, mod, warnings, errs
 	}
 
 	// Inject system rules so derived relations (CallTarget, LocalFlow,
-	// TaintAlert, etc.) are present in the planned graph. This used to live
-	// only in `query`, which meant `check` could green-light a program whose
-	// system-rule-augmented form failed to plan or hung at eval time.
+	// TaintAlert, etc.) are present in the planned graph (issue #82 — must
+	// match what buildProgramWithProg does).
 	prog = rules.MergeSystemRules(prog, rules.AllSystemRules())
+
+	return prog, mod, warnings, nil
+}
+
+// buildProgramWithProg is buildProgram with the post-merge *datalog.Program
+// also returned. It is used by `query` so the compileAndEval pipeline can run
+// the trivial-IDB pre-pass (eval.EstimateNonRecursiveIDBSizes) over the same
+// rule graph the planner sees, populate sizeHints with real derived-relation
+// counts, and re-plan. `check` does not need prog (no eval), so it keeps the
+// narrower buildProgram wrapper.
+func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int, opts buildOptions) (*plan.ExecutionPlan, *datalog.Program, *ast.Module, []resolve.Warning, []error) {
+	prog, mod, warnings, compileErrs := compileToProg(src, file, importLoader)
+	if len(compileErrs) > 0 {
+		return nil, nil, mod, warnings, compileErrs
+	}
 
 	// Plan. When magic sets are enabled, run the binding-inference + transform
 	// path; on no-bindings it falls through to plain Plan transparently.
@@ -898,11 +946,13 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// order joins by true relation size rather than a uniform default of 1000.
 	sizeHints := buildSizeHints(factDB)
 
-	// Compile via the shared pipeline so that `check` and `query` agree on the
-	// rule graph (parse → resolve → desugar → MergeSystemRules → plan).
+	// Compile (parse → resolve → desugar → MergeSystemRules) WITHOUT planning.
+	// Planning happens below via plan.EstimateAndPlan — the single
+	// estimate-then-plan entry point (P1 of the planner roadmap, replacing
+	// the prior two-pass plan-then-replan ceremony).
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
-	execPlan, prog, _, _, buildErrs := buildProgramWithProg(string(src), queryFile, importLoader, sizeHints, opts)
+	prog, _, _, buildErrs := compileToProg(string(src), queryFile, importLoader)
 	if len(buildErrs) > 0 {
 		// Reproduce the prior multi-error formatting of compileAndEval: group
 		// by phase and join with newline-indented messages so callers see one
@@ -910,38 +960,32 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 		return nil, joinPhaseErrors(buildErrs)
 	}
 
-	// Issue #88 (co-stratified seed case): pre-compute the cardinality of
-	// every "trivial" derived predicate — non-recursive, body uses only
-	// positive base atoms and comparisons — and feed the real counts back
-	// into the planner. This catches the case where a tiny IDB seed (e.g.
-	// isUseStateSetterCall, 7 tuples) and the explody rule that uses it
-	// (setStateUpdaterCallsFn) land in the same stratum, which the
-	// between-strata refresh in eval.Evaluate cannot fix on its own (the
-	// seed is not yet materialised when its sibling rule is planned).
-	//
-	// Load base relations once and reuse them for both the pre-pass and the
-	// main Evaluate call (loadBaseRelations is the dominant cost for small
-	// fact DBs and we'd rather not pay it twice).
+	// Load base relations once and reuse them for both the pre-pass (via the
+	// estimator hook) and the main Evaluate call (LoadBaseRelations is the
+	// dominant cost for small fact DBs and we'd rather not pay it twice).
 	baseRels, err := eval.LoadBaseRelations(factDB)
 	if err != nil {
 		return nil, fmt.Errorf("load base relations: %w", err)
 	}
-	// Issue #130: the pre-pass must honour the user-supplied binding cap;
-	// otherwise an explody trivial-IDB can OOM the host before the main
-	// evaluator ever runs (mastodon corpus, setStateUpdaterCallsFn).
-	updates := eval.EstimateNonRecursiveIDBSizes(prog, baseRels, sizeHints, maxBindingsPerRule)
-	if len(updates) > 0 {
-		// Re-plan every stratum and the final query with the refreshed hints
-		// before evaluation begins. Without this the original execPlan
-		// (planned with default-1000 hints for every IDB) would still drive
-		// the evaluator; the between-strata refresh in eval.Evaluate would
-		// only help strata > 0, missing the co-stratified case entirely.
-		for i := range execPlan.Strata {
-			plan.RePlanStratum(&execPlan.Strata[i], sizeHints)
+
+	// Build the planner variant (plain or magic-set) as a Func and let
+	// EstimateAndPlan orchestrate: identify trivial IDBs → estimate →
+	// plan ONCE with the now-populated hints. The estimator hook honours
+	// maxBindingsPerRule (issue #130 / PR #132 — preserved end-to-end).
+	planFn := makeFunc(opts)
+	execPlan, planErrs := plan.EstimateAndPlan(
+		prog,
+		sizeHints,
+		maxBindingsPerRule,
+		eval.MakeEstimatorHook(baseRels),
+		planFn,
+	)
+	if len(planErrs) > 0 {
+		errs := make([]error, 0, len(planErrs))
+		for _, e := range planErrs {
+			errs = append(errs, fmt.Errorf("plan: %w", e))
 		}
-		if execPlan.Query != nil {
-			plan.RePlanQuery(execPlan.Query, sizeHints)
-		}
+		return nil, joinPhaseErrors(errs)
 	}
 
 	// Evaluate.

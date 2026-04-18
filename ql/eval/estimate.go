@@ -48,6 +48,23 @@ import (
 //
 // Returns the slice of (name, computed-size) updates actually applied, for
 // observability/testing.
+// MakeEstimatorHook returns a plan.EstimatorHook closed over the supplied
+// base relations. The returned hook delegates to EstimateNonRecursiveIDBSizes,
+// matching its best-effort / cap-honouring semantics. This is the bridge that
+// lets plan.EstimateAndPlan call into the eval-side trivial-IDB pre-pass
+// without plan importing eval (eval already imports plan).
+//
+// Use it from cmd/tsq's compileAndEval (and any other call site that wants
+// the single-pass estimate-then-plan flow) instead of the previous two-pass
+// "plan → EstimateNonRecursiveIDBSizes → RePlanStratum/RePlanQuery"
+// ceremony. The binding cap from PR #132 (issue #130) is preserved end-to-end
+// because it is a parameter of the hook signature, not a closed-over constant.
+func MakeEstimatorHook(baseRels map[string]*Relation) plan.EstimatorHook {
+	return func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) map[string]int {
+		return EstimateNonRecursiveIDBSizes(prog, baseRels, sizeHints, maxBindingsPerRule)
+	}
+}
+
 func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Relation, sizeHints map[string]int, maxBindingsPerRule int) map[string]int {
 	if sizeHints == nil {
 		sizeHints = map[string]int{}
