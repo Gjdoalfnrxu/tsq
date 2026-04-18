@@ -58,6 +58,29 @@ type QueryBindingInference struct {
 // silent-fallback behaviour for production use.
 type MagicSetOptions struct {
 	Strict bool
+	// IDBSizeHints carries trusted IDB cardinality estimates for use by
+	// rule-body binding inference (issue #121 Phase A.1).
+	//
+	// The default `sizeHints` map passed to WithMagicSetAutoOpts is the
+	// CLI's base-only `buildSizeHints` output: keys may shadow IDB names
+	// of the same spelling (e.g. the `MethodCall` QL class shadows the
+	// `MethodCall(this,recv,name)` base relation), so the base-shadow
+	// filter strips IDB-spelled keys before passing the map to
+	// InferRuleBindings.
+	//
+	// IDBSizeHints is the explicit channel for **post-estimate** IDB
+	// counts produced by `eval.EstimateNonRecursiveIDBSizes`. These
+	// hints are trusted IDB cardinalities — they bypass the base-shadow
+	// filter and are merged into the rule-binding-inference hint map so
+	// Configuration-shaped rules (BackwardTracker pattern) can magic-
+	// set-rewrite once IDB cardinalities are known.
+	//
+	// Caller contract: only populate this map with hints derived from
+	// IDB-aware sources (the trivial-IDB pre-pass, between-strata
+	// refresh, etc.). Mixing in raw base-relation hints reintroduces
+	// the soundness regression the base-shadow filter exists to
+	// prevent (TestCLI_MagicSet_FlagWiring/equivalence_method_calls).
+	IDBSizeHints map[string]int
 }
 
 // InferQueryBindings analyses prog.Query and returns the binding map and the
@@ -711,6 +734,15 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 			idbOnlyHints[k] = v
 		}
 		// If k is in idb, the hint is a base-shadowed lookup; skip it.
+	}
+	// Issue #121 Phase A.1: merge in trusted IDB hints from the post-
+	// estimate channel. These keys ARE IDB names by construction (the
+	// caller derived them from EstimateNonRecursiveIDBSizes or another
+	// IDB-aware source) so they bypass the base-shadow filter. Last-
+	// write-wins on collision: the IDB estimate is more reliable than
+	// any leaked base-shadow hint that survived the filter above.
+	for k, v := range opts.IDBSizeHints {
+		idbOnlyHints[k] = v
 	}
 	ruleBindings := InferRuleBindings(prog, idb, idbOnlyHints)
 	// Drop rule bindings that would lead the magic-set transform to

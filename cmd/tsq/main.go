@@ -831,28 +831,7 @@ func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Modu
 
 	// Plan. When magic sets are enabled, run the binding-inference + transform
 	// path; on no-bindings it falls through to plain Plan transparently.
-	var execPlan *plan.ExecutionPlan
-	var planErrors []error
-	if opts.useMagicSets {
-		var inf plan.QueryBindingInference
-		execPlan, inf, planErrors = plan.WithMagicSetAutoOpts(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict})
-		switch {
-		case inf.Fallback:
-			// Always surface a fallback warning to warnOut (not gated on
-			// --verbose). Silent fallback was the bug in issue #112; the
-			// observability fix is unconditional. The strict path returns
-			// an error instead and never reaches this branch.
-			if opts.warnOut != nil {
-				fmt.Fprintf(opts.warnOut, "warning: magic-set transform produced an unplannable program; fell back to plain Plan (reason: %v)\n", inf.FallbackReason)
-			}
-		case opts.verboseOut != nil && len(inf.Bindings) > 0:
-			fmt.Fprintf(opts.verboseOut, "magic-set: transform applied; bindings=%v seed_rules=%d\n", inf.Bindings, len(inf.SeedRules))
-		case opts.verboseOut != nil:
-			fmt.Fprintln(opts.verboseOut, "magic-set: no inferable query bindings; using plain plan")
-		}
-	} else {
-		execPlan, planErrors = plan.Plan(prog, sizeHints)
-	}
+	execPlan, planErrors := planWithMagicSetMaybe(prog, sizeHints, opts, nil)
 	if len(planErrors) > 0 {
 		errs := make([]error, 0, len(planErrors))
 		for _, e := range planErrors {
@@ -862,6 +841,43 @@ func buildProgramWithProg(src, file string, importLoader func(string) (*ast.Modu
 	}
 
 	return execPlan, prog, mod, warnings, nil
+}
+
+// planWithMagicSetMaybe runs either plain Plan or WithMagicSetAutoOpts
+// depending on opts.useMagicSets, surfaces verbose / fallback diagnostics
+// via opts.verboseOut / opts.warnOut, and returns the resulting plan plus
+// any planning errors. Factored out of buildProgramWithProg so that
+// compileAndEval can re-invoke planning with refreshed sizeHints after
+// EstimateNonRecursiveIDBSizes populates IDB cardinalities (issue #121
+// Phase A.1: rule-body binding inference cannot fire until IDB hints are
+// populated, which only happens after the initial cheap-plan).
+//
+// idbHints is the optional trusted-IDB-cardinality channel (nil on the
+// first pass; populated from EstimateNonRecursiveIDBSizes on the second
+// pass). It bypasses the base-shadow filter inside the magic-set path.
+func planWithMagicSetMaybe(prog *datalog.Program, sizeHints map[string]int, opts buildOptions, idbHints map[string]int) (*plan.ExecutionPlan, []error) {
+	if !opts.useMagicSets {
+		return plan.Plan(prog, sizeHints)
+	}
+	execPlan, inf, planErrors := plan.WithMagicSetAutoOpts(prog, sizeHints, plan.MagicSetOptions{
+		Strict:       opts.magicSetsStrict,
+		IDBSizeHints: idbHints,
+	})
+	switch {
+	case inf.Fallback:
+		// Always surface a fallback warning to warnOut (not gated on
+		// --verbose). Silent fallback was the bug in issue #112; the
+		// observability fix is unconditional. The strict path returns
+		// an error instead and never reaches this branch.
+		if opts.warnOut != nil {
+			fmt.Fprintf(opts.warnOut, "warning: magic-set transform produced an unplannable program; fell back to plain Plan (reason: %v)\n", inf.FallbackReason)
+		}
+	case opts.verboseOut != nil && len(inf.Bindings) > 0:
+		fmt.Fprintf(opts.verboseOut, "magic-set: transform applied; bindings=%v seed_rules=%d\n", inf.Bindings, len(inf.SeedRules))
+	case opts.verboseOut != nil:
+		fmt.Fprintln(opts.verboseOut, "magic-set: no inferable query bindings; using plain plan")
+	}
+	return execPlan, planErrors
 }
 
 // compileAndEval reads a .ql file, compiles it, loads a fact DB, and evaluates.
@@ -931,16 +947,43 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// evaluator ever runs (mastodon corpus, setStateUpdaterCallsFn).
 	updates := eval.EstimateNonRecursiveIDBSizes(prog, baseRels, sizeHints, maxBindingsPerRule)
 	if len(updates) > 0 {
-		// Re-plan every stratum and the final query with the refreshed hints
-		// before evaluation begins. Without this the original execPlan
-		// (planned with default-1000 hints for every IDB) would still drive
-		// the evaluator; the between-strata refresh in eval.Evaluate would
-		// only help strata > 0, missing the co-stratified case entirely.
-		for i := range execPlan.Strata {
-			plan.RePlanStratum(&execPlan.Strata[i], sizeHints)
-		}
-		if execPlan.Query != nil {
-			plan.RePlanQuery(execPlan.Query, sizeHints)
+		// Issue #121 Phase A.1: re-run the magic-set planning pass with the
+		// IDB cardinalities now populated by EstimateNonRecursiveIDBSizes.
+		// On the first pass `sizeHints` only contained base-relation counts,
+		// so InferRuleBindings could not identify any small-IDB-bound body
+		// literal (the small `isSink_<X>` IDB looked size=default to it).
+		// With real IDB sizes available, Configuration-shaped queries
+		// (BackwardTracker pattern) can now magic-set-rewrite via the rule-
+		// body binding inference path. If magic-sets are off we fall back
+		// to the cheaper RePlan path (just refresh join order, no rule
+		// rewriting) — same behaviour as before A.1.
+		if opts.useMagicSets {
+			// Updates from EstimateNonRecursiveIDBSizes are by construction
+			// IDB cardinalities — pass them through MagicSetOptions.IDBSizeHints
+			// so rule-body inference can see them without going through the
+			// base-shadow filter.
+			refreshedPlan, refreshedErrs := planWithMagicSetMaybe(prog, sizeHints, opts, updates)
+			if len(refreshedErrs) > 0 {
+				wrapped := make([]error, 0, len(refreshedErrs))
+				for _, e := range refreshedErrs {
+					wrapped = append(wrapped, fmt.Errorf("plan (post-estimate): %w", e))
+				}
+				return nil, joinPhaseErrors(wrapped)
+			}
+			execPlan = refreshedPlan
+		} else {
+			// Re-plan every stratum and the final query with the refreshed
+			// hints before evaluation begins. Without this the original
+			// execPlan (planned with default-1000 hints for every IDB) would
+			// still drive the evaluator; the between-strata refresh in
+			// eval.Evaluate would only help strata > 0, missing the co-
+			// stratified case entirely.
+			for i := range execPlan.Strata {
+				plan.RePlanStratum(&execPlan.Strata[i], sizeHints)
+			}
+			if execPlan.Query != nil {
+				plan.RePlanQuery(execPlan.Query, sizeHints)
+			}
 		}
 	}
 

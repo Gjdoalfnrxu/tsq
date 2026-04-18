@@ -798,3 +798,89 @@ func TestFilterRuleBindingsAvoidingWildcards_DropsDirectWildcardCollision(t *tes
 		t.Fatalf("expected P binding to be filtered out due to wildcard at col 0, got: %v", out)
 	}
 }
+
+// TestWithMagicSetAuto_RuleBindingActivationOnIDBHints (issue #121 Phase A.1)
+// is the load-bearing activation test for the planner-pipeline re-order.
+//
+// On the first planning pass `sizeHints` only contains base-relation counts
+// (CLI's buildSizeHints), so InferRuleBindings cannot identify any small-IDB
+// body literal and produces zero rule bindings — the resulting plan has no
+// `magic_*` seed rules. Only after eval.EstimateNonRecursiveIDBSizes
+// populates `sizeHints` with real IDB cardinalities can rule-body inference
+// fire on Configuration-shaped queries (BackwardTracker pattern).
+//
+// This test simulates the two-pass pipeline (cmd/tsq/main.go's
+// compileAndEval): first call WithMagicSetAutoOpts with base-only hints and
+// assert no magic-set seed rule fires; then add a small IDB hint (as
+// EstimateNonRecursiveIDBSizes would) and re-call WithMagicSetAutoOpts —
+// asserting that the magic_flowsTo seed rule now appears in the plan.
+//
+// If the cmd/tsq/main.go re-order regresses (someone removes the
+// post-estimate replan), the cmd/tsq integration coverage will catch the
+// behavioural regression; this test pins the planner-side contract that
+// the second pass produces a different plan when IDB hints arrive.
+func TestWithMagicSetAuto_RuleBindingActivationOnIDBHints(t *testing.T) {
+	prog := progBackwardConfigShape()
+
+	// First pass: base-only hints (Edge has tuples, but no IDB sized).
+	// InferRuleBindings sees no small-IDB literal, no rule bindings emerge.
+	baseOnlyHints := map[string]int{"Edge": 100, "Sink": 5}
+	ep1, inf1, errs1 := WithMagicSetAutoOpts(prog, baseOnlyHints, MagicSetOptions{})
+	if len(errs1) > 0 {
+		t.Fatalf("first-pass plan errors: %v", errs1)
+	}
+	if ep1 == nil {
+		t.Fatalf("first-pass plan is nil")
+	}
+	if _, present := inf1.Bindings["flowsTo"]; present {
+		t.Fatalf("first-pass: did not expect flowsTo binding without IDB hint, got: %v", inf1.Bindings)
+	}
+	if planContainsMagicSeed(ep1, "magic_flowsTo") {
+		t.Fatalf("first-pass: did not expect magic_flowsTo seed rule in plan without IDB hint")
+	}
+
+	// Second pass: trusted IDB hint for `isSink` is now provided via
+	// MagicSetOptions.IDBSizeHints (as cmd/tsq/main.go does after
+	// EstimateNonRecursiveIDBSizes). Rule-body inference can now
+	// identify isSink(t) as small-IDB-bound, propagate the binding
+	// into flowsTo(s, t)'s second arg, and emit a magic_flowsTo seed
+	// rule. Note that we deliberately do NOT add `isSink` to the
+	// base-only hints map: that path is filtered by the base-shadow
+	// guard. The IDBSizeHints channel is the soundness-preserving
+	// route for IDB cardinalities.
+	ep2, inf2, errs2 := WithMagicSetAutoOpts(prog, baseOnlyHints, MagicSetOptions{
+		IDBSizeHints: map[string]int{"isSink": 5},
+	})
+	if len(errs2) > 0 {
+		t.Fatalf("second-pass plan errors: %v", errs2)
+	}
+	if ep2 == nil {
+		t.Fatalf("second-pass plan is nil")
+	}
+	cols, present := inf2.Bindings["flowsTo"]
+	if !present {
+		t.Fatalf("second-pass: expected flowsTo binding once isSink is sized, got: %v", inf2.Bindings)
+	}
+	if len(cols) != 1 || cols[0] != 1 {
+		t.Fatalf("second-pass: expected flowsTo bound at col 1 (sink position), got %v", cols)
+	}
+	if !planContainsMagicSeed(ep2, "magic_flowsTo") {
+		t.Fatalf("second-pass: expected magic_flowsTo seed rule in plan after IDB hint")
+	}
+}
+
+// planContainsMagicSeed returns true iff some stratum in ep contains a
+// rule whose head predicate equals magicHead.
+func planContainsMagicSeed(ep *ExecutionPlan, magicHead string) bool {
+	if ep == nil {
+		return false
+	}
+	for _, s := range ep.Strata {
+		for _, r := range s.Rules {
+			if r.Head.Predicate == magicHead {
+				return true
+			}
+		}
+	}
+	return false
+}
