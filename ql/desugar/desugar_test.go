@@ -671,6 +671,13 @@ predicate p(int c) { c = c }
 			t.Fatalf("int-typed param should not produce an `int(...)` literal, body: %v", r.Body)
 		}
 	}
+	// Stronger guard: body must contain exactly the user-written `c = c`
+	// comparison and nothing else. If a future change ever emitted
+	// synthetic literals for primitive params (e.g. `int(c)`), body length
+	// would grow and this assertion would fire.
+	if len(r.Body) != 1 {
+		t.Fatalf("expected exactly 1 body literal (the user-written c=c), got %d: %v", len(r.Body), r.Body)
+	}
 }
 
 // 19d. Mixed params: only typed (class) params get an extent literal.
