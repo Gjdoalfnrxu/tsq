@@ -253,8 +253,8 @@ func MakeMaterialisingEstimatorHook(
 	if materialisedSink == nil {
 		panic("eval.MakeMaterialisingEstimatorHook: materialisedSink must be non-nil; use MakeEstimatorHook for non-materialising callers")
 	}
-	return func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) (map[string]int, map[string]bool) {
-		mats, updates := MaterialiseClassExtents(prog, baseRels, sizeHints, maxBindingsPerRule)
+	return func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) map[string]bool {
+		mats, _ := MaterialiseClassExtents(prog, baseRels, sizeHints, maxBindingsPerRule)
 		extentNames := make(map[string]bool, len(mats))
 		for k, rel := range mats {
 			materialisedSink[k] = rel
@@ -275,17 +275,11 @@ func MakeMaterialisingEstimatorHook(
 			// MaterialiseClassExtents stashes by relKey().
 			merged[k] = v
 		}
-		trivUpdates := EstimateNonRecursiveIDBSizes(prog, merged, sizeHints, maxBindingsPerRule)
-		// Combine update views. Materialisation updates win on conflict
-		// (they are exact, not pre-pass estimates).
-		out := make(map[string]int, len(updates)+len(trivUpdates))
-		for k, v := range trivUpdates {
-			out[k] = v
-		}
-		for k, v := range updates {
-			out[k] = v
-		}
-		return out, extentNames
+		// Both MaterialiseClassExtents and EstimateNonRecursiveIDBSizes
+		// mutate sizeHints in place; we don't need their return values
+		// for the planner contract.
+		_ = EstimateNonRecursiveIDBSizes(prog, merged, sizeHints, maxBindingsPerRule)
+		return extentNames
 	}
 }
 

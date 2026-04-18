@@ -89,25 +89,22 @@ type EstimatorHook func(prog *datalog.Program, sizeHints map[string]int, maxBind
 
 // MaterialisingEstimatorHook is the P2a-extended estimator contract: in
 // addition to writing trivial-IDB cardinalities into sizeHints (the same
-// job EstimatorHook does), it returns a list of class-extent head
+// job EstimatorHook does), it returns a set of class-extent head
 // predicate names that the hook materialised eagerly. The actual relation
 // objects live opaquely behind the hook and are handed to the evaluator
 // via a separate channel (see eval.WithMaterialisedClassExtents). The
 // planner only needs the names so it can mark those rules as
 // already-evaluated and skip planning their bodies.
 //
-// Why two return values instead of folding into EstimatorHook:
-// EstimatorHook's contract (best-effort, mutates sizeHints in place,
-// no error) is stable and load-bearing. A second return value would
-// force every existing caller and test to update. The new hook is
-// explicitly opt-in: if EstimateAndPlan is given a MaterialisingEstimatorHook
-// it uses it; otherwise it falls back to the plain EstimatorHook contract.
+// The hook mutates sizeHints in place (same contract as EstimatorHook);
+// there is no separate updates return value because the planner has no
+// use for one — every call site would throw it away.
 //
 // The returned name set is keyed by predicate NAME (not name+arity)
 // because class extents are always 1-arity; the eval-side hook owner is
 // the source of truth for the actual *Relation values and arity-keys
 // them internally via relKey().
-type MaterialisingEstimatorHook func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) (updates map[string]int, materialisedExtents map[string]bool)
+type MaterialisingEstimatorHook func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) (materialisedExtents map[string]bool)
 
 // Func is the planning entry point used by EstimateAndPlan after the
 // pre-pass has populated sizeHints. The default is plan.Plan; callers that
@@ -203,12 +200,7 @@ func EstimateAndPlanWithExtents(
 	// extents as base-like relations and doesn't re-evaluate them.
 	var materialisedExtents map[string]bool
 	if matExtHook != nil {
-		updates, mat := matExtHook(prog, sizeHints, maxBindingsPerRule)
-		materialisedExtents = mat
-		// updates have already been written into sizeHints by the hook;
-		// the explicit return value is for observability and is otherwise
-		// equivalent. Discard for now.
-		_ = updates
+		materialisedExtents = matExtHook(prog, sizeHints, maxBindingsPerRule)
 	}
 	if estimator != nil {
 		_ = estimator(prog, sizeHints, maxBindingsPerRule)

@@ -106,10 +106,10 @@ func TestEstimateAndPlanWithExtents_StripsMaterialisedRules(t *testing.T) {
 		},
 	}
 
-	matExtHook := func(prog *datalog.Program, sizeHints map[string]int, _ int) (map[string]int, map[string]bool) {
+	matExtHook := func(prog *datalog.Program, sizeHints map[string]int, _ int) map[string]bool {
 		// Pretend we materialised ClassA.
 		sizeHints["ClassA"] = 7
-		return map[string]int{"ClassA": 7}, map[string]bool{"ClassA": true}
+		return map[string]bool{"ClassA": true}
 	}
 
 	var seenProg *datalog.Program
@@ -162,8 +162,8 @@ func TestEstimateAndPlanWithExtents_DoesNotStripUntaggedHeads(t *testing.T) {
 			},
 		},
 	}
-	matExtHook := func(prog *datalog.Program, sizeHints map[string]int, _ int) (map[string]int, map[string]bool) {
-		return nil, map[string]bool{"ClassA": true}
+	matExtHook := func(prog *datalog.Program, sizeHints map[string]int, _ int) map[string]bool {
+		return map[string]bool{"ClassA": true}
 	}
 	var seenProg *datalog.Program
 	planFn := func(p *datalog.Program, _ map[string]int) (*plan.ExecutionPlan, []error) {
