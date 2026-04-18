@@ -141,7 +141,11 @@ func evalJoinSteps(steps []plan.JoinStep, rels map[string]*Relation, initial []b
 			}
 			return nil, err
 		}
-		current = next
+		// P3b: projection pushdown. Drop variables that no later step or
+		// the head/select still needs. Skipped when LiveVars is nil
+		// (legacy hand-built plans) so we don't change semantics for
+		// callers who haven't been through the planner's annotation pass.
+		current = projectBindings(next, step.LiveVars)
 		if err := limits.check(i, len(current)); err != nil {
 			return nil, err
 		}
@@ -187,12 +191,54 @@ func evalJoinStepsWithDelta(steps []plan.JoinStep, rels map[string]*Relation, de
 			}
 			return nil, err
 		}
-		current = next
+		// P3b: see evalJoinSteps.
+		current = projectBindings(next, step.LiveVars)
 		if err := limits.check(i, len(current)); err != nil {
 			return nil, err
 		}
 	}
 	return current, nil
+}
+
+// projectBindings narrows every binding to only the variables in keep
+// (P3b — projection pushdown). When keep is nil, returns input unchanged
+// so legacy callers building plans by hand (without LiveVars) get the
+// pre-P3b behaviour.
+//
+// When keep is non-nil but empty, every binding becomes empty — used at
+// the tail of plans whose head has no vars (e.g. a count-only aggregate
+// rule). This is correct: subsequent users of the binding list (e.g.
+// projectHead) are no-ops on empty bindings whose head also has no vars.
+//
+// The new map is allocated with len(keep) capacity, which is the whole
+// memory win on wide bodies: a 12-var binding probed by a 3-var head
+// shrinks every clone from 12 entries to 3.
+//
+// Special case: if every kept var is already present in the binding AND
+// the binding has exactly len(keep) entries, we still allocate a fresh
+// map — applyPositive's filter fast path shares one binding map across
+// many output rows, so freeing the unused-key slots without a copy
+// would corrupt sibling rows. The cost (one tiny allocation per output)
+// is the price of correctness; net memory still drops because all
+// downstream clones see the smaller map.
+func projectBindings(bindings []binding, keep []string) []binding {
+	if keep == nil {
+		return bindings
+	}
+	if len(bindings) == 0 {
+		return bindings
+	}
+	out := make([]binding, len(bindings))
+	for i, b := range bindings {
+		nb := make(binding, len(keep))
+		for _, k := range keep {
+			if v, ok := b[k]; ok {
+				nb[k] = v
+			}
+		}
+		out[i] = nb
+	}
+	return out
 }
 
 // applyStep applies a single JoinStep to the current set of bindings.

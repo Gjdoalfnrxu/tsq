@@ -51,6 +51,29 @@ type JoinStep struct {
 	// Note: IsFilter=true on a negative literal (Literal.Positive==false) means anti-join,
 	// not positive membership filter. Callers must check Literal.Positive to distinguish.
 	IsFilter bool
+	// LiveVars is the projection-pushdown frontier (P3b): the sorted, deduped
+	// set of variable names that downstream steps OR the rule head/query
+	// select still need. After this step's bindings are computed, the
+	// evaluator may drop every variable NOT in LiveVars from each binding —
+	// shrinking the per-binding map for every subsequent clone(). On wide
+	// rule bodies (long taint chains) this dramatically reduces peak
+	// intermediate memory.
+	//
+	// Semantics:
+	//   - nil means "no projection — keep all currently-bound vars". This
+	//     is the safe default for hand-built plans (legacy callers who
+	//     construct ExecutionPlans in tests without going through Plan()).
+	//   - Empty non-nil slice means "drop everything not strictly required
+	//     for the head". For the last step of a head-projecting rule body,
+	//     this equals the head var set.
+	//   - The slice is sorted and deduplicated.
+	//
+	// The list contains the vars to KEEP, not to drop — kept (not dropped)
+	// because the kept set is typically smaller and easier to reason about
+	// in tests.
+	//
+	// Computed by computeLiveVars after greedy ordering completes.
+	LiveVars []string
 }
 
 // PlannedAggregate is an aggregate to evaluate after the stratum fixpoint.
@@ -283,6 +306,10 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 		for _, rule := range stratum {
 			headDemand := demand[rule.Head.Predicate]
 			order := orderJoinsWithDemand(rule.Head, rule.Body, sizeHints, headDemand)
+			// P3b: annotate each step with the demand frontier so the
+			// evaluator can drop unused columns from intermediate
+			// bindings.
+			computeLiveVars(order, headVars(rule.Head))
 			ps.Rules = append(ps.Rules, PlannedRule{
 				Head:      rule.Head,
 				Body:      rule.Body,
@@ -305,6 +332,7 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 	// Plan the query.
 	if prog.Query != nil {
 		order := orderJoins(prog.Query.Body, sizeHints)
+		computeLiveVars(order, selectVars(prog.Query.Select))
 		ep.Query = &PlannedQuery{
 			Select:    prog.Query.Select,
 			JoinOrder: order,
@@ -340,6 +368,7 @@ func RePlanStratum(s *Stratum, sizeHints map[string]int) {
 			continue
 		}
 		s.Rules[i].JoinOrder = orderJoins(body, sizeHints)
+		computeLiveVars(s.Rules[i].JoinOrder, headVars(s.Rules[i].Head))
 	}
 }
 
@@ -368,6 +397,7 @@ func RePlanStratumWithDemand(s *Stratum, sizeHints map[string]int, demand Demand
 		}
 		headDemand := demand[s.Rules[i].Head.Predicate]
 		s.Rules[i].JoinOrder = orderJoinsWithDemand(s.Rules[i].Head, body, sizeHints, headDemand)
+		computeLiveVars(s.Rules[i].JoinOrder, headVars(s.Rules[i].Head))
 	}
 }
 
@@ -388,6 +418,7 @@ func RePlanQuery(q *PlannedQuery, sizeHints map[string]int) {
 		body[i] = step.Literal
 	}
 	q.JoinOrder = orderJoins(body, sizeHints)
+	computeLiveVars(q.JoinOrder, selectVars(q.Select))
 }
 
 // collectGroupByVars returns the head variables that are not the aggregate result variable.

@@ -263,6 +263,114 @@ func pickTinySeed(
 	return tinyIdx
 }
 
+// computeLiveVars fills in the LiveVars field of every step in `steps`.
+//
+// For step i, LiveVars is the sorted-deduped set of variable names that:
+//   - are bound by step i or some earlier step (so they actually exist
+//     in the binding when this step finishes), AND
+//   - are referenced by steps[i+1..end] OR finalKeep (the rule head
+//     vars, or the query's Select vars).
+//
+// Restricting to "actually bound by now" makes LiveVars precise — it
+// reports the vars the projectBindings call will retain, not a
+// superset. Vars not yet bound aren't in the binding to drop.
+//
+// finalKeep is allowed to be nil — the rule body whose head has no live
+// vars (e.g. count-only aggregate) projects to empty after the last
+// step. Pass an empty slice to mean "drop everything after the last
+// step" explicitly; nil and empty are treated identically.
+//
+// Algorithm: a single right-to-left pass builds the demand set
+// (everything still needed at or after the cut), then a left-to-right
+// pass tracks the cumulative bound set and intersects.
+func computeLiveVars(steps []JoinStep, finalKeep []string) {
+	if len(steps) == 0 {
+		return
+	}
+	n := len(steps)
+	// demand[i] = vars referenced by steps[i+1..n-1] union finalKeep.
+	demand := make([]map[string]bool, n)
+	post := map[string]bool{}
+	for _, v := range finalKeep {
+		if v != "" && v != "_" {
+			post[v] = true
+		}
+	}
+	for i := n - 1; i >= 0; i-- {
+		// demand[i] = post (snapshot — vars needed AFTER step i).
+		d := make(map[string]bool, len(post))
+		for v := range post {
+			d[v] = true
+		}
+		demand[i] = d
+		for _, v := range varsInLiteral(steps[i].Literal) {
+			if v != "" && v != "_" {
+				post[v] = true
+			}
+		}
+	}
+	// Left-to-right pass: track bound set, intersect with demand.
+	bound := map[string]bool{}
+	for i := 0; i < n; i++ {
+		for _, v := range varsInLiteral(steps[i].Literal) {
+			if v != "" && v != "_" {
+				bound[v] = true
+			}
+		}
+		live := make([]string, 0)
+		for v := range demand[i] {
+			if bound[v] {
+				live = append(live, v)
+			}
+		}
+		// Make non-nil even when empty (signals "projection enabled,
+		// keep nothing"). nil is reserved for legacy hand-built plans.
+		if live == nil {
+			live = []string{}
+		}
+		steps[i].LiveVars = sortStrings(live)
+	}
+}
+
+// sortStrings returns the input slice sorted in place. Small slices, so
+// insertion sort avoids importing the sort package and matches the style
+// of sortUniqueInts in backward.go.
+func sortStrings(xs []string) []string {
+	for i := 1; i < len(xs); i++ {
+		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {
+			xs[j-1], xs[j] = xs[j], xs[j-1]
+		}
+	}
+	return xs
+}
+
+// headVars returns the variable names referenced by an Atom's args, in
+// stable order, deduplicated. Used as finalKeep for rule bodies.
+func headVars(a datalog.Atom) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, arg := range a.Args {
+		if v, ok := arg.(datalog.Var); ok && v.Name != "_" && !seen[v.Name] {
+			seen[v.Name] = true
+			out = append(out, v.Name)
+		}
+	}
+	return out
+}
+
+// selectVars returns the variable names referenced by query Select terms.
+func selectVars(sel []datalog.Term) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range sel {
+		if v, ok := t.(datalog.Var); ok && v.Name != "_" && !seen[v.Name] {
+			seen[v.Name] = true
+			out = append(out, v.Name)
+		}
+	}
+	return out
+}
+
 // orderJoins implements greedy join ordering for a rule body.
 //
 // Selection rule per slot:

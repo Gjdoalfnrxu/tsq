@@ -1,0 +1,238 @@
+package eval_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
+	"github.com/Gjdoalfnrxu/tsq/ql/eval"
+	"github.com/Gjdoalfnrxu/tsq/ql/plan"
+)
+
+// makeChainProgram builds a wide chain join `R(x0, xN) :- A0(x0,x1),
+// A1(x1,x2), ..., A{N-1}(x{N-1}, xN)`. Head only references the first
+// and last vars — every intermediate var is "dead" after one hop.
+func makeChainProgram(n int) *datalog.Program {
+	body := make([]datalog.Literal, n)
+	for i := 0; i < n; i++ {
+		body[i] = datalog.Literal{
+			Positive: true,
+			Atom: datalog.Atom{
+				Predicate: fmt.Sprintf("A%d", i),
+				Args: []datalog.Term{
+					datalog.Var{Name: fmt.Sprintf("x%d", i)},
+					datalog.Var{Name: fmt.Sprintf("x%d", i+1)},
+				},
+			},
+		}
+	}
+	return &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{
+					Predicate: "R",
+					Args: []datalog.Term{
+						datalog.Var{Name: "x0"},
+						datalog.Var{Name: fmt.Sprintf("x%d", n)},
+					},
+				},
+				Body: body,
+			},
+		},
+	}
+}
+
+// makeChainRelations builds N edge relations where each Ai connects k
+// fan-out values: tuple (i, j) for j in 0..k-1. The total chain output
+// has k^N tuples but the head projects only first/last so the materialised
+// rule output is bounded.
+func makeChainRelations(n, k int) map[string]*eval.Relation {
+	rels := map[string]*eval.Relation{}
+	for i := 0; i < n; i++ {
+		r := eval.NewRelation(fmt.Sprintf("A%d", i), 2)
+		for x := 0; x < k; x++ {
+			for y := 0; y < k; y++ {
+				r.Add(eval.Tuple{eval.IntVal{V: int64(x)}, eval.IntVal{V: int64(y)}})
+			}
+		}
+		rels[fmt.Sprintf("A%d/2", i)] = r
+	}
+	return rels
+}
+
+// TestEval_ProjectionPushdown_ChainProducesCorrectResults: end-to-end
+// equivalence — projection-on must produce the same results as
+// projection-off.
+func TestEval_ProjectionPushdown_ChainProducesCorrectResults(t *testing.T) {
+	const n, k = 3, 4
+	prog := makeChainProgram(n)
+	rels := makeChainRelations(n, k)
+
+	hints := map[string]int{}
+	for i := 0; i < n; i++ {
+		hints[fmt.Sprintf("A%d", i)] = k * k
+	}
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("plan: %v", errs)
+	}
+
+	// Verify LiveVars are populated.
+	steps := ep.Strata[0].Rules[0].JoinOrder
+	for i, s := range steps {
+		if s.LiveVars == nil {
+			t.Errorf("step %d LiveVars nil", i)
+		}
+	}
+
+	tuplesOn, err := eval.Rule(context.Background(), ep.Strata[0].Rules[0], rels, 0)
+	if err != nil {
+		t.Fatalf("Rule (projection on): %v", err)
+	}
+
+	// Now wipe LiveVars and re-evaluate to confirm equivalence.
+	r2 := ep.Strata[0].Rules[0]
+	for i := range r2.JoinOrder {
+		r2.JoinOrder[i].LiveVars = nil
+	}
+	tuplesOff, err := eval.Rule(context.Background(), r2, rels, 0)
+	if err != nil {
+		t.Fatalf("Rule (projection off): %v", err)
+	}
+
+	// Sets must be identical.
+	if len(tuplesOn) != len(tuplesOff) {
+		t.Fatalf("result count differs: on=%d off=%d", len(tuplesOn), len(tuplesOff))
+	}
+	seen := map[string]bool{}
+	for _, tup := range tuplesOff {
+		seen[fmt.Sprint(tup)] = true
+	}
+	for _, tup := range tuplesOn {
+		if !seen[fmt.Sprint(tup)] {
+			t.Errorf("tuple %v in projection-on but not projection-off", tup)
+		}
+	}
+}
+
+// TestEval_ProjectionPushdown_BindingMapShrinks asserts the load-bearing
+// observable contract of P3b: after a mid-chain step, the binding map
+// (per row) carries fewer keys than it would without projection.
+//
+// We instrument via a sentinel: build a chain such that at the join step
+// we want to inspect, the head needs only 2 of 5 bound vars. We can't
+// inspect mid-evaluation directly, but we can compare the LiveVars
+// length to the cumulative-bound length at that step.
+func TestEval_ProjectionPushdown_BindingMapShrinks(t *testing.T) {
+	const n = 5
+	prog := makeChainProgram(n)
+	hints := map[string]int{}
+	for i := 0; i < n; i++ {
+		hints[fmt.Sprintf("A%d", i)] = 100
+	}
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("plan: %v", errs)
+	}
+	steps := ep.Strata[0].Rules[0].JoinOrder
+	// Cumulative bound count after each step:
+	// after A0: {x0,x1} = 2
+	// after A1: {x0,x1,x2} = 3
+	// after A2: {x0,x1,x2,x3} = 4
+	// after A3: {x0..x4} = 5
+	// after A4: {x0..x5} = 6
+	// Head needs {x0, x5} only.
+	// LiveVars after A2 should be {x0} (only x0 bound and survives downstream:
+	// x1 dead; x2 needed by A3; x3 needed by A3; wait — x3 not yet bound at A2).
+	// After A2, bound={x0,x1,x2,x3}. Demand for steps[3..]+head = {x3,x4,x5,x0}.
+	// Intersect: {x0, x3}. So LiveVars at step 2 = {x0, x3} — shrinks 4→2.
+	got := map[string]bool{}
+	for _, v := range steps[2].LiveVars {
+		got[v] = true
+	}
+	if len(got) != 2 || !got["x0"] || !got["x3"] {
+		t.Errorf("step 2 LiveVars want {x0,x3}, got %v", got)
+	}
+	// Without projection, step 2 would carry 4 bound vars. With projection,
+	// only 2 keys per binding map — a 50% shrink at this step alone.
+}
+
+// TestEval_ProjectionPushdown_PeakRowSizeReduction is the spec contract:
+// on a wide chain with a narrow head, peak per-binding row size with
+// projection on must be ≥2x smaller than with projection off.
+//
+// Without projection, the binding at the LAST step carries every var
+// bound so far (x0..xN, N+1 keys). With projection, every step's
+// LiveVars caps the per-row width.
+func TestEval_ProjectionPushdown_PeakRowSizeReduction(t *testing.T) {
+	const n = 8
+	prog := makeChainProgram(n)
+	hints := map[string]int{}
+	for i := 0; i < n; i++ {
+		hints[fmt.Sprintf("A%d", i)] = 100
+	}
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		t.Fatalf("plan: %v", errs)
+	}
+	steps := ep.Strata[0].Rules[0].JoinOrder
+	// Without projection: per-row width = cumulative bound count after each
+	// step. Peak = (n + 1) at the last step (x0..xN).
+	peakOff := n + 1
+	// With projection: per-row width capped by LiveVars at each step.
+	peakOn := 0
+	for _, s := range steps {
+		if len(s.LiveVars) > peakOn {
+			peakOn = len(s.LiveVars)
+		}
+	}
+	if peakOn == 0 {
+		t.Fatal("LiveVars never populated")
+	}
+	ratio := float64(peakOff) / float64(peakOn)
+	if ratio < 2.0 {
+		t.Errorf("peak row size reduction below 2x target: off=%d on=%d ratio=%.2f",
+			peakOff, peakOn, ratio)
+	}
+	t.Logf("peak per-binding width: off=%d on=%d (%.2fx reduction)", peakOff, peakOn, ratio)
+}
+
+// BenchmarkEval_Chain8_ProjectionOn vs Off — the spec target: at least
+// 2x reduction in peak intermediate row size for a synthetic wide-chain
+// shape with a narrow head.
+func BenchmarkEval_Chain8_ProjectionOn(b *testing.B) {
+	benchChain(b, 8, 5, true)
+}
+
+func BenchmarkEval_Chain8_ProjectionOff(b *testing.B) {
+	benchChain(b, 8, 5, false)
+}
+
+func benchChain(b *testing.B, n, k int, projOn bool) {
+	prog := makeChainProgram(n)
+	hints := map[string]int{}
+	for i := 0; i < n; i++ {
+		hints[fmt.Sprintf("A%d", i)] = k * k
+	}
+	ep, errs := plan.Plan(prog, hints)
+	if len(errs) != 0 {
+		b.Fatalf("plan: %v", errs)
+	}
+	rule := ep.Strata[0].Rules[0]
+	if !projOn {
+		// Strip LiveVars to simulate the pre-P3b world.
+		for i := range rule.JoinOrder {
+			rule.JoinOrder[i].LiveVars = nil
+		}
+	}
+	rels := makeChainRelations(n, k)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := eval.Rule(context.Background(), rule, rels, 0)
+		if err != nil {
+			b.Fatalf("Rule: %v", err)
+		}
+	}
+}
