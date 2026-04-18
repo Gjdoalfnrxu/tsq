@@ -78,36 +78,36 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 		hints[def.Name] = factDB.Relation(def.Name).Tuples()
 	}
 
-	// Plan.
-	execPlan, planErrs := plan.Plan(prog, hints)
-	if len(planErrs) > 0 {
-		t.Fatalf("plan: %v", planErrs)
-	}
-
 	// Aggressive binding cap: real fixture intermediate cardinality with the
 	// fix in place is < 1k. Pre-fix this rule blew the default 5M cap; we
 	// pick 100k as the regression threshold — comfortably above the real
 	// number, comfortably below "Cartesian disaster". Also threaded into the
-	// pre-pass below so issue #130 (uncapped pre-pass eating RAM before the
-	// main eval ever runs) is covered by the same guard.
+	// pre-pass via EstimateAndPlan so issue #130 (uncapped pre-pass eating
+	// RAM before the main eval ever runs) is covered by the same guard.
 	const tightCap = 100_000
 
-	// Pre-pass + re-plan (the issue #88 fix). If a future change removes
-	// these two calls from cmd/tsq/main.go, the assertion below catches
-	// the regression directly: the rule will OOM at step 2.
+	// EstimateAndPlan: single estimate-then-plan pass (P1 of planner roadmap).
+	// The estimator hook materialises every trivial IDB BEFORE Plan() is
+	// called, so the seed cardinality (isUseStateSetterCall ≈ 7) is in
+	// sizeHints from the start instead of falling through to default-1000.
+	// This replaces the prior "plan → estimate → RePlanStratum / RePlanQuery"
+	// two-pass ceremony.
 	baseRels, err := eval.LoadBaseRelations(factDB)
 	if err != nil {
 		t.Fatalf("load base relations: %v", err)
 	}
-	updates := eval.EstimateNonRecursiveIDBSizes(prog, baseRels, hints, tightCap)
-	if updates["isUseStateSetterCall"] == 0 {
-		t.Fatalf("pre-pass failed to size isUseStateSetterCall (the seed predicate); updates=%v", updates)
+	execPlan, planErrs := plan.EstimateAndPlan(
+		prog,
+		hints,
+		tightCap,
+		eval.MakeEstimatorHook(baseRels),
+		plan.Plan,
+	)
+	if len(planErrs) > 0 {
+		t.Fatalf("plan: %v", planErrs)
 	}
-	for i := range execPlan.Strata {
-		plan.RePlanStratum(&execPlan.Strata[i], hints)
-	}
-	if execPlan.Query != nil {
-		plan.RePlanQuery(execPlan.Query, hints)
+	if hints["isUseStateSetterCall"] == 0 {
+		t.Fatalf("pre-pass failed to size isUseStateSetterCall (the seed predicate); hints=%v", hints)
 	}
 
 	// Assert: the seed predicate is now FIRST in the join order. This is

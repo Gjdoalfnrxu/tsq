@@ -62,6 +62,98 @@ func WithMagicSet(prog *datalog.Program, sizeHints map[string]int, queryBindings
 	return Plan(transformed, sizeHints)
 }
 
+// EstimatorHook is a callback that pre-computes cardinalities for trivially-
+// evaluable IDB predicates and writes them into sizeHints (in place). It is
+// injected by callers in the eval package so that the planner can run the
+// trivial-IDB pre-pass before constructing the final execution plan, without
+// the plan package taking a build-time dependency on eval (which would be a
+// cycle: eval already imports plan).
+//
+// Hook contract:
+//   - prog and sizeHints are the same values EstimateAndPlan was called with.
+//   - maxBindingsPerRule is the per-rule binding cap; the hook MUST honour it
+//     so a pathological body cannot OOM the host before planning even starts
+//     (issue #130). Pass 0 inside the hook only when the caller of
+//     EstimateAndPlan deliberately supplied 0.
+//   - The hook may mutate sizeHints in place; it returns the slice of updates
+//     applied (for observability) but the canonical state is the mutated map.
+//   - Best-effort semantics: failures inside the hook (e.g. cap fires on an
+//     individual trivial IDB) MUST be absorbed silently — the IDB falls
+//     through to the default hint and the plan proceeds. The hook MUST NOT
+//     return an error.
+//
+// A nil hook is permitted: EstimateAndPlan then degrades to plain Plan with
+// whatever sizeHints the caller supplied (useful for tests and for callers
+// that have no fact DB to estimate against).
+type EstimatorHook func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) map[string]int
+
+// Func is the planning entry point used by EstimateAndPlan after the
+// pre-pass has populated sizeHints. The default is plan.Plan; callers that
+// want magic-set rewriting pass plan.WithMagicSetAutoOpts (wrapped to match
+// this signature). Keeping this pluggable lets EstimateAndPlan stay the
+// single estimate-then-plan entry point regardless of which planner variant
+// is in use, without EstimateAndPlan needing to know about magic-set options.
+type Func func(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []error)
+
+// EstimateAndPlan is the single estimate-then-plan entry point. It owns the
+// order: stratify (implicit, via planFn) → identify trivial IDBs and estimate
+// their sizes via the eval-supplied hook → plan everything once with full
+// hints. Replaces the prior two-pass ceremony in cmd/tsq's compileAndEval
+// (cheap-plan → estimate → re-plan-every-stratum), eliminating a re-entrancy
+// hazard between the two passes (#88-era trust-channel for IDB hints).
+//
+// Why a single entry point: the prior compileAndEval flow first called
+// plan.Plan with base-only hints, then ran EstimateNonRecursiveIDBSizes,
+// then called RePlanStratum/RePlanQuery to swap in the refreshed hints. That
+// produced two distinct planning passes that had to agree on stratification,
+// magic-set inference, and binding propagation. Folding to one pass means
+// magic-set inference (and any future hint-aware planner pass) sees the
+// IDB cardinalities from the very first call — no out-of-band trust channel
+// needed to bridge the two passes.
+//
+// Arguments:
+//   - prog: the post-desugar, post-MergeSystemRules program to plan.
+//   - sizeHints: caller-supplied hints (typically built from base relation
+//     tuple counts). May be nil. Mutated in place by the estimator hook so
+//     the post-call map carries the trivial-IDB sizes too.
+//   - maxBindingsPerRule: binding cap forwarded to the estimator hook
+//     (issue #130 / PR #132 — must NOT be lost when migrating callers).
+//   - estimator: see EstimatorHook docs. May be nil to skip the pre-pass.
+//   - planFn: the planner to invoke once hints are populated. Pass plan.Plan
+//     for the no-magic-set path; pass a closure over WithMagicSetAutoOpts
+//     for the magic-set path.
+//
+// The between-strata refresh in eval.Evaluate (RePlanStratum/RePlanQuery
+// after each stratum's fixpoint) is preserved untouched — it handles the
+// case where a non-trivial (recursive) IDB's true size becomes known
+// mid-evaluation, which the estimator hook cannot pre-compute by definition.
+// EstimateAndPlan only collapses the redundant outer two-pass ceremony.
+func EstimateAndPlan(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	maxBindingsPerRule int,
+	estimator EstimatorHook,
+	planFn Func,
+) (*ExecutionPlan, []error) {
+	if planFn == nil {
+		planFn = Plan
+	}
+	if sizeHints == nil {
+		sizeHints = map[string]int{}
+	}
+	// Pre-pass: ask eval to materialise every trivial IDB and write its
+	// cardinality into sizeHints. Best-effort by contract — a hook that
+	// returns nil simply leaves the hints untouched and we plan with what
+	// the caller supplied.
+	if estimator != nil {
+		_ = estimator(prog, sizeHints, maxBindingsPerRule)
+	}
+	// Single planning pass with the (now hint-populated) sizeHints. This is
+	// the single point of magic-set inference / stratification / join
+	// ordering — by P1 contract there is no second outer pass.
+	return planFn(prog, sizeHints)
+}
+
 // Plan produces an ExecutionPlan from a Datalog program.
 // sizeHints maps relation names to estimated tuple counts (for join ordering).
 // Unknown relations default to 1000.
