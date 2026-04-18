@@ -235,6 +235,82 @@ func TestEval_ProjectionPushdown_PeakRowSizeReduction(t *testing.T) {
 		peakOff, observedPeak, plannedPeak, ratio)
 }
 
+// TestEval_ProjectionPushdown_FilterFastPathSiblingIsolation exercises the
+// zero-free-var positive-atom shared-binding-map fast path in applyPositive.
+// When an atom has no free variables (e.g. B(x) with x already bound), the
+// fast path appends the SAME map pointer to many output rows. projectBindings
+// must allocate a fresh map per output to prevent mutation in one row from
+// corrupting siblings.
+//
+// Body shape: R(x) :- A(x), B(x), C(x). A binds x; B and C are pure filters
+// (no free vars at their step). With projection ON, projectBindings runs
+// after each filter step on N rows that all share one source map. A
+// regression to in-place mutation would cause sibling-row corruption,
+// observable as wrong tuple counts vs the projection-off baseline.
+func TestEval_ProjectionPushdown_FilterFastPathSiblingIsolation(t *testing.T) {
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{
+					Predicate: "R",
+					Args:      []datalog.Term{datalog.Var{Name: "x"}},
+				},
+				Body: []datalog.Literal{
+					{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "x"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "x"}}}},
+					{Positive: true, Atom: datalog.Atom{Predicate: "C", Args: []datalog.Term{datalog.Var{Name: "x"}}}},
+				},
+			},
+		},
+	}
+	a := eval.NewRelation("A", 1)
+	b := eval.NewRelation("B", 1)
+	c := eval.NewRelation("C", 1)
+	for i := 0; i < 10; i++ {
+		a.Add(eval.Tuple{eval.IntVal{V: int64(i)}})
+		b.Add(eval.Tuple{eval.IntVal{V: int64(i)}})
+		c.Add(eval.Tuple{eval.IntVal{V: int64(i)}})
+	}
+	rels := map[string]*eval.Relation{"A/1": a, "B/1": b, "C/1": c}
+
+	ep, errs := plan.Plan(prog, map[string]int{"A": 10, "B": 10, "C": 10})
+	if len(errs) != 0 {
+		t.Fatalf("plan: %v", errs)
+	}
+
+	// Projection ON.
+	tuplesOn, err := eval.Rule(context.Background(), ep.Strata[0].Rules[0], rels, 0)
+	if err != nil {
+		t.Fatalf("Rule (projection on): %v", err)
+	}
+
+	// Projection OFF (wipe LiveVars).
+	r2 := ep.Strata[0].Rules[0]
+	for i := range r2.JoinOrder {
+		r2.JoinOrder[i].LiveVars = nil
+	}
+	tuplesOff, err := eval.Rule(context.Background(), r2, rels, 0)
+	if err != nil {
+		t.Fatalf("Rule (projection off): %v", err)
+	}
+
+	if len(tuplesOn) == 0 {
+		t.Fatal("projection on returned no tuples")
+	}
+	if len(tuplesOn) != len(tuplesOff) {
+		t.Fatalf("filter-fast-path sibling corruption: on=%d off=%d", len(tuplesOn), len(tuplesOff))
+	}
+	seen := map[string]bool{}
+	for _, tup := range tuplesOff {
+		seen[fmt.Sprint(tup)] = true
+	}
+	for _, tup := range tuplesOn {
+		if !seen[fmt.Sprint(tup)] {
+			t.Errorf("tuple %v in projection-on but not projection-off — sibling-row corruption suspected", tup)
+		}
+	}
+}
+
 // BenchmarkEval_Chain8_ProjectionOn vs Off — the spec target: at least
 // 2x reduction in peak intermediate row size for a synthetic wide-chain
 // shape with a narrow head.
