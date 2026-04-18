@@ -317,16 +317,13 @@ func computeLiveVars(steps []JoinStep, finalKeep []string) {
 				bound[v] = true
 			}
 		}
-		live := make([]string, 0)
+		// Allocate non-nil empty slice so "projection enabled, keep
+		// nothing" is distinguishable from nil ("legacy, no projection").
+		live := make([]string, 0, len(demand[i]))
 		for v := range demand[i] {
 			if bound[v] {
 				live = append(live, v)
 			}
-		}
-		// Make non-nil even when empty (signals "projection enabled,
-		// keep nothing"). nil is reserved for legacy hand-built plans.
-		if live == nil {
-			live = []string{}
 		}
 		steps[i].LiveVars = sortStrings(live)
 	}
