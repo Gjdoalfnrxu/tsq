@@ -145,20 +145,86 @@ func TaintRules() []datalog.Rule {
 		),
 
 		// Rule 6b: Taint alert for VarDecl-init-based sources.
+		//
 		// When the source expression is a FieldRead (MemberExpression) or
 		// compound expression that initializes a VarDecl, ExprMayRef won't
-		// exist for it. This rule uses the VarDecl linkage to connect the
-		// source to a tainted symbol, then checks that the symbol is actually
-		// tainted (which respects sanitization via Rule 2's negation).
-		// The sink side is scoped by requiring a tainted symbol exists in
-		// the same function as the sink expression (via SymInFunction and
-		// ExprInFunction). This is an intentional over-approximation: we
-		// can't require ExprMayRef(sinkExpr, sinkSym) because the sink expr
-		// is typically a compound expression (e.g. concatenation) where
-		// the tainted identifier is a sub-expression, not the expr itself.
-		// Function-scoping prevents cross-function false positives while
-		// accepting intra-function over-approximation — the correct tradeoff
-		// for security analysis (false positives > false negatives).
+		// exist for the source expression itself. Rule 6b uses the VarDecl
+		// linkage to connect the source to a tainted symbol, then requires
+		// the sink expression to actually reference that symbol (or a
+		// FlowStar-reachable derivative) somewhere in its subtree.
+		//
+		// The "somewhere in its subtree" predicate is `SinkRefSym` (Rule
+		// 6b-helper-1/-2 below), defined as: `sinkExpr` is itself the
+		// referencing expression OR contains a descendant expression that
+		// resolves to `sym` via ExprMayRef. This handles compound sinks
+		// like `sql('SELECT ...' + x)` where the sink expression is a Call
+		// whose CallArg is a BinaryExpression whose right operand is the
+		// tainted identifier — none of which `ExprMayRef(sinkExpr, sym)`
+		// alone can capture, but `Contains*(sinkExpr, descExpr) ∧
+		// ExprMayRef(descExpr, sym)` does.
+		//
+		// History (issue #113): The previous Rule 6b accepted ANY tainted
+		// symbol of the same kind in the same function as the sink, with
+		// no flow link from the VarDecl sym to the sink sym and no
+		// requirement that the sink expression actually reference the sink
+		// sym. That produced cross-symbol false positives whenever a
+		// function contained an unrelated sink-shaped call alongside a
+		// tainted variable. The variants below restore the missing
+		// source→sink link.
+
+		// Rule 6b-helper SinkContains: transitive closure of AST
+		// containment, anchored at sink expressions to bound the
+		// search. Used by SinkRefSym (descendant variant) below.
+		rule("SinkContains",
+			[]datalog.Term{v("sinkExpr"), v("child")},
+			mustNamedLiteral("TaintSink", map[string]datalog.Term{
+				"sinkExpr": v("sinkExpr"),
+			}),
+			mustNamedLiteral("Contains", map[string]datalog.Term{
+				"parent": v("sinkExpr"),
+				"child":  v("child"),
+			}),
+		),
+		rule("SinkContains",
+			[]datalog.Term{v("sinkExpr"), v("desc")},
+			pos("SinkContains", v("sinkExpr"), v("mid")),
+			mustNamedLiteral("Contains", map[string]datalog.Term{
+				"parent": v("mid"),
+				"child":  v("desc"),
+			}),
+		),
+		// SinkRefSym (direct): sink expression itself is an identifier
+		// resolving to sym. e.g. `sink(x)` where the sink expression is x.
+		rule("SinkRefSym",
+			[]datalog.Term{v("sinkExpr"), v("sym")},
+			mustNamedLiteral("TaintSink", map[string]datalog.Term{
+				"sinkExpr": v("sinkExpr"),
+			}),
+			mustNamedLiteral("ExprMayRef", map[string]datalog.Term{
+				"expr": v("sinkExpr"),
+				"sym":  v("sym"),
+			}),
+		),
+		// SinkRefSym (descendant): sink subtree contains an identifier
+		// resolving to sym. Handles compound sinks like
+		// `sql('SELECT ' + x)` where the tainted ident lives inside an
+		// argument expression.
+		rule("SinkRefSym",
+			[]datalog.Term{v("sinkExpr"), v("sym")},
+			pos("SinkContains", v("sinkExpr"), v("desc")),
+			mustNamedLiteral("ExprMayRef", map[string]datalog.Term{
+				"expr": v("desc"),
+				"sym":  v("sym"),
+			}),
+		),
+
+		// Variant A (direct): sink references the VarDecl sym itself
+		// (either directly or in a sub-expression).
+		// TaintAlert(srcExpr, sinkExpr, srcKind, sinkKind) :-
+		//   TaintSource(srcExpr, srcKind), VarDecl(_, sym, srcExpr, _),
+		//   TaintedSym(sym, srcKind),
+		//   SinkRefSym(sinkExpr, sym),
+		//   TaintSink(sinkExpr, sinkKind).
 		rule("TaintAlert",
 			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
 			mustNamedLiteral("TaintSource", map[string]datalog.Term{
@@ -170,9 +236,35 @@ func TaintRules() []datalog.Rule {
 				"initExpr": v("srcExpr"),
 			}),
 			pos("TaintedSym", v("sym"), v("srcKind")),
-			pos("TaintedSym", v("sinkSym"), v("srcKind")),
-			pos("SymInFunction", v("sinkSym"), v("fnId")),
-			pos("ExprInFunction", v("sinkExpr"), v("fnId")),
+			pos("SinkRefSym", v("sinkExpr"), v("sym")),
+			mustNamedLiteral("TaintSink", map[string]datalog.Term{
+				"sinkExpr": v("sinkExpr"),
+				"sinkKind": v("sinkKind"),
+			}),
+		),
+
+		// Variant B (flow): sink references some sym reachable from the
+		// VarDecl sym via FlowStar. e.g. `let x = req.body; let y = f(x);
+		// sql('...' + y);`.
+		// TaintAlert(srcExpr, sinkExpr, srcKind, sinkKind) :-
+		//   TaintSource(srcExpr, srcKind), VarDecl(_, sym, srcExpr, _),
+		//   TaintedSym(sym, srcKind),
+		//   FlowStar(sym, sinkSym),
+		//   SinkRefSym(sinkExpr, sinkSym),
+		//   TaintSink(sinkExpr, sinkKind).
+		rule("TaintAlert",
+			[]datalog.Term{v("srcExpr"), v("sinkExpr"), v("srcKind"), v("sinkKind")},
+			mustNamedLiteral("TaintSource", map[string]datalog.Term{
+				"srcExpr":    v("srcExpr"),
+				"sourceKind": v("srcKind"),
+			}),
+			mustNamedLiteral("VarDecl", map[string]datalog.Term{
+				"sym":      v("sym"),
+				"initExpr": v("srcExpr"),
+			}),
+			pos("TaintedSym", v("sym"), v("srcKind")),
+			pos("FlowStar", v("sym"), v("sinkSym")),
+			pos("SinkRefSym", v("sinkExpr"), v("sinkSym")),
 			mustNamedLiteral("TaintSink", map[string]datalog.Term{
 				"sinkExpr": v("sinkExpr"),
 				"sinkKind": v("sinkKind"),
