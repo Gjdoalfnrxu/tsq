@@ -148,31 +148,8 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 	t.Logf("v2 setState query matched %d rows on react-usestate fixture (binding cap %d)", len(rs.Rows), tightCap)
 }
 
-// assertSeedFirst checks that the first JoinStep of the named rule's join
-// order is on `wantFirstPredicate`. Used as a behavioural assertion that the
-// planner is making the seed-selection decision the issue #88 fix targets.
-func assertSeedFirst(t *testing.T, ep *plan.ExecutionPlan, ruleHead, wantFirstPredicate string) {
-	t.Helper()
-	for _, s := range ep.Strata {
-		for _, r := range s.Rules {
-			if r.Head.Predicate != ruleHead {
-				continue
-			}
-			if len(r.JoinOrder) == 0 {
-				t.Fatalf("rule %s has empty JoinOrder", ruleHead)
-			}
-			got := r.JoinOrder[0].Literal.Atom.Predicate
-			if got != wantFirstPredicate {
-				// Print full order for diagnostics.
-				var order []string
-				for _, st := range r.JoinOrder {
-					order = append(order, st.Literal.Atom.Predicate)
-				}
-				t.Fatalf("rule %s: first literal want %s, got %s. Full order: %v",
-					ruleHead, wantFirstPredicate, got, order)
-			}
-			return
-		}
-	}
-	t.Fatalf("rule %s not found in execution plan", ruleHead)
-}
+// assertSeedFirst was used by the v1-shape regression assertion before
+// issue #121 Phase A.2 ripped out `setStateUpdaterCallsFn`. Removed
+// alongside the v1 predicate (lint flagged it as dead code post-rip-out).
+// If a future test wants to make planner-shape assertions on the new
+// `BackwardTracker_*` rule heads, reintroduce a similar helper then.
