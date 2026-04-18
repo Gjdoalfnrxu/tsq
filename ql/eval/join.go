@@ -293,21 +293,80 @@ func applyStep(step plan.JoinStep, rels map[string]*Relation, bindings []binding
 }
 
 // applyComparison filters bindings by evaluating the comparison against each.
+//
+// For equality (`=`) comparisons, applyComparison also propagates bindings
+// when one side is bound and the other is an unbound variable: the unbound
+// var is bound to the value of the bound side, and the row is emitted. This
+// turns `x = y` (with one side already bound) into a binding step rather
+// than a silent zero-result filter. See PR #145 catalog item #1.
+//
+// For non-equality comparisons (!=, <, >, <=, >=) propagation is undefined
+// (we cannot pick a value satisfying `x < y` when y is unbound), so the old
+// "skip if either side unbound" behaviour is preserved.
+//
+// If both sides are unbound under EqOp, this is a planner-level bug — the
+// equality should have been ordered after some step that binds at least one
+// side. Returning an empty result here is a graceful failure (no panic,
+// no fabricated rows) rather than silent corruption.
+//
+// Binding mutation respects the same shared-vs-cloned rules as
+// applyPositive: when a new variable is introduced we allocate a fresh
+// binding map via b.clone(), so input bindings shared across rows are
+// never mutated in place.
 func applyComparison(cmp *datalog.Comparison, bindings []binding) []binding {
+	isEq := cmp.Op == "="
 	var out []binding
 	for _, b := range bindings {
 		lv, lok := lookupTerm(cmp.Left, b)
 		rv, rok := lookupTerm(cmp.Right, b)
-		if !lok || !rok {
-			// Unbound variable in comparison — skip (shouldn't happen with valid plans).
+
+		if lok && rok {
+			ok, err := Compare(cmp.Op, lv, rv)
+			if err == nil && ok {
+				out = append(out, b)
+			}
 			continue
 		}
-		ok, err := Compare(cmp.Op, lv, rv)
-		if err == nil && ok {
-			out = append(out, b)
+
+		if !isEq {
+			// Non-equality with an unbound side: cannot evaluate, drop.
+			continue
+		}
+
+		// EqOp with at least one unbound side. Try to propagate.
+		leftVar, leftIsVar := unboundVar(cmp.Left, b)
+		rightVar, rightIsVar := unboundVar(cmp.Right, b)
+
+		switch {
+		case lok && rightIsVar:
+			nb := b.clone()
+			nb[rightVar] = lv
+			out = append(out, nb)
+		case rok && leftIsVar:
+			nb := b.clone()
+			nb[leftVar] = rv
+			out = append(out, nb)
+		default:
+			// Neither side bound (or unbound side isn't a nameable var):
+			// planner should have ordered this after a binding step. Drop
+			// the row rather than fabricate one.
+			continue
 		}
 	}
 	return out
+}
+
+// unboundVar reports whether t is a non-wildcard Datalog variable that is
+// currently unbound under b. Returns the variable name when so.
+func unboundVar(t datalog.Term, b binding) (string, bool) {
+	v, ok := t.(datalog.Var)
+	if !ok || v.Name == "" || v.Name == "_" {
+		return "", false
+	}
+	if _, bound := b[v.Name]; bound {
+		return "", false
+	}
+	return v.Name, true
 }
 
 // applyPositive extends bindings by probing the named relation.
