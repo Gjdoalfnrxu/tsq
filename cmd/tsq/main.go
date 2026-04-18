@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -569,7 +570,16 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			fmt.Fprintf(stderr, "error: mkdir mem-snapshot-dir: %v\n", err)
 			return 1
 		}
-		// Heap snapshot ticker. Runs for the lifetime of the process; stops
+		// Serialise stderr writes from the snapshot goroutine through a
+		// dedicated mutex-guarded writer. The main goroutine writes to
+		// stderr concurrently from compileAndEval warnings, output
+		// formatters, etc.; bytes.Buffer (used by tests) and even
+		// os.Stderr line-buffering across goroutines is not race-free.
+		// The mutex ensures snapshot lines don't interleave with eval
+		// stderr lines.
+		snapStderr := &lockedWriter{w: stderr}
+		fmt.Fprintf(snapStderr, "[mem-snapshot-dir] writing heap profiles to %s every 10s\n", *memSnapshotDir)
+		// Heap snapshot ticker. Runs for the lifetime of the query; stops
 		// when ctx is cancelled (signal, timeout, or normal completion via
 		// the cancel deferred in run()). Each snapshot is named with its
 		// index and the current Sys MB so a quick `ls` reveals the growth
@@ -586,17 +596,17 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				case <-t.C:
 				}
 				runtime.ReadMemStats(&ms)
-				fn := fmt.Sprintf("%s/heap-%03d-sys%dmb.prof", *memSnapshotDir, i, ms.Sys/(1024*1024))
+				fn := filepath.Join(*memSnapshotDir, fmt.Sprintf("heap-%03d-sys%dmb.prof", i, ms.Sys/(1024*1024)))
 				f, err := os.Create(fn)
 				if err != nil {
-					fmt.Fprintf(stderr, "snapshot %d: create: %v\n", i, err)
+					fmt.Fprintf(snapStderr, "snapshot %d: create: %v\n", i, err)
 					continue
 				}
 				if err := pprof.Lookup("heap").WriteTo(f, 0); err != nil {
-					fmt.Fprintf(stderr, "snapshot %d: write: %v\n", i, err)
+					fmt.Fprintf(snapStderr, "snapshot %d: write: %v\n", i, err)
 				}
 				f.Close()
-				fmt.Fprintf(stderr, "[snapshot %d] heapInuse=%dMB sys=%dMB heapAlloc=%dMB -> %s\n",
+				fmt.Fprintf(snapStderr, "[snapshot %d] heapInuse=%dMB sys=%dMB heapAlloc=%dMB -> %s\n",
 					i, ms.HeapInuse/(1024*1024), ms.Sys/(1024*1024), ms.HeapAlloc/(1024*1024), fn)
 				i++
 			}
@@ -639,6 +649,22 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	return 0
+}
+
+// lockedWriter serialises Write calls with a mutex. Used to guard stderr
+// against the snapshot goroutine writing concurrently with the main
+// goroutine's stderr emissions; without this the test buffer (bytes.Buffer)
+// races and even os.Stderr can interleave partial lines from concurrent
+// writers.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // writeMemProfile writes a heap profile to path, if non-empty. Forces a GC
