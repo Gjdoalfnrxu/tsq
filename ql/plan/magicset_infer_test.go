@@ -366,4 +366,164 @@ func TestWithMagicSetAuto_AppliesTransformWhenInferable(t *testing.T) {
 	if !hasMagic {
 		t.Fatalf("expected magic_* rule in plan after WithMagicSetAuto with inferable bindings")
 	}
+	// Issue #112: happy path must report Fallback=false / FallbackReason=nil.
+	if inf.Fallback {
+		t.Fatalf("expected Fallback=false on happy path, got true (reason=%v)", inf.FallbackReason)
+	}
+	if inf.FallbackReason != nil {
+		t.Fatalf("expected nil FallbackReason on happy path, got %v", inf.FallbackReason)
+	}
+}
+
+// TestWithMagicSetAuto_FallbackSignalsObservably (issue #112) asserts that
+// the silent-fallback path on an unsafe-head augmented program populates
+// Fallback / FallbackReason so callers can distinguish "no bindings to
+// infer" (Fallback=false, Bindings=nil) from "transform fired and broke"
+// (Fallback=true, Bindings=nil).
+func TestWithMagicSetAuto_FallbackSignalsObservably(t *testing.T) {
+	// Reuse the unsafe-head construction from
+	// TestWithMagicSetAuto_UnsafeHeadFallback.
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "x"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+			},
+		},
+	}
+
+	ep, inf, errs := WithMagicSetAuto(prog, nil)
+	if len(errs) != 0 {
+		t.Fatalf("expected silent fallback (no errors), got %v", errs)
+	}
+	if ep == nil {
+		t.Fatalf("expected non-nil ExecutionPlan from fallback path")
+	}
+	if !inf.Fallback {
+		t.Fatalf("expected Fallback=true on unsafe-head fallback (caller can't otherwise distinguish from no-bindings-inferred)")
+	}
+	if inf.FallbackReason == nil {
+		t.Fatalf("expected non-nil FallbackReason on fallback")
+	}
+	if !strings.Contains(inf.FallbackReason.Error(), "unsafe rule") {
+		t.Fatalf("expected FallbackReason to mention the unsafe-rule cause, got %q", inf.FallbackReason.Error())
+	}
+}
+
+// TestWithMagicSetAuto_NoBindingsIsNotFallback (issue #112) asserts that
+// the "no inferable bindings" path leaves Fallback=false. Only an actual
+// transform-then-fail is a fallback.
+func TestWithMagicSetAuto_NoBindingsIsNotFallback(t *testing.T) {
+	// Body has no constants, equalities-to-constants, or constant-bearing
+	// base literals — no bindings inferable.
+	prog := progPathClosure([]datalog.Literal{
+		{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+	}, "a", "b")
+	_, inf, errs := WithMagicSetAuto(prog, nil)
+	if len(errs) != 0 {
+		t.Fatalf("plan errors: %v", errs)
+	}
+	if inf.Fallback {
+		t.Fatalf("expected Fallback=false when no bindings are inferable, got true")
+	}
+	if inf.FallbackReason != nil {
+		t.Fatalf("expected nil FallbackReason on no-bindings path, got %v", inf.FallbackReason)
+	}
+}
+
+// TestWithMagicSetAutoOpts_StrictSurfacesPlanError (issue #112) asserts
+// that strict mode returns the underlying planning error rather than
+// silently falling back to plain Plan.
+func TestWithMagicSetAutoOpts_StrictSurfacesPlanError(t *testing.T) {
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "x"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+			},
+		},
+	}
+
+	ep, _, errs := WithMagicSetAutoOpts(prog, nil, MagicSetOptions{Strict: true})
+	if len(errs) == 0 {
+		t.Fatalf("expected strict mode to surface planning errors from the augmented program, got none")
+	}
+	if ep != nil {
+		t.Fatalf("expected nil ExecutionPlan in strict failure; got non-nil")
+	}
+	sawUnsafeHead := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "unsafe rule") {
+			sawUnsafeHead = true
+			break
+		}
+	}
+	if !sawUnsafeHead {
+		t.Fatalf("expected strict-mode error to surface unsafe-rule cause, got: %v", errs)
+	}
+}
+
+// TestWithMagicSetAutoOpts_StrictHappyPathUnchanged ensures strict mode is
+// transparent on programs whose augmented form plans cleanly.
+func TestWithMagicSetAutoOpts_StrictHappyPathUnchanged(t *testing.T) {
+	prog := progPathClosure([]datalog.Literal{
+		{Positive: true, Atom: datalog.Atom{Predicate: "Path", Args: []datalog.Term{datalog.IntConst{Value: 1}, datalog.Var{Name: "b"}}}},
+	}, "b")
+	ep, inf, errs := WithMagicSetAutoOpts(prog, nil, MagicSetOptions{Strict: true})
+	if len(errs) != 0 {
+		t.Fatalf("strict mode must be transparent on plannable inputs; got errors: %v", errs)
+	}
+	if ep == nil {
+		t.Fatalf("expected non-nil ExecutionPlan")
+	}
+	if inf.Fallback {
+		t.Fatalf("expected Fallback=false on happy path under strict mode")
+	}
+	if len(inf.Bindings) == 0 {
+		t.Fatalf("expected bindings to be inferred under strict mode happy path")
+	}
 }

@@ -23,6 +23,8 @@
 package plan
 
 import (
+	"fmt"
+
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 )
 
@@ -34,6 +36,28 @@ type QueryBindingInference struct {
 	// SeedRules are zero- or N-body rules that derive magic_<pred> facts at
 	// evaluation time using the query body's own context.
 	SeedRules []datalog.Rule
+	// Fallback is true if WithMagicSetAuto inferred bindings but the
+	// augmented (magic-rewritten + seeded) program failed to plan, causing
+	// a silent fallback to plain Plan(prog). Distinguishes "no bindings to
+	// infer" (Fallback=false, Bindings=nil) from "bindings inferred but the
+	// transform produced an unplannable program" (Fallback=true,
+	// Bindings=nil). See issue #112.
+	Fallback bool
+	// FallbackReason carries the first planning error returned by the
+	// augmented program when Fallback is true. nil otherwise.
+	FallbackReason error
+}
+
+// MagicSetOptions controls WithMagicSetAutoOpts behaviour.
+//
+// Strict, when true, suppresses the silent fallback: if the augmented
+// program fails to plan, the planning errors are returned to the caller
+// rather than being swallowed in favour of plain Plan(prog). Use this in
+// tests and CI to detect transform regressions that would otherwise be
+// invisible (issue #112). Default (zero value) preserves the historical
+// silent-fallback behaviour for production use.
+type MagicSetOptions struct {
+	Strict bool
 }
 
 // InferQueryBindings analyses prog.Query and returns the binding map and the
@@ -222,7 +246,26 @@ func IDBPredicates(prog *datalog.Program) map[string]bool {
 // Returns the plan, the inference (so callers can log what fired), and any
 // planning errors. If no bindings are inferable, falls back to plain Plan and
 // returns an inference with empty Bindings.
+//
+// This is the non-strict, backwards-compatible entry point: planning errors
+// from the augmented program are silently swallowed in favour of plain Plan.
+// See WithMagicSetAutoOpts for strict-mode usage that surfaces those errors
+// (issue #112).
 func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, QueryBindingInference, []error) {
+	return WithMagicSetAutoOpts(prog, sizeHints, MagicSetOptions{})
+}
+
+// WithMagicSetAutoOpts is the configurable form of WithMagicSetAuto.
+//
+// When opts.Strict is false (default), behaviour is identical to
+// WithMagicSetAuto: any planning error on the augmented program triggers a
+// silent fallback to plain Plan, with QueryBindingInference.Fallback=true
+// and .FallbackReason populated so callers can observe the regression.
+//
+// When opts.Strict is true, planning errors from the augmented program are
+// returned to the caller rather than triggering fallback. Use this in tests
+// and CI to detect transform-soundness regressions (issue #112).
+func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts MagicSetOptions) (*ExecutionPlan, QueryBindingInference, []error) {
 	idb := IDBPredicates(prog)
 	inf := InferQueryBindings(prog, idb)
 	if len(inf.Bindings) == 0 {
@@ -247,8 +290,13 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 			continue
 		}
 		if len(sr.Head.Args) != len(want) {
+			arityErr := fmt.Errorf("magic-set arity mismatch: seed-rule head %s/%d but binding declares %d positions",
+				sr.Head.Predicate, len(sr.Head.Args), len(want))
+			if opts.Strict {
+				return nil, QueryBindingInference{}, []error{arityErr}
+			}
 			ep, errs := Plan(prog, sizeHints)
-			return ep, QueryBindingInference{}, errs
+			return ep, QueryBindingInference{Fallback: true, FallbackReason: arityErr}, errs
 		}
 	}
 
@@ -272,9 +320,15 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 	// than surfacing the regression to the caller. The transform is opt-in
 	// (--magic-sets); silent fallback to a known-good plan is the right
 	// default until transform soundness is fully proven on real workloads.
+	//
+	// Strict mode (issue #112) surfaces these errors instead, so CI / tests
+	// can detect transform regressions that would otherwise be invisible.
 	if len(errs) > 0 {
+		if opts.Strict {
+			return nil, QueryBindingInference{}, errs
+		}
 		ep2, errs2 := Plan(prog, sizeHints)
-		return ep2, QueryBindingInference{}, errs2
+		return ep2, QueryBindingInference{Fallback: true, FallbackReason: errs[0]}, errs2
 	}
 	return ep, inf, errs
 }
