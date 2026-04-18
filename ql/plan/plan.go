@@ -87,6 +87,28 @@ func WithMagicSet(prog *datalog.Program, sizeHints map[string]int, queryBindings
 // that have no fact DB to estimate against).
 type EstimatorHook func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) map[string]int
 
+// MaterialisingEstimatorHook is the P2a-extended estimator contract: in
+// addition to writing trivial-IDB cardinalities into sizeHints (the same
+// job EstimatorHook does), it returns a list of class-extent head
+// predicate names that the hook materialised eagerly. The actual relation
+// objects live opaquely behind the hook and are handed to the evaluator
+// via a separate channel (see eval.WithMaterialisedClassExtents). The
+// planner only needs the names so it can mark those rules as
+// already-evaluated and skip planning their bodies.
+//
+// Why two return values instead of folding into EstimatorHook:
+// EstimatorHook's contract (best-effort, mutates sizeHints in place,
+// no error) is stable and load-bearing. A second return value would
+// force every existing caller and test to update. The new hook is
+// explicitly opt-in: if EstimateAndPlan is given a MaterialisingEstimatorHook
+// it uses it; otherwise it falls back to the plain EstimatorHook contract.
+//
+// The returned name set is keyed by predicate NAME (not name+arity)
+// because class extents are always 1-arity; the eval-side hook owner is
+// the source of truth for the actual *Relation values and arity-keys
+// them internally via relKey().
+type MaterialisingEstimatorHook func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) (updates map[string]int, materialisedExtents map[string]bool)
+
 // Func is the planning entry point used by EstimateAndPlan after the
 // pre-pass has populated sizeHints. The default is plan.Plan; callers that
 // want magic-set rewriting pass plan.WithMagicSetAutoOpts (wrapped to match
@@ -135,23 +157,87 @@ func EstimateAndPlan(
 	estimator EstimatorHook,
 	planFn Func,
 ) (*ExecutionPlan, []error) {
+	return EstimateAndPlanWithExtents(prog, sizeHints, maxBindingsPerRule, estimator, nil, planFn)
+}
+
+// EstimateAndPlanWithExtents is the P2a-extended entry point. When
+// matExtHook is non-nil it is preferred over estimator: the hook may
+// pre-materialise tagged class-extent rules (rule.ClassExtent == true,
+// body matches IsClassExtentBody) and return their head names. Those
+// rules are then stripped from the program before planning so the
+// planner treats them as base relations supplied externally to Evaluate.
+// The eval side is responsible for actually injecting the *Relation
+// objects via WithMaterialisedClassExtents.
+//
+// Filtering semantics: only rules whose head name appears in the
+// returned materialisedExtents set AND whose ClassExtent flag is true
+// AND whose head arity is 1 are removed. A rule that is tagged but
+// arity > 1 (defensive — desugarer only emits arity-1 char preds) or
+// whose head appears in materialisedExtents but is NOT tagged
+// (defensive — name collision between a class extent and a hand-written
+// predicate) is left in place so the evaluator still computes it.
+//
+// estimator is invoked AFTER materialisation if matExtHook is supplied,
+// so it sees the post-materialisation program (without the stripped
+// rules) — which mirrors what the planner will see. Both hooks
+// contribute to sizeHints; the matExtHook's updates overwrite estimator's
+// for the same key per the same "only-grow" semantics that
+// EstimateNonRecursiveIDBSizes already documents.
+func EstimateAndPlanWithExtents(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	maxBindingsPerRule int,
+	estimator EstimatorHook,
+	matExtHook MaterialisingEstimatorHook,
+	planFn Func,
+) (*ExecutionPlan, []error) {
 	if planFn == nil {
 		planFn = Plan
 	}
 	if sizeHints == nil {
 		sizeHints = map[string]int{}
 	}
-	// Pre-pass: ask eval to materialise every trivial IDB and write its
-	// cardinality into sizeHints. Best-effort by contract — a hook that
-	// returns nil simply leaves the hints untouched and we plan with what
-	// the caller supplied.
+
+	// P2a: class-extent materialisation. Run the materialising hook first
+	// so the trivial-IDB pre-pass below sees the (already-materialised)
+	// extents as base-like relations and doesn't re-evaluate them.
+	var materialisedExtents map[string]bool
+	if matExtHook != nil {
+		updates, mat := matExtHook(prog, sizeHints, maxBindingsPerRule)
+		materialisedExtents = mat
+		// updates have already been written into sizeHints by the hook;
+		// the explicit return value is for observability and is otherwise
+		// equivalent. Discard for now.
+		_ = updates
+	}
 	if estimator != nil {
 		_ = estimator(prog, sizeHints, maxBindingsPerRule)
 	}
-	// Single planning pass with the (now hint-populated) sizeHints. This is
-	// the single point of magic-set inference / stratification / join
-	// ordering — by P1 contract there is no second outer pass.
-	return planFn(prog, sizeHints)
+
+	// Strip materialised class-extent rules from the program so the
+	// planner treats them as externally-supplied base relations. The
+	// stratifier will then see those head names as undefined (and
+	// dependents will reference them as if they were base preds, which is
+	// exactly what they are once Evaluate injects them). Uses a defensive
+	// filter — see function-doc semantics.
+	planProg := prog
+	if len(materialisedExtents) > 0 {
+		filtered := make([]datalog.Rule, 0, len(prog.Rules))
+		for _, rule := range prog.Rules {
+			if rule.ClassExtent && len(rule.Head.Args) == 1 && materialisedExtents[rule.Head.Predicate] {
+				continue
+			}
+			filtered = append(filtered, rule)
+		}
+		// Only rebuild the Program struct if we actually filtered
+		// anything — the common case (no materialisation) skips an
+		// allocation.
+		if len(filtered) != len(prog.Rules) {
+			planProg = &datalog.Program{Rules: filtered, Query: prog.Query}
+		}
+	}
+
+	return planFn(planProg, sizeHints)
 }
 
 // Plan produces an ExecutionPlan from a Datalog program.

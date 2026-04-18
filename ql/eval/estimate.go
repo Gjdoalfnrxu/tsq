@@ -65,6 +65,216 @@ func MakeEstimatorHook(baseRels map[string]*Relation) plan.EstimatorHook {
 	}
 }
 
+// MaterialiseClassExtents evaluates every rule in prog whose ClassExtent
+// flag is true AND whose body matches plan.IsClassExtentBody, returning
+// the materialised relations keyed by relKey() and the set of head names
+// that were materialised (for handing back to the planner). A rule that
+// fails the structural body check (e.g. a class with an expensive
+// CharPred over multiple large extents) is left for normal evaluation.
+//
+// Multiple rules sharing the same head are unioned into a single
+// relation — this is how concrete-class dispatch and abstract-class
+// subclass-union both end up as one extent per class name.
+//
+// Materialisation is iterative: an extent whose body references another
+// already-materialised extent becomes eligible on the next pass. This
+// supports shallow class chains (e.g. an abstract class whose body
+// unions concrete subclass extents that are themselves materialised).
+// Convergence is bounded by the rule count.
+//
+// Errors are absorbed silently per the EstimatorHook contract: a
+// materialisation that hits the binding cap is skipped (its rules are
+// left for the main Evaluate path to handle). The cap exists to bound
+// pathological char-preds; see EstimateNonRecursiveIDBSizes for the
+// same reasoning at the trivial-IDB layer.
+//
+// The size of each materialised extent is also written into sizeHints
+// (only-grow), so the join planner gets accurate cardinalities for
+// extent literals downstream.
+func MaterialiseClassExtents(
+	prog *datalog.Program,
+	baseRels map[string]*Relation,
+	sizeHints map[string]int,
+	maxBindingsPerRule int,
+) (materialised map[string]*Relation, sizeUpdates map[string]int) {
+	materialised = map[string]*Relation{}
+	sizeUpdates = map[string]int{}
+	if prog == nil {
+		return
+	}
+	if sizeHints == nil {
+		sizeHints = map[string]int{}
+	}
+
+	// "Truly base" = registered base relation AND no IDB rule defines a
+	// head with the same name. The exclusion matters because the pipeline
+	// has the arity-shadow case where a name (e.g. `LocalFlow`) is both a
+	// schema relation AND the head of system-injected rules that
+	// populate it from other facts (relkey disambiguates by arity at
+	// eval time, but for materialisation we need to know "is this thing
+	// fully populated already?"). A class extent body that touches a
+	// shadowed name would be materialised against the EMPTY base copy
+	// before the IDB rules run, then stripped from the program — leaving
+	// the extent permanently empty. We avoid that by treating
+	// schema-registered names with IDB rules as not-yet-trustworthy.
+	headPreds := make(map[string]bool, len(prog.Rules))
+	for _, rule := range prog.Rules {
+		headPreds[rule.Head.Predicate] = true
+	}
+	basePreds := make(map[string]bool, len(baseRels))
+	for _, rel := range baseRels {
+		if rel == nil {
+			continue
+		}
+		if headPreds[rel.Name] {
+			// Schema name that an IDB rule also produces — arity-shadow
+			// case. Skip for materialisation safety.
+			continue
+		}
+		basePreds[rel.Name] = true
+	}
+
+	// Group ClassExtent-tagged rules by head name. Skip rules whose head
+	// arity is not 1 — class extents are arity-1 by construction; a
+	// tagged arity-N rule would be a desugarer bug, but we'd rather
+	// silently skip than crash.
+	rulesByHead := map[string][]datalog.Rule{}
+	headOrder := []string{}
+	for _, rule := range prog.Rules {
+		if !rule.ClassExtent {
+			continue
+		}
+		if len(rule.Head.Args) != 1 {
+			continue
+		}
+		name := rule.Head.Predicate
+		if _, seen := rulesByHead[name]; !seen {
+			headOrder = append(headOrder, name)
+		}
+		rulesByHead[name] = append(rulesByHead[name], rule)
+	}
+
+	// Snapshot the materialisation set as a name-only map so
+	// IsClassExtentBody can consult it. Updated each pass as new extents
+	// are materialised.
+	matNames := map[string]bool{}
+	keyed := keyRels(baseRels)
+
+	for {
+		progress := false
+		for _, name := range headOrder {
+			if matNames[name] {
+				continue
+			}
+			rules := rulesByHead[name]
+			// All rules defining this extent must match the structural
+			// shape — if any rule is too complex, fall back to normal
+			// evaluation for the whole head (otherwise we'd have a
+			// half-materialised extent, which is worse).
+			eligible := true
+			for _, rule := range rules {
+				if !plan.IsClassExtentBody(rule.Body, basePreds, matNames) {
+					eligible = false
+					break
+				}
+			}
+			if !eligible {
+				continue
+			}
+
+			// Evaluate every rule and union into one head relation.
+			// Arity is fixed to 1 by the filter above.
+			head := NewRelation(name, 1)
+			failed := false
+			for _, rule := range rules {
+				planned := plan.SingleRule(rule, sizeHints)
+				tuples, err := Rule(context.Background(), planned, keyed, maxBindingsPerRule)
+				if err != nil {
+					failed = true
+					break
+				}
+				for _, tup := range tuples {
+					head.Add(tup)
+				}
+			}
+			if failed {
+				continue
+			}
+
+			materialised[relKey(name, 1)] = head
+			matNames[name] = true
+			keyed[relKey(name, 1)] = head
+			n := head.Len()
+			if cur, exists := sizeHints[name]; !exists || n > cur {
+				sizeHints[name] = n
+			}
+			sizeUpdates[name] = n
+			progress = true
+		}
+		if !progress {
+			break
+		}
+	}
+	return
+}
+
+// MakeMaterialisingEstimatorHook returns a plan.MaterialisingEstimatorHook
+// that:
+//  1. Materialises every eligible class extent (per MaterialiseClassExtents).
+//  2. Stashes the resulting *Relation values in the supplied sink map so
+//     the caller can hand them to Evaluate via WithMaterialisedClassExtents.
+//  3. Runs the existing trivial-IDB pre-pass so non-extent IDBs still
+//     get cardinality hints.
+//
+// Splitting the *Relation transport into a sink map (rather than
+// extending the hook return type) keeps plan.MaterialisingEstimatorHook
+// from depending on eval.Relation — preserving the no-import-cycle
+// invariant. The caller owns the sink map and passes it to both
+// MakeMaterialisingEstimatorHook and eval.WithMaterialisedClassExtents.
+//
+// `materialisedSink` MUST be non-nil and is mutated in place by the
+// returned hook. Callers that don't care about materialisation can use
+// MakeEstimatorHook instead.
+func MakeMaterialisingEstimatorHook(
+	baseRels map[string]*Relation,
+	materialisedSink map[string]*Relation,
+) plan.MaterialisingEstimatorHook {
+	return func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) (map[string]int, map[string]bool) {
+		mats, updates := MaterialiseClassExtents(prog, baseRels, sizeHints, maxBindingsPerRule)
+		extentNames := make(map[string]bool, len(mats))
+		for k, rel := range mats {
+			materialisedSink[k] = rel
+			if rel != nil {
+				extentNames[rel.Name] = true
+			}
+		}
+		// Run the trivial-IDB pre-pass too so non-extent trivials get
+		// cardinality hints. It will see the materialised extents as
+		// base-like via baseRels — but baseRels is a closed-over input,
+		// so we have to fold them in here.
+		merged := make(map[string]*Relation, len(baseRels)+len(mats))
+		for k, v := range baseRels {
+			merged[k] = v
+		}
+		for k, v := range mats {
+			// keyRels-style merge: the keys are already relKey'd because
+			// MaterialiseClassExtents stashes by relKey().
+			merged[k] = v
+		}
+		trivUpdates := EstimateNonRecursiveIDBSizes(prog, merged, sizeHints, maxBindingsPerRule)
+		// Combine update views. Materialisation updates win on conflict
+		// (they are exact, not pre-pass estimates).
+		out := make(map[string]int, len(updates)+len(trivUpdates))
+		for k, v := range trivUpdates {
+			out[k] = v
+		}
+		for k, v := range updates {
+			out[k] = v
+		}
+		return out, extentNames
+	}
+}
+
 func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Relation, sizeHints map[string]int, maxBindingsPerRule int) map[string]int {
 	if sizeHints == nil {
 		sizeHints = map[string]int{}

@@ -973,11 +973,17 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// plan ONCE with the now-populated hints. The estimator hook honours
 	// maxBindingsPerRule (issue #130 / PR #132 — preserved end-to-end).
 	planFn := makeFunc(opts)
-	execPlan, planErrs := plan.EstimateAndPlan(
+	// P2a: pre-materialise class extents so they're treated as base
+	// relations end-to-end. The sink map is populated by the
+	// materialising hook and handed to Evaluate via
+	// WithMaterialisedClassExtents.
+	matExtents := map[string]*eval.Relation{}
+	execPlan, planErrs := plan.EstimateAndPlanWithExtents(
 		prog,
 		sizeHints,
 		maxBindingsPerRule,
-		eval.MakeEstimatorHook(baseRels),
+		nil, // estimator: covered by the materialising hook below.
+		eval.MakeMaterialisingEstimatorHook(baseRels, matExtents),
 		planFn,
 	)
 	if len(planErrs) > 0 {
@@ -1002,6 +1008,10 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 		// contains the trivial-IDB pre-pass results from above; the
 		// between-strata refresh covers the non-trivial IDBs.
 		eval.WithSizeHints(sizeHints),
+		// P2a: hand pre-materialised class extents to Evaluate so it
+		// uses them as base-like relations and skips re-evaluating their
+		// rules.
+		eval.WithMaterialisedClassExtents(matExtents),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate: %w", err)

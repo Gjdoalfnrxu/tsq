@@ -146,6 +146,16 @@ type evalConfig struct {
 	// Cartesian-heavy join orders for queries whose seed predicate is a tiny
 	// derived relation. See issue #88.
 	sizeHints map[string]int
+	// materialisedExtents holds class-extent IDBs that were
+	// pre-materialised before planning (P2a). Each entry is keyed by
+	// relKey(name, arity) and the corresponding *Relation is folded into
+	// allRels at evaluation start, so downstream rules see the extent as
+	// a base-like relation. Because plan.EstimateAndPlanWithExtents
+	// strips the materialised rules from the program before stratification,
+	// no rule in execPlan should have a head matching one of these names —
+	// but Evaluate defensively skips rules whose head DOES collide so a
+	// double-injection cannot duplicate work.
+	materialisedExtents map[string]*Relation
 }
 
 // WithMaxIterations sets the maximum number of fixpoint iterations per stratum.
@@ -196,6 +206,28 @@ func WithSizeHints(hints map[string]int) Option {
 	return func(c *evalConfig) { c.sizeHints = hints }
 }
 
+// WithMaterialisedClassExtents injects pre-materialised class-extent
+// relations into Evaluate. Each entry must already be relKey-keyed
+// ("<name>/<arity>"); the canonical producer is
+// MakeMaterialisingEstimatorHook, which writes into a sink map the
+// caller then hands here.
+//
+// Semantics: the supplied relations are added to allRels at evaluation
+// start, so any rule body literal that references one of those names
+// resolves to the materialised tuples instead of an empty relation.
+// Rules whose HEAD matches a materialised extent name+arity are skipped
+// during stratum bootstrap and fixpoint — defensively, since
+// EstimateAndPlanWithExtents already strips them from the program. The
+// double-guard means a misuse (passing materialised relations without
+// having stripped the rules) silently degrades to "no work duplicated"
+// rather than "extent gets unioned with itself and re-deduped at every
+// iteration".
+//
+// nil or empty map is a no-op.
+func WithMaterialisedClassExtents(rels map[string]*Relation) Option {
+	return func(c *evalConfig) { c.materialisedExtents = rels }
+}
+
 // Evaluate executes an ExecutionPlan over base facts and returns results.
 func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[string]*Relation, opts ...Option) (*ResultSet, error) {
 	cfg := evalConfig{
@@ -213,18 +245,61 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 	// the base relation. See ql/eval/relkey.go for the rationale.
 	allRels := keyRels(baseRels)
 
+	// P2a: fold pre-materialised class extents into allRels so downstream
+	// rules see them as base-like. Keys are already relKey'd by the
+	// MakeMaterialisingEstimatorHook contract — we don't re-key here so
+	// that any drift in keying convention surfaces as a missed lookup
+	// (visible) rather than a silent double-write to two different keys.
+	// A class-extent name that collides with an existing base relation
+	// of the same arity overwrites the base entry — but in practice this
+	// can't happen because base relations come from the schema and class
+	// extents come from `class C { ... }` declarations whose names are
+	// distinct; the desugarer's arity-1 class char-pred would only
+	// collide with an arity-1 base relation, which the bridge does not
+	// have.
+	skipHeads := make(map[string]bool, len(cfg.materialisedExtents))
+	for k, rel := range cfg.materialisedExtents {
+		if rel == nil {
+			continue
+		}
+		allRels[k] = rel
+		skipHeads[k] = true
+	}
+
 	for si, stratum := range execPlan.Strata {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("evaluation cancelled before stratum %d: %w", si, err)
 		}
 
-		// Ensure head relations exist.
+		// Ensure head relations exist (skipping materialised class
+		// extents — their relation is already in allRels and creating
+		// a fresh empty NewRelation would clobber the materialised
+		// tuples).
 		for _, rule := range stratum.Rules {
 			headName := rule.Head.Predicate
 			headArity := len(rule.Head.Args)
 			hk := relKey(headName, headArity)
+			if skipHeads[hk] {
+				continue
+			}
 			if _, ok := allRels[hk]; !ok {
 				allRels[hk] = NewRelation(headName, headArity)
+			}
+		}
+
+		// Filter out rules whose head is a materialised class extent
+		// (P2a defensive guard; planner already strips these). We do
+		// this per-stratum rather than once up front so the iteration
+		// order over execPlan.Strata is preserved exactly.
+		activeRules := stratum.Rules
+		if len(skipHeads) > 0 {
+			activeRules = make([]plan.PlannedRule, 0, len(stratum.Rules))
+			for _, rule := range stratum.Rules {
+				hk := relKey(rule.Head.Predicate, len(rule.Head.Args))
+				if skipHeads[hk] {
+					continue
+				}
+				activeRules = append(activeRules, rule)
 			}
 		}
 
@@ -232,7 +307,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 		var deltaRels map[string]*Relation
 		if cfg.parallel {
 			var perr error
-			deltaRels, perr = parallelBootstrap(ctx, stratum.Rules, allRels, cfg.maxBindingsPerRule)
+			deltaRels, perr = parallelBootstrap(ctx, activeRules, allRels, cfg.maxBindingsPerRule)
 			if perr != nil {
 				if errors.Is(perr, context.Canceled) || errors.Is(perr, context.DeadlineExceeded) {
 					return nil, fmt.Errorf("evaluation cancelled at stratum %d, %w", si, perr)
@@ -241,7 +316,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 			}
 		} else {
 			deltaRels = make(map[string]*Relation)
-			for _, rule := range stratum.Rules {
+			for _, rule := range activeRules {
 				headName := rule.Head.Predicate
 				headArity := len(rule.Head.Args)
 				hk := relKey(headName, headArity)
@@ -332,7 +407,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 
 			if cfg.parallel {
 				var perr error
-				deltaRels, perr = parallelDelta(ctx, stratum.Rules, allRels, deltaRels, cfg.maxBindingsPerRule)
+				deltaRels, perr = parallelDelta(ctx, activeRules, allRels, deltaRels, cfg.maxBindingsPerRule)
 				if perr != nil {
 					if errors.Is(perr, context.Canceled) || errors.Is(perr, context.DeadlineExceeded) {
 						return nil, fmt.Errorf("evaluation cancelled at stratum %d, iteration %d, %w", si, iteration, perr)
@@ -349,7 +424,7 @@ func Evaluate(ctx context.Context, execPlan *plan.ExecutionPlan, baseRels map[st
 				}
 			} else {
 				nextDelta := make(map[string]*Relation)
-				for _, rule := range stratum.Rules {
+				for _, rule := range activeRules {
 					headName := rule.Head.Predicate
 					headArity := len(rule.Head.Args)
 					hk := relKey(headName, headArity)
