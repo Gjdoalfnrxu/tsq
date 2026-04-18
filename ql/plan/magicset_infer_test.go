@@ -456,54 +456,109 @@ func TestWithMagicSetAuto_NoBindingsIsNotFallback(t *testing.T) {
 // TestWithMagicSetAutoOpts_StrictSurfacesPlanError (issue #112) asserts
 // that strict mode returns the underlying planning error rather than
 // silently falling back to plain Plan.
+//
+// Runs over two structurally-distinct fixtures so the strict-mode contract
+// isn't tied to a single failure-mode shape — if the planner ever stops
+// flagging one of them, the other still exercises the strict return path
+// (see #124 review minor on shared-fixture coupling with the non-strict
+// observability test above).
 func TestWithMagicSetAutoOpts_StrictSurfacesPlanError(t *testing.T) {
-	rules := []datalog.Rule{
+	cases := []struct {
+		name string
+		prog *datalog.Program
+	}{
 		{
-			Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
-				{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+			name: "unsafe_head_via_wildcard_2arg",
+			prog: &datalog.Program{
+				Rules: []datalog.Rule{
+					{
+						Head: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.Var{Name: "x"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "y"}}}},
+							{Positive: true, Atom: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "y"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
+						},
+					},
+				},
+				Query: &datalog.Query{
+					Select: []datalog.Term{datalog.Var{Name: "x"}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+					},
+				},
 			},
 		},
 		{
-			Head: datalog.Atom{Predicate: "R", Args: []datalog.Term{datalog.Var{Name: "z"}}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "z"}}}},
-			},
-		},
-		{
-			Head: datalog.Atom{Predicate: "Q", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "Base", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "b"}}}},
-			},
-		},
-	}
-	prog := &datalog.Program{
-		Rules: rules,
-		Query: &datalog.Query{
-			Select: []datalog.Term{datalog.Var{Name: "x"}},
-			Body: []datalog.Literal{
-				{Positive: true, Atom: datalog.Atom{Predicate: "P", Args: []datalog.Term{datalog.IntConst{Value: 1}}}},
+			// Distinct shape: 3-arg base relation, different predicate names,
+			// the wildcard-bearing rule sits one hop deeper. Same root cause
+			// (head variable propagated only by an underscore-bearing body
+			// literal in a transitively-reached rule) but the augmented
+			// program differs textually and structurally from the first
+			// fixture, so a single planner change is unlikely to mask both.
+			name: "unsafe_head_via_wildcard_3arg",
+			prog: &datalog.Program{
+				Rules: []datalog.Rule{
+					{
+						Head: datalog.Atom{Predicate: "Top", Args: []datalog.Term{datalog.Var{Name: "k"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Mid", Args: []datalog.Term{datalog.Var{Name: "k"}, datalog.Var{Name: "u"}}}},
+							{Positive: true, Atom: datalog.Atom{Predicate: "Leaf", Args: []datalog.Term{datalog.Var{Name: "u"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "Leaf", Args: []datalog.Term{datalog.Var{Name: "w"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Mid", Args: []datalog.Term{datalog.Var{Name: "_"}, datalog.Var{Name: "w"}}}},
+						},
+					},
+					{
+						Head: datalog.Atom{Predicate: "Mid", Args: []datalog.Term{datalog.Var{Name: "p"}, datalog.Var{Name: "q"}}},
+						Body: []datalog.Literal{
+							{Positive: true, Atom: datalog.Atom{Predicate: "Triple", Args: []datalog.Term{datalog.Var{Name: "p"}, datalog.Var{Name: "q"}, datalog.Var{Name: "r"}}}},
+						},
+					},
+				},
+				Query: &datalog.Query{
+					Select: []datalog.Term{datalog.Var{Name: "k"}},
+					Body: []datalog.Literal{
+						{Positive: true, Atom: datalog.Atom{Predicate: "Top", Args: []datalog.Term{datalog.IntConst{Value: 7}}}},
+					},
+				},
 			},
 		},
 	}
 
-	ep, _, errs := WithMagicSetAutoOpts(prog, nil, MagicSetOptions{Strict: true})
-	if len(errs) == 0 {
-		t.Fatalf("expected strict mode to surface planning errors from the augmented program, got none")
-	}
-	if ep != nil {
-		t.Fatalf("expected nil ExecutionPlan in strict failure; got non-nil")
-	}
-	sawUnsafeHead := false
-	for _, e := range errs {
-		if strings.Contains(e.Error(), "unsafe rule") {
-			sawUnsafeHead = true
-			break
-		}
-	}
-	if !sawUnsafeHead {
-		t.Fatalf("expected strict-mode error to surface unsafe-rule cause, got: %v", errs)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, _, errs := WithMagicSetAutoOpts(tc.prog, nil, MagicSetOptions{Strict: true})
+			if len(errs) == 0 {
+				t.Fatalf("expected strict mode to surface planning errors from the augmented program, got none")
+			}
+			if ep != nil {
+				t.Fatalf("expected nil ExecutionPlan in strict failure; got non-nil")
+			}
+			sawUnsafeHead := false
+			for _, e := range errs {
+				if strings.Contains(e.Error(), "unsafe rule") {
+					sawUnsafeHead = true
+					break
+				}
+			}
+			if !sawUnsafeHead {
+				t.Fatalf("expected strict-mode error to surface unsafe-rule cause, got: %v", errs)
+			}
+		})
 	}
 }
 

@@ -277,6 +277,17 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 	// arity declared for its predicate. A mismatch means the inference and
 	// the transform disagree about the magic-pred shape; prefer the safe
 	// plain plan over a broken augmented program.
+	//
+	// NOTE (#124 review minor): this branch is currently defensive and not
+	// reachable from real input — InferQueryBindings co-produces SeedRules
+	// and Bindings in a single pass, so by construction the head arity of
+	// each magic_<pred> seed rule equals len(Bindings[<pred>]). The guard
+	// is kept as a belt-and-braces check against future divergence between
+	// the inference and the transform (e.g. if SeedRules ever start being
+	// rewritten downstream of inference). If you change InferQueryBindings
+	// to allow asymmetric outputs, add a unit test that round-trips a
+	// deliberately-mismatched inference through WithMagicSetAutoOpts under
+	// Strict to cover the strict-mode return on lines below.
 	for _, sr := range inf.SeedRules {
 		// magic_<pred> -> <pred>
 		predName := sr.Head.Predicate
