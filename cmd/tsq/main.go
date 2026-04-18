@@ -267,7 +267,11 @@ func resolveTSConfig(flagVal, dir string, stderr io.Writer) string {
 // loop can be exercised with a fake in tests (issue #115).
 type enrichRunner interface {
 	RegisterFiles(paths []string)
-	EnrichFile(filePath string, positions []typecheck.Position) ([]typecheck.TypeFact, typecheck.EnrichStats, error)
+	// EnrichFileCtx threads ctx into the per-file enrichment so a blocking
+	// tsgo RPC can be interrupted promptly on SIGINT or --timeout (issue
+	// #115). The previous EnrichFile signature dropped ctx, leaving any
+	// in-flight RPC to hang indefinitely past cancellation.
+	EnrichFileCtx(ctx context.Context, filePath string, positions []typecheck.Position) ([]typecheck.TypeFact, typecheck.EnrichStats, error)
 	Close() error
 }
 
@@ -371,7 +375,14 @@ func runEnrichLoop(ctx context.Context, enricher enrichRunner, allPaths []string
 		}
 		processedFiles++
 
-		facts, stats, err := enricher.EnrichFile(filePath, positions)
+		facts, stats, err := enricher.EnrichFileCtx(ctx, filePath, positions)
+		// If the per-file RPC was cancelled mid-flight, surface that as a
+		// loop-level cancellation rather than an opaque per-file warning —
+		// otherwise we'd count a SIGINT-induced abort as a "broken file"
+		// and pollute the failure ratio (issue #115).
+		if err != nil && ctx.Err() != nil {
+			return fmt.Errorf("enrichWithTsgo: cancelled mid-RPC after %d/%d files: %w", processedFiles, len(allPaths), ctx.Err())
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: tsgo enrich %s: %v\n", filePath, err)
 			failedFiles++
@@ -434,6 +445,15 @@ func runEnrichLoop(ctx context.Context, enricher enrichRunner, allPaths []string
 	// per-file errors into stderr warnings, so a regression that broke 90%
 	// of files would still exit 0 — and any CI test that only asserted
 	// `facts > 0` would happily pass.
+	//
+	// The 100%-failure case is treated specially: it always errors, regardless
+	// of enrichFailureMinFiles. A 3-file project where all 3 fail is not
+	// "insufficient signal" — it is a totally-broken pipeline, and the
+	// min-files gate exists only to avoid hair-trigger errors on the
+	// >50% partial-failure case (PR #117 review feedback).
+	if failedFiles > 0 && failedFiles == processedFiles {
+		return fmt.Errorf("tsgo enrichment: all %d processed files failed; pipeline broken", processedFiles)
+	}
 	if processedFiles >= enrichFailureMinFiles {
 		ratio := float64(failedFiles) / float64(processedFiles)
 		if ratio > enrichFailureRatioThreshold {

@@ -33,6 +33,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -249,11 +251,22 @@ func TestCLI_FullTSProject_EndToEnd(t *testing.T) {
 	// Issue #115: tighter assertions on the enrichment summary.
 	// A pipeline that fails 90% of files can still report `facts > 0`; the
 	// new failedFiles=/totalFiles= fields let CI catch that case here.
-	if !strings.Contains(stderr, "failedFiles=0") {
-		t.Errorf("expected failedFiles=0 on the realistic fixture (issue #115); stderr:\n%s", stderr)
-	}
-	if !strings.Contains(stderr, "totalFiles=") {
-		t.Errorf("expected totalFiles= field in summary line (issue #115); stderr:\n%s", stderr)
+	//
+	// PR #117 review fix: the previous substring check on "failedFiles=0" was
+	// trivially satisfied by an empty fixture (failedFiles=0 totalFiles=0).
+	// Parse both numbers and assert totalFiles > 0 AND failedFiles == 0 so
+	// the assertion has actual teeth.
+	failedFiles, okFailed := extractSummaryInt(t, stderr, "failedFiles")
+	totalFiles, okTotal := extractSummaryInt(t, stderr, "totalFiles")
+	if !okFailed || !okTotal {
+		t.Errorf("expected failedFiles= and totalFiles= fields in summary (issue #115); stderr:\n%s", stderr)
+	} else {
+		if totalFiles <= 0 {
+			t.Errorf("expected totalFiles > 0 on the realistic fixture (issue #115); got totalFiles=%d; stderr:\n%s", totalFiles, stderr)
+		}
+		if failedFiles != 0 {
+			t.Errorf("expected failedFiles=0 on the realistic fixture (issue #115); got failedFiles=%d; stderr:\n%s", failedFiles, stderr)
+		}
 	}
 	// symbolErrors should be 0 on a clean fixture — every queried position
 	// either resolves a symbol or returns empty (which is counted separately
@@ -327,4 +340,30 @@ func TestCLI_FullTSProject_HasExpectedShape(t *testing.T) {
 			t.Errorf("fixture file %s is empty", rel)
 		}
 	}
+}
+
+// summaryFieldRe matches `<field>=<int>` in the tsgo enrichment summary line.
+// Each field gets its own compiled regexp so an unexpected non-integer value
+// (e.g. "totalFiles=many") fails to parse rather than silently coercing.
+var summaryFieldRe = regexp.MustCompile(`\b(\w+)=(-?\d+)\b`)
+
+// extractSummaryInt parses the integer value of a `field=N` token from stderr,
+// matching only on a word-boundary key. Returns (value, true) on success or
+// (0, false) if the field is absent or the value is non-numeric. Used by the
+// integration test so an empty-fixture run (failedFiles=0 totalFiles=0) does
+// not trivially satisfy the failedFiles==0 assertion (PR #117 review fix).
+func extractSummaryInt(t *testing.T, stderr, field string) (int, bool) {
+	t.Helper()
+	matches := summaryFieldRe.FindAllStringSubmatch(stderr, -1)
+	for _, m := range matches {
+		if m[1] != field {
+			continue
+		}
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
 }

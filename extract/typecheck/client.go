@@ -2,6 +2,7 @@ package typecheck
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -89,6 +90,49 @@ func (c *Client) Close() error {
 
 // call sends a JSON-RPC request and reads the response.
 func (c *Client) call(method string, params interface{}) (json.RawMessage, error) {
+	return c.callCtx(context.Background(), method, params)
+}
+
+// callCtx is like call but honours ctx cancellation. Because the underlying
+// stdio is blocking and shared (guarded by c.mu), true mid-RPC cancellation
+// requires unblocking the read. We run the blocking call in a goroutine and
+// race it against ctx.Done(); on cancellation we close stdin so the tsgo
+// subprocess exits and the goroutine's read unblocks. The Client is
+// effectively dead after such a cancellation — callers must not reuse it
+// (issue #115 fix: previously a per-file RPC could hang indefinitely past
+// SIGINT or --timeout).
+func (c *Client) callCtx(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type result struct {
+		raw json.RawMessage
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		raw, err := c.doCall(method, params)
+		done <- result{raw, err}
+	}()
+	select {
+	case r := <-done:
+		return r.raw, r.err
+	case <-ctx.Done():
+		// Unblock the in-flight read by closing stdin so tsgo exits.
+		// Best-effort — Close is safe to call on an already-closed pipe;
+		// errors here are subordinate to the cancellation we are reporting.
+		c.mu.Lock()
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
+		c.mu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+// doCall performs the blocking JSON-RPC call previously inlined in call().
+// Split out so callCtx can race it against ctx.Done().
+func (c *Client) doCall(method string, params interface{}) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -366,11 +410,17 @@ func (c *Client) GetTypeAtOffset(project, file string, offset uint32) (*TypeInfo
 // GetSymbolAtOffset returns the symbol response at a byte offset in a file.
 // Same wire-shape notes as GetTypeAtOffset.
 func (c *Client) GetSymbolAtOffset(project, file string, offset uint32) (*SymbolInfo, error) {
+	return c.GetSymbolAtOffsetCtx(context.Background(), project, file, offset)
+}
+
+// GetSymbolAtOffsetCtx is the ctx-aware variant of GetSymbolAtOffset. See
+// callCtx for cancellation semantics.
+func (c *Client) GetSymbolAtOffsetCtx(ctx context.Context, project, file string, offset uint32) (*SymbolInfo, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.call("getSymbolAtPosition", map[string]interface{}{
+	raw, err := c.callCtx(ctx, "getSymbolAtPosition", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
 		"file":     file,
@@ -389,11 +439,16 @@ func (c *Client) GetSymbolAtOffset(project, file string, offset uint32) (*Symbol
 // GetTypeOfSymbol returns the type of a symbol.
 // Wire: GetTypeOfSymbolParams{ snapshot, project, symbol }.
 func (c *Client) GetTypeOfSymbol(project string, symbolHandle string) (*TypeInfo, error) {
+	return c.GetTypeOfSymbolCtx(context.Background(), project, symbolHandle)
+}
+
+// GetTypeOfSymbolCtx is the ctx-aware variant of GetTypeOfSymbol.
+func (c *Client) GetTypeOfSymbolCtx(ctx context.Context, project string, symbolHandle string) (*TypeInfo, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.call("getTypeOfSymbol", map[string]interface{}{
+	raw, err := c.callCtx(ctx, "getTypeOfSymbol", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
 		"symbol":   symbolHandle,
@@ -458,11 +513,16 @@ func (c *Client) GetBaseTypes(project string, typeHandle string) ([]TypeInfo, er
 // Upstream (handleTypeToString, session.go:1352) returns a bare JSON string —
 // e.g. `"string"` or `"Box<number>"` — NOT an object with a displayName field.
 func (c *Client) TypeToString(project string, typeHandle string) (string, error) {
+	return c.TypeToStringCtx(context.Background(), project, typeHandle)
+}
+
+// TypeToStringCtx is the ctx-aware variant of TypeToString.
+func (c *Client) TypeToStringCtx(ctx context.Context, project string, typeHandle string) (string, error) {
 	snap, err := c.snap()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.call("typeToString", map[string]interface{}{
+	raw, err := c.callCtx(ctx, "typeToString", map[string]interface{}{
 		"snapshot": snap,
 		"project":  project,
 		"type":     typeHandle,

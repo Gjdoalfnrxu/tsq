@@ -25,23 +25,29 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/extract/typecheck"
 )
 
-// fakeEnricher implements enrichRunner. Tests configure its EnrichFile to
-// either succeed (returning empty stats), fail with an error, or block on a
-// channel so the test can deterministically interleave cancellation.
+// fakeEnricher implements enrichRunner. Tests configure its EnrichFileCtx to
+// either succeed (returning empty stats), fail with an error, or block on
+// ctx.Done so the test can deterministically interleave cancellation
+// (including the mid-RPC blocking case).
 type fakeEnricher struct {
 	calls   atomic.Int64
 	failAll bool
-	// onCall, if non-nil, is invoked at the start of each EnrichFile call.
-	// Tests use it to block / cancel mid-loop.
-	onCall func(filePath string)
+	// onCall, if non-nil, is invoked at the start of each EnrichFileCtx call.
+	// Tests use it to block / cancel mid-loop. ctx is provided so the fake
+	// can model an RPC that blocks until ctx is cancelled — which is what a
+	// real tsgo RPC stuck in stdin/stdout looks like under cancellation.
+	onCall func(ctx context.Context, filePath string)
 }
 
 func (f *fakeEnricher) RegisterFiles(paths []string) {}
 
-func (f *fakeEnricher) EnrichFile(filePath string, positions []typecheck.Position) ([]typecheck.TypeFact, typecheck.EnrichStats, error) {
+func (f *fakeEnricher) EnrichFileCtx(ctx context.Context, filePath string, positions []typecheck.Position) ([]typecheck.TypeFact, typecheck.EnrichStats, error) {
 	f.calls.Add(1)
 	if f.onCall != nil {
-		f.onCall(filePath)
+		f.onCall(ctx, filePath)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, typecheck.EnrichStats{}, err
 	}
 	if f.failAll {
 		return nil, typecheck.EnrichStats{}, errors.New("fake enrich failure")
@@ -102,7 +108,7 @@ func TestRunEnrichLoop_CtxCancelInterrupts(t *testing.T) {
 	fake := &fakeEnricher{}
 	// Each call sleeps a beat so the loop spends real time between iterations,
 	// giving the post-cancel iteration a chance to bail.
-	fake.onCall = func(_ string) { time.Sleep(20 * time.Millisecond) }
+	fake.onCall = func(_ context.Context, _ string) { time.Sleep(20 * time.Millisecond) }
 
 	// Cancel after the very first call lands.
 	go func() {
@@ -185,22 +191,114 @@ func TestRunEnrichLoop_HighFailureRatioReturnsError(t *testing.T) {
 	}
 }
 
-// TestRunEnrichLoop_BelowMinFilesNoError confirms the failure-ratio check is
-// gated by enrichFailureMinFiles — a 2-file project where both fail must
-// not error (insufficient signal), only warn. Pins the threshold so a future
-// "tighten the gate" change is forced to update the gate-min comment too.
-func TestRunEnrichLoop_BelowMinFilesNoError(t *testing.T) {
-	files := []string{"/fake/a.ts", "/fake/b.ts"} // < enrichFailureMinFiles
+// TestRunEnrichLoop_AllFailedAlwaysErrors confirms 100%-failure runs error
+// regardless of the enrichFailureMinFiles gate. Per PR #117 review feedback:
+// a small project (e.g. 3 files) where every file fails is exactly the
+// "broken pipeline in CI" signal we must not swallow. The min-files gate
+// only applies to the partial-failure (>50%) case.
+func TestRunEnrichLoop_AllFailedAlwaysErrors(t *testing.T) {
+	// Use a count strictly below enrichFailureMinFiles so this test would
+	// previously have passed (and incorrectly returned nil).
+	files := []string{"/fake/a.ts", "/fake/b.ts", "/fake/c.ts"} // 3 < enrichFailureMinFiles=4
 	database := buildDBForFiles(t, files)
 
 	fake := &fakeEnricher{failAll: true}
 	var stderr bytes.Buffer
 	err := runEnrichLoop(context.Background(), fake, files, database, &stderr)
-	if err != nil {
-		t.Fatalf("expected no hard error below min-files gate, got: %v", err)
+	if err == nil {
+		t.Fatal("expected hard error from 100% failure on a small project, got nil")
 	}
-	if !strings.Contains(stderr.String(), "failedFiles=2") {
-		t.Errorf("expected failedFiles=2 in summary, got:\n%s", stderr.String())
+	if !strings.Contains(err.Error(), "all 3 processed files failed") {
+		t.Errorf("expected error to mention all-failed case, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "failedFiles=3") {
+		t.Errorf("expected failedFiles=3 in summary, got:\n%s", stderr.String())
+	}
+}
+
+// TestRunEnrichLoop_PartialFailureBelowMinNoError confirms the
+// enrichFailureMinFiles gate still applies to the partial-failure case.
+// A 3-file project with 1 failure (33%) should not error — too little signal
+// to distinguish "broken" from "one weird file in a tiny project".
+func TestRunEnrichLoop_PartialFailureBelowMinNoError(t *testing.T) {
+	files := []string{"/fake/a.ts", "/fake/b.ts", "/fake/c.ts"}
+	database := buildDBForFiles(t, files)
+
+	// Only the first file fails; the rest succeed. 1/3 failure ratio,
+	// below the partial-failure threshold check. The dedicated
+	// partialFailEnricher fake (below) handles this — fakeEnricher only
+	// supports all-success or all-fail.
+	pf := &partialFailEnricher{}
+	var stderr bytes.Buffer
+	err := runEnrichLoop(context.Background(), pf, files, database, &stderr)
+	if err != nil {
+		t.Fatalf("expected no error on partial failure below min-files gate, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "failedFiles=1") {
+		t.Errorf("expected failedFiles=1 in summary, got:\n%s", stderr.String())
+	}
+}
+
+// partialFailEnricher fails the first call and succeeds the rest. Used to
+// exercise the partial-failure-below-min-files path independently of the
+// all-failed path (which now always errors per PR #117 fix).
+type partialFailEnricher struct {
+	calls atomic.Int64
+}
+
+func (p *partialFailEnricher) RegisterFiles(paths []string) {}
+func (p *partialFailEnricher) Close() error                 { return nil }
+func (p *partialFailEnricher) EnrichFileCtx(ctx context.Context, filePath string, positions []typecheck.Position) ([]typecheck.TypeFact, typecheck.EnrichStats, error) {
+	n := p.calls.Add(1)
+	if n == 1 {
+		return nil, typecheck.EnrichStats{}, errors.New("first-call failure")
+	}
+	return []typecheck.TypeFact{{Line: 1, Col: 0, TypeDisplay: "string", TypeHandle: "t1"}},
+		typecheck.EnrichStats{SymbolQueries: 1, TypeQueries: 1, FactsEmitted: 1}, nil
+}
+
+// TestRunEnrichLoop_BlockingRPCCancellation models a tsgo RPC that hangs —
+// the fake's EnrichFileCtx blocks on ctx.Done() rather than returning quickly.
+// Without ctx threaded into the underlying RPC (the bug the original PR fix
+// missed), the loop would only check ctx between files and a single hung RPC
+// would hold the whole pipeline past SIGINT / --timeout indefinitely.
+//
+// This test confirms the blocking RPC is interrupted within 250ms of cancel.
+func TestRunEnrichLoop_BlockingRPCCancellation(t *testing.T) {
+	files := []string{"/fake/blocking.ts"}
+	database := buildDBForFiles(t, files)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeEnricher{}
+	entered := make(chan struct{})
+	fake.onCall = func(ctx context.Context, _ string) {
+		// Signal the test that we're inside the "RPC". Then block until
+		// ctx is cancelled — this is the moral equivalent of a tsgo RPC
+		// stuck in stdin/stdout that only ctx-aware cancellation can break.
+		close(entered)
+		<-ctx.Done()
+	}
+
+	// Cancel shortly after the fake RPC starts.
+	go func() {
+		<-entered
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	var stderr bytes.Buffer
+	start := time.Now()
+	err := runEnrichLoop(ctx, fake, files, database, &stderr)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from cancelled blocking RPC, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected error wrapping context.Canceled, got: %v", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("loop took %v after cancel; expected <250ms (ctx not threaded into per-file RPC?)", elapsed)
 	}
 }
 
