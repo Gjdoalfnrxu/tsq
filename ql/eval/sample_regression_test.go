@@ -143,14 +143,25 @@ func TestP2bRegression_DisjShape_SamplingOff_BindingCapHits(t *testing.T) {
 		t.Fatal("nil execution plan")
 	}
 
-	// With sampling off, the materialising pre-pass tries to evaluate
-	// Disj fully, hits disjShapeBindingCap (1M product vs 100k cap),
-	// and bails — leaving NO hint for Disj. (A zero-valued hint also
-	// satisfies the discriminator; the contract is "not the sampled
-	// large value".)
-	if h, ok := hints["Disj"]; ok && h >= 50_000 {
-		t.Errorf("Disj hint = %d with sampling OFF — expected unset or small (binding cap should have fired); "+
-			"this means the regression test no longer discriminates sampling vs materialising", h)
+	// Updated contract (PR for #145 catalog): with sampling off, the
+	// materialising pre-pass tries to evaluate Disj fully, hits
+	// disjShapeBindingCap (1M product vs 100k cap), and now records
+	// the saturated-large hint instead of leaving Disj unestimated.
+	// This is the load-bearing fix — the planner needs *some* signal
+	// that Disj is huge, not the default 1000.
+	//
+	// The original discriminator (sampling off ⇒ no hint) is no
+	// longer the right shape because both paths now produce a large
+	// hint on cap-hit. The discriminator now is: with sampling off,
+	// the hint must be *exactly* SaturatedSizeHint (not a sampled
+	// estimate, which would be in the 500k–2M noise band).
+	h, ok := hints["Disj"]
+	if !ok {
+		t.Fatalf("Disj hint missing with sampling OFF — cap-hit path should emit SaturatedSizeHint")
+	}
+	if h != eval.SaturatedSizeHint {
+		t.Errorf("Disj hint = %d with sampling OFF — want SaturatedSizeHint=%d (cap-hit should saturate, not sample)",
+			h, eval.SaturatedSizeHint)
 	}
 }
 
@@ -193,5 +204,65 @@ func TestP2bRegression_SamplingDisabledStillWorks(t *testing.T) {
 	}
 	if len(tuples) != 5 {
 		t.Errorf("Q output: want 5 tuples, got %d", len(tuples))
+	}
+}
+
+// TestCapHitHintDeprioritisesBigRule_PlannerIntegration: sampling OFF
+// (so we exercise the materialising cap-hit path), big IDB +
+// small base relation in a consumer rule. With the saturated-large
+// hint correctly written, the planner must seed the consumer rule on
+// the small base relation, not the big IDB.
+//
+// This is the planner integration test for the PR #145 catalog fix.
+// Pre-fix: cap-hit left no hint → planner used default ~1000 → seeded
+// the IDB → main eval blew the cap. Post-fix: cap-hit emits
+// SaturatedSizeHint → planner sees IDB as huge → seeds the small
+// base instead.
+func TestCapHitHintDeprioritisesBigRule_PlannerIntegration(t *testing.T) {
+	prevEnabled := eval.SamplingEnabled
+	eval.SamplingEnabled = false
+	t.Cleanup(func() { eval.SamplingEnabled = prevEnabled })
+
+	prog, base, hints := buildDisjShape()
+	hook := eval.MakeEstimatorHook(base)
+
+	execPlan, planErrs := plan.EstimateAndPlan(prog, hints, disjShapeBindingCap, hook, plan.Plan)
+	if len(planErrs) > 0 {
+		t.Fatalf("plan errors: %v", planErrs)
+	}
+	if execPlan == nil {
+		t.Fatal("nil execution plan")
+	}
+
+	// The cap-hit hint must be the saturated value, not default and
+	// not absent.
+	disjHint, ok := hints["Disj"]
+	if !ok {
+		t.Fatalf("Disj hint missing — cap-hit path should have emitted SaturatedSizeHint")
+	}
+	if disjHint != eval.SaturatedSizeHint {
+		t.Fatalf("Disj hint = %d, want SaturatedSizeHint=%d", disjHint, eval.SaturatedSizeHint)
+	}
+
+	// Find the Consumer rule and confirm the planner picked Tiny (the
+	// small base) as the seed, not Disj (the saturated-huge IDB).
+	var consumerPlanned *plan.PlannedRule
+	for si := range execPlan.Strata {
+		for ri := range execPlan.Strata[si].Rules {
+			if execPlan.Strata[si].Rules[ri].Head.Predicate == "Consumer" {
+				consumerPlanned = &execPlan.Strata[si].Rules[ri]
+			}
+		}
+	}
+	if consumerPlanned == nil {
+		t.Fatal("Consumer rule not found in plan")
+	}
+	if len(consumerPlanned.JoinOrder) == 0 {
+		t.Fatal("Consumer rule has empty JoinOrder")
+	}
+	first := consumerPlanned.JoinOrder[0].Literal
+	if first.Atom.Predicate != "Tiny" {
+		t.Errorf("Consumer first join step: got %q, want %q (planner did not honour saturated cap-hit hint — would seed Disj and blow cap on main eval)",
+			first.Atom.Predicate, "Tiny")
 	}
 }

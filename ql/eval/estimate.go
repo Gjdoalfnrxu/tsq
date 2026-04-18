@@ -2,11 +2,31 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
+
+// SaturatedSizeHint is the "definitely huge, exact unknown" size hint
+// the trivial-IDB pre-pass writes when materialisation hits the binding
+// cap. Mirrors the maxSampledHint used on the sampling path so the
+// planner's cardinality scoring sees a single consistent saturation
+// ceiling regardless of which estimator branch produced it.
+//
+// The signal is "we don't know the exact size, but it's at least the
+// cap" — strictly better information than the default 1000-ish hint
+// the planner falls back to when a hint is absent. The planner
+// correspondingly deprioritises this rule's body atoms as join seeds.
+//
+// Trade-off accepted: a rule whose true size is just over the
+// materialisation cap (e.g. 500k) will be misclassified as 1<<30 and
+// never picked as a seed even when it should be. This is strictly
+// better than the prior misclassification (default 1000 → seeded → cap
+// blowup mid-join), which is the failure mode tracked in PR #145's
+// catalog (Mastodon `_disj_2 exceeded binding cap`).
+const SaturatedSizeHint = 1 << 30
 
 // SamplingEnabled toggles the Wander-Join sampling pre-pass inside
 // EstimateNonRecursiveIDBSizes. Default is ON (P2b). A package-level
@@ -386,8 +406,11 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 				sampled64 += int64(est)
 				sampledOK = true
 			}
-			// Saturate to int (capped at 1<<30 to match per-rule bound).
-			const maxSampledHint = int64(1 << 30)
+			// Saturate to int (capped at SaturatedSizeHint to match
+			// the per-rule bound and the materialisation-cap-hit hint
+			// below — single consistent ceiling across estimator
+			// branches).
+			maxSampledHint := int64(SaturatedSizeHint)
 			if sampled64 > maxSampledHint {
 				sampled64 = maxSampledHint
 			}
@@ -414,20 +437,34 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 
 		head := NewRelation(t.Name, t.Arity)
 		failed := false
+		capHit := false
 		for _, rule := range t.Rules {
 			planned := plan.SingleRule(rule, sizeHints)
 			// Apply the user-supplied binding cap so a pathological body
 			// (cross-product before a selective join) cannot eat all RAM
-			// here. On cap-exceeded the err branch below treats the IDB as
-			// unestimatable and falls through to the default hint. Issue
-			// #130: passing 0 here meant pre-pass evaluation was unbounded
-			// and OOMed on real corpora before the cap could ever fire on
-			// the main eval pass.
+			// here. On cap-exceeded we record a saturated-large hint so
+			// the planner deprioritises this IDB as a seed (see PR #145
+			// catalog, Mastodon `_disj_2` blowup). Issue #130: passing 0
+			// here meant pre-pass evaluation was unbounded and OOMed on
+			// real corpora before the cap could ever fire on the main
+			// eval pass.
 			tuples, err := Rule(context.Background(), planned, keyed, maxBindingsPerRule)
 			if err != nil {
-				// Best-effort: skip this IDB entirely on any error so we
-				// don't half-populate hints. The default hint will apply
-				// and the between-strata refresh in Evaluate will catch up
+				if errors.Is(err, ErrBindingCapExceeded) {
+					// "We don't know the exact size, but it's at least
+					// the cap" — strictly better than letting the
+					// planner fall back to its default hint and seed
+					// this rule's body. The disjunct shapes generated
+					// by ql/desugar (the `_disj_N` synthetic IDBs)
+					// land here when one branch's body is a wide,
+					// non-selective join with no backward demand.
+					capHit = true
+					break
+				}
+				// Best-effort: skip this IDB entirely on any other
+				// error (context cancellation, etc) so we don't half-
+				// populate hints. The default hint will apply and the
+				// between-strata refresh in Evaluate will catch up
 				// (for non-co-stratified cases at least).
 				failed = true
 				break
@@ -437,6 +474,24 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 			}
 		}
 		if failed {
+			continue
+		}
+		if capHit {
+			// Saturated-large hint signals "definitely huge, exact
+			// unknown" to the planner — strictly better than default
+			// 1000. Per the multi-rule head contract: if any rule in
+			// the head saturates, the head saturates (the union is at
+			// least as large as any disjunct). Don't add `head` to
+			// `keyed`: we have no materialised relation to expose, so
+			// downstream trivials referencing this IDB will fall back
+			// to sampling/materialising and hit their own cap if the
+			// shape is genuinely huge — same fail-soft contract as
+			// before, just with a usable hint left behind for the
+			// planner.
+			if cur, exists := sizeHints[t.Name]; !exists || SaturatedSizeHint > cur {
+				sizeHints[t.Name] = SaturatedSizeHint
+			}
+			updates[t.Name] = SaturatedSizeHint
 			continue
 		}
 		// Make this IDB visible to subsequent trivial rules that reference
