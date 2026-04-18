@@ -13,9 +13,27 @@ type Program struct {
 }
 
 // Rule is a Datalog rule: Head :- Body.
+//
+// ClassExtent flags rules whose head is the characteristic predicate of a
+// QL class — i.e. the rule that defines membership of `this` in the class.
+// The desugarer sets this flag for both concrete-class char-pred rules and
+// for abstract-class subclass-union rules (the synthesised
+// `Abstract(this) :- Concrete(this)` rules). The flag exists so the
+// estimator/evaluator can recognise extent-shaped rules and materialise
+// them ONCE as base-like relations, instead of re-evaluating the body at
+// every join site that references the class. See P2a of the planner roadmap.
+//
+// Tagging is structural-prerequisite + name-prerequisite: the desugarer
+// only tags rules it produced from a `class C { ... }` declaration in the
+// source. A predicate that happens to look like a class extent at the
+// Datalog level but did not originate from a class declaration is NOT
+// tagged. Downstream consumers may apply additional structural checks
+// (see plan.IsClassExtentBody) before treating a tagged rule as
+// materialisation-eligible — the tag is necessary, not sufficient.
 type Rule struct {
-	Head Atom
-	Body []Literal
+	Head        Atom
+	Body        []Literal
+	ClassExtent bool
 }
 
 // Query is the top-level query (from a QL select clause).

@@ -245,6 +245,12 @@ func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
 						Args:      []datalog.Term{datalog.Var{Name: "this"}},
 					},
 				}},
+				// Abstract-class subclass-union rule: extent-shaped by
+				// construction (single positive atom over `this`). Tagging
+				// here lets the P2a pre-pass union-and-materialise the
+				// abstract extent once instead of re-walking each subclass
+				// extent at every join site.
+				ClassExtent: true,
 			}
 			rules = append(rules, rule)
 		}
@@ -263,6 +269,15 @@ func (d *desugarer) desugarClass(cd *ast.ClassDecl) []datalog.Rule {
 				Args:      []datalog.Term{datalog.Var{Name: "this"}},
 			},
 			Body: body,
+			// Concrete-class characteristic predicate. The body is the
+			// supertype constraints (a chain of `Foo(this)` and entity-type
+			// groundings) plus the optional CharPred formula. The tag is
+			// always set here; downstream consumers gate on body shape via
+			// plan.IsClassExtentBody before deciding whether to materialise
+			// (a class with a heavy CharPred over multiple large extents
+			// will fail the structural check and fall through to normal
+			// evaluation). See P2a of the planner roadmap.
+			ClassExtent: true,
 		}
 		rules = append(rules, rule)
 	}

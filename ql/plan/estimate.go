@@ -117,6 +117,66 @@ func IdentifyTrivialIDBs(prog *datalog.Program, basePredicates map[string]bool) 
 	return out
 }
 
+// IsClassExtentBody returns true if the rule body matches the structural
+// shape of a QL class extent that is safe to materialise once and treat as
+// a base relation. The shape is intentionally narrow:
+//
+//   - At least one positive atom (so the head is grounded by something).
+//   - Every literal is either:
+//     a) a positive atom whose predicate is in basePredicates, OR
+//     b) a positive atom whose predicate is in materialisedExtents
+//     (an already-materialised class extent — supports abstract-class
+//     union rules and shallow class chains), OR
+//     c) a comparison literal.
+//   - No negation, no aggregates, no recursion.
+//
+// The intent (per P2a of the planner roadmap) is to reject rules that
+// would force eager materialisation of multiple large extents — e.g. a
+// class whose body is `Foo(this) :- Bar(this), Baz(this), Quux(this)` over
+// three large IDB extents would NOT match (only one positive atom over a
+// known materialisable name). This keeps the materialisation cost bounded
+// at "one scan over the largest body relation per class extent".
+//
+// Callers should additionally check rule.ClassExtent — the structural
+// match is necessary but the desugarer's tag is the authoritative signal
+// that the rule originated from a class declaration. A rule that looks
+// extent-shaped but is e.g. a hand-written user predicate is not eligible
+// for the eager-materialise path because the cost trade-off (eager
+// evaluation regardless of whether the predicate is referenced) is
+// class-extent specific.
+//
+// `materialisedExtents` is the set of class-extent head names already
+// promoted to base-like status by an earlier pass; pass nil if no extents
+// have been promoted yet (the first iteration of the materialisation
+// fixed-point sees only base predicates).
+func IsClassExtentBody(body []datalog.Literal, basePredicates, materialisedExtents map[string]bool) bool {
+	if len(body) == 0 {
+		// An empty body would make the head universally true at arity 0,
+		// which is degenerate. Treat as ineligible — there is nothing to
+		// materialise from.
+		return false
+	}
+	hasPositiveAtom := false
+	for _, lit := range body {
+		if lit.Cmp != nil {
+			continue
+		}
+		if lit.Agg != nil {
+			return false
+		}
+		if !lit.Positive {
+			return false
+		}
+		dep := lit.Atom.Predicate
+		if basePredicates[dep] || materialisedExtents[dep] {
+			hasPositiveAtom = true
+			continue
+		}
+		return false
+	}
+	return hasPositiveAtom
+}
+
 // SingleRule plans one rule against the given size hints and returns a
 // PlannedRule (with Body retained for re-planning). Exposed so callers can
 // produce planned rules outside of the full Plan() pipeline — primarily for
