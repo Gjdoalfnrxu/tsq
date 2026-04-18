@@ -538,6 +538,11 @@ func filterRuleBindingsAvoidingWildcards(prog *datalog.Program, bindings map[str
 	// any *seed* binding whose closure includes that bad predicate,
 	// and re-runs. This catches both direct wildcard collisions and
 	// indirect ones reached only through propagateBindings.
+	//
+	// Termination: each iteration either returns (no bad preds, or
+	// no progress) or strictly reduces |current|. Bound: O(|bindings|)
+	// outer iterations, each O(|bindings| * propagateBindings) — fine
+	// for the small binding maps Phase A produces.
 	current := make(map[string][]int, len(bindings))
 	for k, v := range bindings {
 		current[k] = v
@@ -677,8 +682,10 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 	//   hasFlowTo(s, t) :- isSink(t), isSource(s), flowsTo(s, t), ...
 	// has `t` bound by the small `isSink` IDB before `flowsTo` is
 	// reached, so `flowsTo`'s second argument can be backward-magic.
-	// Filter sizeHints to IDB-pure entries before passing into rule-binding
-	// inference. The CLI's `sizeHints` map (built by buildSizeHints) is
+	// Drop IDB-shadowed entries from sizeHints before passing into
+	// rule-binding inference (the resulting map keeps only base-only
+	// hints — i.e. hints whose key does NOT appear as an IDB head).
+	// The CLI's `sizeHints` map (built by buildSizeHints) is
 	// populated from the BASE relation schema; many IDB class-predicate
 	// names shadow a base relation of the same name (e.g. the `MethodCall`
 	// QL class shadows the `MethodCall(this, recv, name)` base relation),
@@ -725,7 +732,13 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 	}
 	var ruleSeeds []datalog.Rule
 	if len(ruleBindings) > 0 {
-		ruleSeeds = BuildRuleSeedRules(prog, idb, sizeHints, ruleBindings)
+		// Use the same IDB-shadow-filtered hints that produced
+		// `ruleBindings` so seed-rule grounding decisions stay
+		// consistent with the binding inference (no soundness bug
+		// either way today, since the filtered preds wouldn't have
+		// produced bindings, but consistency makes future
+		// refactoring less error-prone).
+		ruleSeeds = BuildRuleSeedRules(prog, idb, idbOnlyHints, ruleBindings)
 		// Merge rule-derived bindings into the inference's binding map
 		// so that MagicSetTransform sees them and rewrites the
 		// corresponding rule bodies to consume `magic_<pred>` (rather
