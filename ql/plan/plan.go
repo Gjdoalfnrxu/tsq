@@ -6,9 +6,21 @@ import (
 )
 
 // ExecutionPlan is the output of the planner.
+//
+// Demand is the backward-demand map computed during the initial Plan() call
+// (see InferBackwardDemand and the P3a roadmap section). It is carried on
+// the plan so that between-strata refreshes (eval.Evaluate's loop after
+// each stratum's fixpoint) can re-plan with stable demand via
+// RePlanStratumWithDemand instead of dropping demand-driven seed choice
+// on the floor by using the demand-unaware RePlanStratum. May be nil
+// (meaning "no demand inferred / not applicable") — RePlanStratumWithDemand
+// treats a nil DemandMap as empty and degrades to plain RePlanStratum
+// behaviour, which preserves existing call sites that build an
+// ExecutionPlan by hand in tests.
 type ExecutionPlan struct {
 	Strata []Stratum
 	Query  *PlannedQuery // nil if no select clause
+	Demand DemandMap
 }
 
 // Stratum is a set of rules that can be evaluated together (same SCC or dependent group).
@@ -257,11 +269,20 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 		sizeHints = map[string]int{}
 	}
 
-	ep := &ExecutionPlan{}
+	// P3a: compute per-predicate backward-demand map before ordering any
+	// rule body. This is a pure function of the program and sizeHints —
+	// no side effects, no evaluator dependency. When demand is empty
+	// (e.g. no IDB is caller-grounded) orderJoinsWithDemand degrades to
+	// the same behaviour as orderJoins, preserving all prior plans as
+	// a lower bound.
+	demand := InferBackwardDemand(prog, sizeHints)
+
+	ep := &ExecutionPlan{Demand: demand}
 	for _, stratum := range strata {
 		ps := Stratum{}
 		for _, rule := range stratum {
-			order := orderJoins(rule.Body, sizeHints)
+			headDemand := demand[rule.Head.Predicate]
+			order := orderJoinsWithDemand(rule.Head, rule.Body, sizeHints, headDemand)
 			ps.Rules = append(ps.Rules, PlannedRule{
 				Head:      rule.Head,
 				Body:      rule.Body,
@@ -302,6 +323,10 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 // If a rule's Body is nil (i.e. the stratum was constructed by code that did
 // not populate Body — pre-#88 callers) the rule is skipped so behaviour is
 // unchanged for legacy callers.
+//
+// Does NOT recompute backward demand — the between-strata refresh does not
+// know about other strata's rules. For demand-aware replanning use
+// RePlanStratumWithDemand, which takes a pre-computed demand map.
 func RePlanStratum(s *Stratum, sizeHints map[string]int) {
 	if s == nil {
 		return
@@ -315,6 +340,34 @@ func RePlanStratum(s *Stratum, sizeHints map[string]int) {
 			continue
 		}
 		s.Rules[i].JoinOrder = orderJoins(body, sizeHints)
+	}
+}
+
+// RePlanStratumWithDemand is RePlanStratum plus backward-demand awareness.
+// Callers that hold a previously-computed DemandMap (typically the one
+// returned by InferBackwardDemand at initial Plan time, carried through
+// Evaluate) can use this form to preserve the demand-driven seed choice
+// across between-strata refreshes.
+//
+// Note that demand is NOT recomputed here: refreshing it between strata
+// would risk flapping (a size hint that crosses a threshold mid-evaluation
+// could add or drop positions, producing a different plan than the initial
+// one). Stable demand across the fixpoint keeps seminaive convergence
+// analysis straightforward.
+func RePlanStratumWithDemand(s *Stratum, sizeHints map[string]int, demand DemandMap) {
+	if s == nil {
+		return
+	}
+	if sizeHints == nil {
+		sizeHints = map[string]int{}
+	}
+	for i := range s.Rules {
+		body := s.Rules[i].Body
+		if body == nil {
+			continue
+		}
+		headDemand := demand[s.Rules[i].Head.Predicate]
+		s.Rules[i].JoinOrder = orderJoinsWithDemand(s.Rules[i].Head, body, sizeHints, headDemand)
 	}
 }
 
