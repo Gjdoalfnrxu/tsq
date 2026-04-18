@@ -292,7 +292,49 @@ func TestOrderJoinsWithDemand_NegativeLiteralNotPromotedByDemand(t *testing.T) {
 	}
 }
 
-// Empty demand degrades to orderJoins behaviour exactly.
+// Adversarial-review Finding 2 on PR #143: pickTinySeed must NOT see
+// head-demand-prebound vars. If it did, the shared-var branch of
+// isTinySeed would promote an unhinted IDB sharing a head-demand var
+// to "tiny seed" purely because of head demand — and the evaluator
+// would full-scan it (no actual runtime binding exists yet).
+//
+// Distinguishing fixture:
+//   - Head: R(x). Demand prebinds x.
+//   - Body:
+//     Big(x, y)              — unhinted, shares planner-bound x
+//     Marked(z, 42)          — unhinted, has a constant arg, no shared
+//     planner-bound var.
+//
+// With the bug (plannerBound to pickTinySeed):
+//   - Big qualifies via the shared-var branch (no hint + shared bound).
+//   - Marked qualifies via the constant-arg branch.
+//   - Both unhinted, same default tiebreak → first-eligible wins → Big
+//     (index 0) is seeded.
+//
+// With the fix (runtimeBound to pickTinySeed; empty at slot 0):
+//   - Big does NOT qualify (no constant, no SHARED RUNTIME-bound var).
+//   - Marked still qualifies via the constant-arg branch.
+//   - Marked wins — pickTinySeed returns its index.
+//
+// scoreLiteral keeps using plannerBound (line 486 / unchanged), so the
+// "head-demand biases scoring" promise is preserved for the non-tiny
+// fall-through path. This test pins the specific failure mode: an
+// unhinted IDB sharing only a head-demand var must NOT be auto-promoted
+// to seed by tiny-seed override.
+func TestOrderJoinsWithDemand_PickTinySeedUsesRuntimeBound(t *testing.T) {
+	body := []datalog.Literal{
+		atom("Big", v("x"), v("y")),
+		atom("Marked", v("z"), ic(42)),
+	}
+	head := datalog.Atom{Predicate: "R", Args: []datalog.Term{v("x")}}
+	steps := orderJoinsWithDemand(head, body, map[string]int{}, []int{0})
+	if steps[0].Literal.Atom.Predicate != "Marked" {
+		t.Fatalf("expected Marked first (constant-arg tiny-seed); Big should NOT be promoted "+
+			"to tiny-seed by head-demand alone. Got %q (full: %v)",
+			steps[0].Literal.Atom.Predicate, predicateOrder(steps))
+	}
+}
+
 func TestOrderJoinsWithDemand_EmptyDemandMatchesOrderJoins(t *testing.T) {
 	body := []datalog.Literal{
 		atom("A", v("x"), v("y")),

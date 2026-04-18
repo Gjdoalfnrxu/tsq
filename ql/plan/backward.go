@@ -472,7 +472,20 @@ func orderJoinsWithDemand(
 		// uses plannerBound so demand-prebinding biases which POSITIVE
 		// literal wins the slot (boundCount dominance), but never
 		// promotes a literal's eligibility.
-		tinyIdx := pickTinySeed(body, placed, plannerBound, sizeHints, defaultSizeHint)
+		//
+		// pickTinySeed receives runtimeBound (NOT plannerBound). The
+		// "shared bound var" branch of isTinySeed promotes an unhinted
+		// IDB to tiny-seed status if it shares a var with the current
+		// bound prefix; that promotion would lead the evaluator to
+		// full-scan the IDB. Demand-prebound vars are not bound at
+		// runtime — only placed-literal vars are — so feeding plannerBound
+		// here would let head-demand alone promote a large unhinted IDB
+		// to seed and contradict the conservatism the surrounding
+		// plannerBound/runtimeBound split exists to enforce. Adversarial
+		// review Finding 2 on PR #143. The "head-demand biases scoring"
+		// promise is preserved at scoreLiteral below (which keeps
+		// plannerBound).
+		tinyIdx := pickTinySeed(body, placed, runtimeBound, sizeHints, defaultSizeHint)
 		if tinyIdx != -1 && isEligible(body[tinyIdx], runtimeBound) {
 			bestIdx = tinyIdx
 		} else {
