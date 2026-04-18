@@ -32,6 +32,28 @@ func varsInTerm(t datalog.Term) []string {
 	return nil
 }
 
+// allBound reports whether every name in vs is present in bound. The empty
+// slice (e.g. a constant term) is trivially bound.
+func allBound(vs []string, bound map[string]bool) bool {
+	for _, v := range vs {
+		if v == "_" {
+			// Wildcard names should not appear in comparisons; treat as
+			// unbound for safety.
+			return false
+		}
+		if !bound[v] {
+			return false
+		}
+	}
+	return true
+}
+
+// isVarTerm reports whether t is a non-wildcard Datalog variable.
+func isVarTerm(t datalog.Term) bool {
+	v, ok := t.(datalog.Var)
+	return ok && v.Name != "" && v.Name != "_"
+}
+
 // varsInLiteral returns all variable names referenced in a literal.
 func varsInLiteral(lit datalog.Literal) []string {
 	var vs []string
@@ -56,20 +78,25 @@ func varsInLiteral(lit datalog.Literal) []string {
 // isEligible returns true if lit can be placed given the currently bound variables.
 func isEligible(lit datalog.Literal, bound map[string]bool) bool {
 	if lit.Cmp != nil {
-		// Comparison is eligible when both operands are bound (or are constants).
 		leftVars := varsInTerm(lit.Cmp.Left)
 		rightVars := varsInTerm(lit.Cmp.Right)
-		for _, v := range leftVars {
-			if !bound[v] {
-				return false
+		leftAllBound := allBound(leftVars, bound)
+		rightAllBound := allBound(rightVars, bound)
+		if leftAllBound && rightAllBound {
+			return true
+		}
+		// Equality var-var: eligible when at least one side is fully bound;
+		// applyComparison will propagate the binding to the other side.
+		// See PR #145 catalog item #1 and applyComparison in ql/eval.
+		if lit.Cmp.Op == "=" {
+			if leftAllBound && isVarTerm(lit.Cmp.Right) {
+				return true
+			}
+			if rightAllBound && isVarTerm(lit.Cmp.Left) {
+				return true
 			}
 		}
-		for _, v := range rightVars {
-			if !bound[v] {
-				return false
-			}
-		}
-		return true
+		return false
 	}
 	if lit.Agg != nil {
 		// Aggregate: eligible when all body literal vars used in the outer rule are bound.
