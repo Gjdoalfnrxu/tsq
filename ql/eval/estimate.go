@@ -364,7 +364,12 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 		// sample/materialise decisions against a real relation.
 		if SamplingEnabled {
 			sampledOK := false
-			sampled := 0
+			// Use int64 to avoid 32-bit overflow: each `est` is bounded
+			// at 1<<30, so summing 3+ rules can wrap negative on a
+			// 32-bit `int`. Saturate back to int (capped at 1<<30) at
+			// the end — same disguise-as-OOM failure mode the per-rule
+			// cap was designed to prevent.
+			var sampled64 int64
 			for _, rule := range t.Rules {
 				planned := plan.SingleRule(rule, sizeHints)
 				est, ok := SampleJoinCardinality(planned, keyed, SamplingK, sampleRng)
@@ -378,9 +383,15 @@ func EstimateNonRecursiveIDBSizes(prog *datalog.Program, baseRels map[string]*Re
 				// sampling, but a sum is still an unbiased upper
 				// bound for planner scoring). For the OOM-avoidance
 				// contract we err on the side of overestimating.
-				sampled += est
+				sampled64 += int64(est)
 				sampledOK = true
 			}
+			// Saturate to int (capped at 1<<30 to match per-rule bound).
+			const maxSampledHint = int64(1 << 30)
+			if sampled64 > maxSampledHint {
+				sampled64 = maxSampledHint
+			}
+			sampled := int(sampled64)
 			if sampledOK && sampled > SamplingMaterialiseThreshold {
 				if cur, exists := sizeHints[t.Name]; !exists || sampled > cur {
 					sizeHints[t.Name] = sampled
