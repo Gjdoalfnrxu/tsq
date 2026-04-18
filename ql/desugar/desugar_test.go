@@ -620,6 +620,97 @@ predicate isFoo(Foo f) { f instanceof Foo }
 	}
 }
 
+// 19b. Top-level predicate with class-typed param injects an extent literal.
+// Mirrors the from/exists injection pattern (desugar.go ~558, ~789).
+// Without this, the planner sees `c` as untyped and has no extent anchor
+// — joins on `c` go badly.
+func TestDesugarTopLevelPredicateInjectsParamType(t *testing.T) {
+	src := `
+class Foo { Foo() { any() } }
+predicate p(Foo c) { c = c }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	r := findRuleExact(prog, "p")
+	if r == nil {
+		t.Fatal("expected top-level rule p")
+	}
+	if len(r.Body) == 0 {
+		t.Fatalf("p body should not be empty (expected leading Foo(c) constraint)")
+	}
+	// Leading literal must be Foo(c).
+	first := r.Body[0]
+	if !first.Positive || first.Atom.Predicate != "Foo" {
+		t.Fatalf("leading body literal should be Foo(c), got %v", first)
+	}
+	if len(first.Atom.Args) != 1 {
+		t.Fatalf("Foo extent literal should take 1 arg, got %d", len(first.Atom.Args))
+	}
+	v, ok := first.Atom.Args[0].(datalog.Var)
+	if !ok || v.Name != "c" {
+		t.Fatalf("Foo extent literal should bind param var c, got %v", first.Atom.Args[0])
+	}
+}
+
+// 19c. Primitive-typed (e.g. int) params must NOT get a type literal.
+// `int` has no class extent — emitting `int(c)` would fail to resolve.
+func TestDesugarTopLevelPredicateSkipsPrimitiveParamType(t *testing.T) {
+	src := `
+predicate p(int c) { c = c }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	r := findRuleExact(prog, "p")
+	if r == nil {
+		t.Fatal("expected top-level rule p")
+	}
+	for _, lit := range r.Body {
+		if lit.Atom.Predicate == "int" {
+			t.Fatalf("int-typed param should not produce an `int(...)` literal, body: %v", r.Body)
+		}
+	}
+	// Stronger guard: body must contain exactly the user-written `c = c`
+	// comparison and nothing else. If a future change ever emitted
+	// synthetic literals for primitive params (e.g. `int(c)`), body length
+	// would grow and this assertion would fire.
+	if len(r.Body) != 1 {
+		t.Fatalf("expected exactly 1 body literal (the user-written c=c), got %d: %v", len(r.Body), r.Body)
+	}
+}
+
+// 19d. Mixed params: only typed (class) params get an extent literal.
+func TestDesugarTopLevelPredicateMixedParamTypes(t *testing.T) {
+	src := `
+class Foo { Foo() { any() } }
+predicate p(Foo c, int n) { c = c and n = n }
+`
+	rm := parseAndResolve(t, src)
+	prog := desugarOK(t, rm)
+
+	r := findRuleExact(prog, "p")
+	if r == nil {
+		t.Fatal("expected top-level rule p")
+	}
+	fooCount := 0
+	intCount := 0
+	for _, lit := range r.Body {
+		switch lit.Atom.Predicate {
+		case "Foo":
+			fooCount++
+		case "int":
+			intCount++
+		}
+	}
+	if fooCount != 1 {
+		t.Errorf("expected exactly 1 Foo(c) extent literal, got %d, body: %v", fooCount, r.Body)
+	}
+	if intCount != 0 {
+		t.Errorf("expected no int(...) literals, got %d, body: %v", intCount, r.Body)
+	}
+}
+
 // 20. Fresh var counter resets per rule (determinism).
 func TestDesugarFreshVarDeterminism(t *testing.T) {
 	src := `
