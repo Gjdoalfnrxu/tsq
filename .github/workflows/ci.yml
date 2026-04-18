@@ -19,6 +19,22 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install tsgo
+        run: |
+          npm install -g @typescript/native-preview
+          # @typescript/native-preview ships a `tsgo` binary; export TSGO_PATH
+          # so the integration test's strict CI gate can find it.
+          TSGO_BIN=$(command -v tsgo || true)
+          if [ -z "$TSGO_BIN" ]; then
+            # Fall back to resolving via npm prefix.
+            TSGO_BIN="$(npm prefix -g)/bin/tsgo"
+          fi
+          echo "Using tsgo at: $TSGO_BIN"
+          "$TSGO_BIN" --version
+          echo "TSGO_PATH=$TSGO_BIN" >> "$GITHUB_ENV"
       - name: Build
         run: go build ./...
       - name: Test
