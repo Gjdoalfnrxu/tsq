@@ -179,9 +179,12 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 				if !initialised[pred] {
 					demand[pred] = append([]int(nil), observed...)
 					initialised[pred] = true
-					if len(observed) > 0 {
-						changed = true
-					}
+					// Always flag changed on first initialisation: even if
+					// observed is empty, a downstream rule whose body
+					// references `pred` in a chain might now see a
+					// different head-demand propagation path. Conservative
+					// re-iteration beats missing a fixed-point update.
+					changed = true
 					continue
 				}
 				prev := demand[pred]
@@ -463,17 +466,21 @@ func orderJoinsWithDemand(
 		bestNegBound := 0
 		bestSize := 0
 
-		// Pass 1 — tiny-seed override (unchanged, uses plannerBound so
-		// demand-prebinding counts as "shared var" evidence).
+		// Eligibility is checked against runtimeBound only: a comparison or
+		// negative literal cannot be placed based on demand-prebinding
+		// because at evaluation time its vars are not yet bound. Scoring
+		// uses plannerBound so demand-prebinding biases which POSITIVE
+		// literal wins the slot (boundCount dominance), but never
+		// promotes a literal's eligibility.
 		tinyIdx := pickTinySeed(body, placed, plannerBound, sizeHints, defaultSizeHint)
-		if tinyIdx != -1 {
+		if tinyIdx != -1 && isEligible(body[tinyIdx], runtimeBound) {
 			bestIdx = tinyIdx
 		} else {
 			for i, lit := range body {
 				if placed[i] {
 					continue
 				}
-				if !isEligible(lit, plannerBound) {
+				if !isEligible(lit, runtimeBound) {
 					continue
 				}
 				negBound, size := scoreLiteral(lit, plannerBound, sizeHints)

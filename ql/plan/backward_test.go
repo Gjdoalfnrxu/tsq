@@ -266,6 +266,32 @@ func TestOrderJoinsWithDemand_HeadDemandBiasesSeed(t *testing.T) {
 	}
 }
 
+// Eligibility safety: a negative literal must never be placed via
+// demand pre-binding alone. Runtime binding is what dictates when a
+// negative literal can be evaluated as an anti-join; demand is only a
+// scoring hint. If a negative literal appeared first in the plan
+// because demand said its vars were bound, the evaluator would see
+// unbound vars and produce incorrect results.
+func TestOrderJoinsWithDemand_NegativeLiteralNotPromotedByDemand(t *testing.T) {
+	// Head R(x). Body: not Forbidden(x), Seed(x).
+	// Under demand [0] on R's head, x is planner-bound. A naive
+	// implementation would place `not Forbidden(x)` first. The fixed
+	// implementation must require runtimeBound, so Seed(x) places
+	// first and introduces x at runtime, then the anti-join fires.
+	body := []datalog.Literal{
+		{Positive: false, Atom: datalog.Atom{Predicate: "Forbidden", Args: []datalog.Term{v("x")}}},
+		atom("Seed", v("x")),
+	}
+	head := datalog.Atom{Predicate: "R", Args: []datalog.Term{v("x")}}
+	steps := orderJoinsWithDemand(head, body, map[string]int{"Seed": 10}, []int{0})
+	if steps[0].Literal.Atom.Predicate == "Forbidden" && !steps[0].Literal.Positive {
+		t.Fatalf("negative literal placed first via demand pre-binding — runtime would see unbound x")
+	}
+	if steps[0].Literal.Atom.Predicate != "Seed" {
+		t.Fatalf("expected Seed first (introduces x at runtime), got %q", steps[0].Literal.Atom.Predicate)
+	}
+}
+
 // Empty demand degrades to orderJoins behaviour exactly.
 func TestOrderJoinsWithDemand_EmptyDemandMatchesOrderJoins(t *testing.T) {
 	body := []datalog.Literal{
