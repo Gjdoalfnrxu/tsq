@@ -198,6 +198,21 @@ func TestMaterialiseClassExtents_TaintSinkBridgeShape(t *testing.T) {
 	}
 }
 
+// TestMakeMaterialisingEstimatorHook_NilSinkPanics — silently
+// no-op'ing on a nil sink is the dangerous failure mode: the planner
+// would still see the materialised head names in the returned set
+// and strip the rules from the program, but the relations would not
+// be available to Evaluate, leaving the extents permanently empty.
+// The constructor must fail loudly instead.
+func TestMakeMaterialisingEstimatorHook_NilSinkPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on nil materialisedSink, got none")
+		}
+	}()
+	_ = eval.MakeMaterialisingEstimatorHook(map[string]*eval.Relation{}, nil)
+}
+
 // TestEvaluate_MaterialisedExtent_NotReEvaluated is the load-bearing
 // P2a behaviour test: an injected materialised class extent is used by
 // downstream rules as if it were a base relation, and the extent's own

@@ -240,19 +240,24 @@ func MaterialiseClassExtents(
 // MakeMaterialisingEstimatorHook and eval.WithMaterialisedClassExtents.
 //
 // `materialisedSink` MUST be non-nil and is mutated in place by the
-// returned hook. Callers that don't care about materialisation can use
-// MakeEstimatorHook instead.
+// returned hook. A nil sink panics at construction time: silently
+// dropping the materialised relations would let the planner strip the
+// extent rules from the program (it sees the head names in the
+// returned set) without making the relations available to Evaluate,
+// leaving the extents permanently empty at query time. Callers that
+// don't care about materialisation can use MakeEstimatorHook instead.
 func MakeMaterialisingEstimatorHook(
 	baseRels map[string]*Relation,
 	materialisedSink map[string]*Relation,
 ) plan.MaterialisingEstimatorHook {
+	if materialisedSink == nil {
+		panic("eval.MakeMaterialisingEstimatorHook: materialisedSink must be non-nil; use MakeEstimatorHook for non-materialising callers")
+	}
 	return func(prog *datalog.Program, sizeHints map[string]int, maxBindingsPerRule int) (map[string]int, map[string]bool) {
 		mats, updates := MaterialiseClassExtents(prog, baseRels, sizeHints, maxBindingsPerRule)
 		extentNames := make(map[string]bool, len(mats))
 		for k, rel := range mats {
-			if materialisedSink != nil {
-				materialisedSink[k] = rel
-			}
+			materialisedSink[k] = rel
 			if rel != nil {
 				extentNames[rel.Name] = true
 			}
