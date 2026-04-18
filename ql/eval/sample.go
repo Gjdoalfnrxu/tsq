@@ -201,12 +201,15 @@ func SampleJoinCardinality(
 				continue
 			}
 
-			matches, m := lookupMatchIndices(lit.Atom, rel, walkBinding)
-			if m == 0 {
+			// Resolve match count + a random pick without materialising the
+			// full index list when no vars are bound (Cartesian step) — that
+			// would allocate O(|rel|) ints inside the inner walk loop and
+			// defeat the bounded-cost contract.
+			pickIdx, m, ok := pickMatchTuple(lit.Atom, rel, walkBinding, rng)
+			if !ok || m == 0 {
 				alive = false
 				continue
 			}
-			pickIdx := matches[rng.Intn(m)]
 			if !extendWithTuple(walkBinding, lit.Atom, rel.Tuples()[pickIdx]) {
 				alive = false
 				continue
@@ -229,6 +232,19 @@ func SampleJoinCardinality(
 		// A single successful walk implies at least one output tuple,
 		// regardless of how the sampling probabilities round.
 		estimate = 1
+	}
+	// Saturate at MaxInt32 instead of converting an overflowing
+	// float64 to int (whose result is platform-defined and on a
+	// signed-int conversion can wrap to a negative value, which
+	// would silently make a "huge IDB" look small to the planner —
+	// the exact failure mode P2b is meant to fix). Wander-Join can
+	// produce arbitrarily large estimates under high fanout
+	// compounding; clamping to a sentinel ceiling preserves the
+	// "definitely larger than SamplingMaterialiseThreshold" signal
+	// the wiring layer cares about.
+	const maxEst = float64(1 << 30)
+	if estimate > maxEst {
+		estimate = maxEst
 	}
 	return int(estimate + 0.5), true
 }
@@ -275,15 +291,20 @@ func extendWithTuple(b binding, atom datalog.Atom, tup Tuple) bool {
 	return true
 }
 
-// lookupMatchIndices returns the tuple indices in rel that match the
-// currently-bound variables in atom, plus the count. Free variables
-// and wildcards are treated as unconstrained columns. A constant arg
-// is treated as a bound column.
+// pickMatchTuple returns (tupleIdx, matchCount, ok) for a positive
+// atom step against rel given the current walk binding. matchCount
+// is the size of the match set m_i used as the Wander-Join fanout
+// multiplier; tupleIdx is one element drawn uniformly at random from
+// that set.
 //
-// Mirrors the bound-column logic in applyPositive but without
-// extending bindings — we only need the count and a slice to pick
-// from.
-func lookupMatchIndices(atom datalog.Atom, rel *Relation, b binding) ([]int, int) {
+// Critical: when NO columns are bound (Cartesian step from this
+// walk's perspective) we MUST NOT allocate the full match index
+// list — that would be O(|rel|) per step per walk and break the
+// bounded-cost contract. Instead we sample directly via Intn(|rel|).
+//
+// Returns ok=false only on a defensive arity-mismatch sanity check;
+// real shape errors surface as matchCount=0.
+func pickMatchTuple(atom datalog.Atom, rel *Relation, b binding, rng *rand.Rand) (int, int, bool) {
 	boundCols := make([]int, 0, len(atom.Args))
 	boundVals := make([]Value, 0, len(atom.Args))
 	for i, arg := range atom.Args {
@@ -293,32 +314,41 @@ func lookupMatchIndices(atom datalog.Atom, rel *Relation, b binding) ([]int, int
 		}
 	}
 	if len(boundCols) == 0 {
-		// No bindings yet — every tuple matches. We don't materialise
-		// the index list (would defeat the bounded-cost contract on a
-		// large relation); instead return a sentinel pseudo-slice and
-		// the count. Caller picks a uniform random index in [0, m) and
-		// dereferences via rel.Tuples()[idx] directly — which works
-		// because the caller passes the picked index back to
-		// extendWithTuple via rel.Tuples()[matches[r]]. We need a real
-		// slice, so allocate the index list lazily; cost = O(|rel|),
-		// fine for small relations and capped by the seed pass.
+		// No filter columns — every tuple matches. Sample one
+		// uniformly at random; m_i = |rel|.
 		n := rel.Len()
-		all := make([]int, n)
-		for i := range all {
-			all[i] = i
+		if n == 0 {
+			return 0, 0, true
 		}
-		return all, n
+		return rng.Intn(n), n, true
 	}
 	idx := rel.Index(boundCols)
 	matches := idx.Lookup(boundVals)
-	return matches, len(matches)
+	m := len(matches)
+	if m == 0 {
+		return 0, 0, true
+	}
+	return matches[rng.Intn(m)], m, true
 }
 
 // hasMatch reports whether at least one tuple in rel matches the
 // currently-bound variables of atom. Used by the anti-join branch.
+// Avoids the O(|rel|) full-index allocation in the no-bound-cols
+// case — anti-join with no bound vars is "is rel non-empty".
 func hasMatch(atom datalog.Atom, rel *Relation, b binding) bool {
-	_, m := lookupMatchIndices(atom, rel, b)
-	return m > 0
+	boundCols := make([]int, 0, len(atom.Args))
+	boundVals := make([]Value, 0, len(atom.Args))
+	for i, arg := range atom.Args {
+		if v, ok := lookupTerm(arg, b); ok {
+			boundCols = append(boundCols, i)
+			boundVals = append(boundVals, v)
+		}
+	}
+	if len(boundCols) == 0 {
+		return rel.Len() > 0
+	}
+	idx := rel.Index(boundCols)
+	return len(idx.Lookup(boundVals)) > 0
 }
 
 // sampleEvalCmp evaluates a comparison literal against the walk's
