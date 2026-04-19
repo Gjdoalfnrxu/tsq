@@ -335,6 +335,34 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 //
 //revive:disable-next-line:exported The "Plan" prefix mirrors EstimateAndPlanWithExtents; renaming would obscure the entry-point family.
 func PlanWithClassExtents(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*ExecutionPlan, []error) {
+	return planWithClassExtents(prog, sizeHints, classExtentNames, nil)
+}
+
+// PlanWithStats is the Phase B PR4 entry point. Identical to
+// PlanWithClassExtents but additionally consults the EDB statistics
+// sidecar lookup during backward-demand inference. Stats drive the
+// low-fanout grounding heuristic: a body literal binding a low-fanout
+// column (per-driver fan-out ≤ LowFanoutThreshold) grounds its
+// remaining vars even on relations too large for the existing
+// SmallExtentThreshold or arity-1 paths. See InferBackwardDemandWithStats
+// and isLowFanoutCol.
+//
+// nil lookup degrades to PlanWithClassExtents byte-identically (default-
+// stats mode per plan §3.4).
+//
+//revive:disable-next-line:exported The "Plan" prefix mirrors PlanWithClassExtents; renaming would obscure the entry-point family.
+func PlanWithStats(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+	lookup StatsLookup,
+) (*ExecutionPlan, []error) {
+	return planWithClassExtents(prog, sizeHints, classExtentNames, lookup)
+}
+
+// planWithClassExtents is the unified implementation. The two public
+// wrappers differ only in whether they pass a non-nil StatsLookup.
+func planWithClassExtents(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool, lookup StatsLookup) (*ExecutionPlan, []error) {
 	// Validate all rules first.
 	var errs []error
 	for _, rule := range prog.Rules {
@@ -362,7 +390,7 @@ func PlanWithClassExtents(prog *datalog.Program, sizeHints map[string]int, class
 	// (e.g. no IDB is caller-grounded) orderJoinsWithDemand degrades to
 	// the same behaviour as orderJoins, preserving all prior plans as
 	// a lower bound.
-	demand := InferBackwardDemandWithClassExtents(prog, sizeHints, classExtentNames)
+	demand := inferBackwardDemand(prog, sizeHints, classExtentNames, lookup)
 
 	ep := &ExecutionPlan{Demand: demand}
 	for _, stratum := range strata {

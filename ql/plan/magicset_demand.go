@@ -93,10 +93,36 @@ func InferRuleBodyDemandBindingsWithClassExtents(
 	sizeHints map[string]int,
 	classExtentNames map[string]bool,
 ) (map[string][]int, []datalog.Rule) {
+	return inferRuleBodyDemandBindings(prog, idbPreds, sizeHints, classExtentNames, nil)
+}
+
+// InferRuleBodyDemandBindingsWithStats is the Phase B PR4 entry point.
+// Identical to InferRuleBodyDemandBindingsWithClassExtents but
+// additionally consults an EDB statistics sidecar lookup, threaded
+// through to the underlying backward-demand inference for low-fanout
+// grounding. nil lookup degrades to the WithClassExtents behaviour
+// byte-identically.
+func InferRuleBodyDemandBindingsWithStats(
+	prog *datalog.Program,
+	idbPreds map[string]bool,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+	lookup StatsLookup,
+) (map[string][]int, []datalog.Rule) {
+	return inferRuleBodyDemandBindings(prog, idbPreds, sizeHints, classExtentNames, lookup)
+}
+
+func inferRuleBodyDemandBindings(
+	prog *datalog.Program,
+	idbPreds map[string]bool,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+	lookup StatsLookup,
+) (map[string][]int, []datalog.Rule) {
 	if prog == nil || len(prog.Rules) == 0 {
 		return nil, nil
 	}
-	demand := InferBackwardDemandWithClassExtents(prog, sizeHints, classExtentNames)
+	demand := inferBackwardDemand(prog, sizeHints, classExtentNames, lookup)
 	if len(demand) == 0 {
 		return nil, nil
 	}
@@ -194,7 +220,7 @@ func predHasQueryBinding(prog *datalog.Program, pred string, cols []int) bool {
 		return false
 	}
 	queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
-	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{}, arity1BaseGroundedIDBs(prog), nil)
+	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{}, arity1BaseGroundedIDBs(prog), nil, nil)
 	for _, lit := range prog.Query.Body {
 		if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 			continue
