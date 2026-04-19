@@ -214,6 +214,190 @@ predicate setStateUpdaterCallsOtherSetState(UseStateSetterCall c, int line) {
 }
 
 /**
+ * Holds if `sym` is a useState setter symbol bound directly by destructuring
+ * the second element of a `useState(...)` call (the base case for the alias
+ * tracking below). This is the predicate form of `UseStateSetterCall`'s own
+ * setter-symbol guard, exposed so the alias closure has a non-recursive base
+ * case that the trivial-IDB pre-pass can size.
+ */
+predicate useStateSetterSym(int sym) {
+    exists(int parent, int varDecl, int initExpr, int useStateSym |
+        ArrayDestructure(parent, 1, sym) and
+        Contains(varDecl, parent) and
+        VarDecl(varDecl, _, initExpr, _) and
+        CallCalleeSym(initExpr, useStateSym) and
+        ImportBinding(useStateSym, "react", "useState")
+    )
+}
+
+/**
+ * Holds if a JSX attribute named `attrName` on element `elem` passes the
+ * value of symbol `valueSym` directly through (i.e. `<Foo attr={valueSym} />`
+ * with `valueSym` an Identifier expression).
+ *
+ * For v1 we ONLY recognise the direct-identifier case. Wrapped passes such
+ * as `<Foo attr={() => valueSym(...)}>` or `<Foo attr={x => valueSym(x)}>`
+ * are intentionally OUT OF SCOPE — they require either a function-literal
+ * "passes through" analysis or a may-call summary. They are tracked as a
+ * follow-up.
+ */
+predicate jsxPropPassesIdentifier(int elem, string attrName, int valueSym) {
+    exists(int valueExpr |
+        JsxAttribute(elem, attrName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+/**
+ * Holds if `paramSym` is the symbol bound by destructuring the field
+ * `propName` from the first parameter of `componentFn`.
+ *
+ *   function ZoomControl({ onConfigChange }) { ... }
+ *
+ * Here `componentFn` is the function, `propName = "onConfigChange"`, and
+ * `paramSym` is the binding symbol of `onConfigChange` inside the body.
+ *
+ * Limitations: only the destructured-first-param shape is recognised. A
+ * single-named first-parameter (`function Foo(props) { props.onConfigChange(...) }`)
+ * is NOT recognised in v1 — that form requires field-read tracking through
+ * the `props` symbol. Tracked as follow-up.
+ */
+predicate componentDestructuredProp(int componentFn, string propName, int paramSym) {
+    exists(int paramNode |
+        Parameter(componentFn, 0, _, paramNode, _, _) and
+        DestructureField(paramNode, propName, _, paramSym, _)
+    )
+}
+
+/**
+ * Holds if `componentFn` is the function declaration that JSX element
+ * `elem` instantiates. Resolves `elem`'s tag symbol through `FunctionSymbol`.
+ *
+ * Example:
+ *   function ZoomControl({ ... }) { ... }      // componentFn
+ *   <ZoomControl onConfigChange={setX} />      // elem
+ */
+predicate jsxElementComponent(int elem, int componentFn) {
+    exists(int tagSym |
+        JsxElement(elem, _, tagSym) and
+        FunctionSymbol(tagSym, componentFn)
+    )
+}
+
+/**
+ * One-hop alias step: holds if `paramSym` is a destructured prop binding
+ * inside a component function, and the JSX site that instantiates that
+ * component passes `valueSym` to that prop directly (identifier pass).
+ *
+ * In other words, `paramSym` aliases `valueSym` for callers that invoke
+ * `paramSym(...)` in the component body.
+ */
+predicate setterAliasStep(int valueSym, int paramSym) {
+    exists(int elem, string propName, int componentFn |
+        jsxPropPassesIdentifier(elem, propName, valueSym) and
+        jsxElementComponent(elem, componentFn) and
+        componentDestructuredProp(componentFn, propName, paramSym)
+    )
+}
+
+/**
+ * Holds if `sym` is either a useState setter symbol directly OR a parameter
+ * symbol that receives a setter symbol (or a transitively-aliased setter
+ * symbol) through JSX prop passing.
+ *
+ * Why hand-unrolled to depth 3 instead of recursive: the same planner
+ * pathology that motivated the unrolled `functionContainsStar` (see comment
+ * above) applies here. The class-extent / trivial-IDB pre-pass cannot size
+ * a recursive IDB pre-evaluation, so the planner falls back to the default
+ * 1000-tuple hint and may pick a Cartesian-heavy join order. Three hops
+ * covers the realistic prop-drilling depths we have seen in production
+ * React code (Viewer → Toolbar → Button, etc). If a fourth hop becomes
+ * load-bearing on a real corpus, lift to a real recursive predicate AFTER
+ * the recursive-IDB sizing path is fixed.
+ *
+ * Termination: the unrolled form terminates trivially. Each `setterAliasStep`
+ * is a finite extent over base relations; composing it 0/1/2/3 times yields
+ * a finite IDB.
+ */
+predicate useStateSetterAlias(int sym) {
+    useStateSetterSym(sym)
+    or
+    exists(int s0 |
+        useStateSetterSym(s0) and
+        setterAliasStep(s0, sym)
+    )
+    or
+    exists(int s0, int s1 |
+        useStateSetterSym(s0) and
+        setterAliasStep(s0, s1) and
+        setterAliasStep(s1, sym)
+    )
+    or
+    exists(int s0, int s1, int s2 |
+        useStateSetterSym(s0) and
+        setterAliasStep(s0, s1) and
+        setterAliasStep(s1, s2) and
+        setterAliasStep(s2, sym)
+    )
+}
+
+/**
+ * A call whose callee symbol may-refs a `useStateSetterAlias` symbol —
+ * i.e. either a direct `useState` setter call OR a call through a
+ * prop-aliased parameter inside a child component.
+ *
+ *   const [_, setX] = useState(0);
+ *   setX(prev => ...);                        // direct (useStateSetterCall too)
+ *   <Child onChange={setX} />
+ *   function Child({ onChange }) {
+ *     onChange(prev => ...);                  // alias call
+ *   }
+ */
+predicate useStateSetterAliasCall(int call) {
+    exists(int sym |
+        CallCalleeSym(call, sym) and
+        useStateSetterAlias(sym)
+    )
+}
+
+/**
+ * Sibling of `setStateUpdaterCallsOtherSetState` that follows JSX-prop
+ * setter aliases on EITHER the outer or the inner setter. Catches the
+ * Viewer → ZoomControl pattern from the motivating bug:
+ *
+ *   function Viewer() {
+ *     const [zoomConfig, setZoomConfig] = useState(initial);
+ *     return <ZoomControl onConfigChange={setZoomConfig} />;
+ *   }
+ *   function ZoomControl({ onConfigChange }) {
+ *     onConfigChange(prev => ({ ...prev, zoom: prev.zoom + 1 }));
+ *   }
+ *
+ * The outer `onConfigChange(...)` call inside `ZoomControl` is recognised
+ * as a setter-alias call (it transitively refers to `setZoomConfig`) and
+ * its updater-arg body is searched for any other setter-alias call with a
+ * DIFFERENT callee symbol — exactly mirroring the direct-form predicate.
+ *
+ * `line` is the start line of the OUTER call's callee identifier, for
+ * markdown rendering parity with `_md` queries.
+ */
+predicate setStateUpdaterCallsOtherSetStateThroughProps(int call, int line) {
+    useStateSetterAliasCall(call) and
+    exists(int innerCall, int argFn, int callee, int outerSym, int innerSym |
+        useStateSetterAliasCall(innerCall) and
+        CallArg(call, 0, argFn) and
+        Function(argFn, _, _, _, _, _) and
+        functionContainsStar(argFn, innerCall) and
+        Call(innerCall, _, _) and
+        Call(call, callee, _) and
+        Node(callee, _, _, line, _, _, _) and
+        CallCalleeSym(call, outerSym) and
+        CallCalleeSym(innerCall, innerSym) and
+        outerSym != innerSym
+    )
+}
+
+/**
  * A React XSS sink via dangerouslySetInnerHTML. These are TaintSink facts
  * with kind "xss" derived from JsxAttribute facts matching the attribute
  * name "dangerouslySetInnerHTML".
