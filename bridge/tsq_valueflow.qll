@@ -191,8 +191,22 @@ predicate mayResolveToCore(int valueExpr, int sourceExpr) {
  * appears in v2 extraction.
  */
 predicate jsxExpressionUnwrap(int jsxExpr, int innerExpr) {
-    Node(jsxExpr, _, "JsxExpression", _, _, _, _) and
-    Contains(jsxExpr, innerExpr)
+    exists(string innerKind |
+        Node(jsxExpr, _, "JsxExpression", _, _, _, _) and
+        Contains(jsxExpr, innerExpr) and
+        Node(innerExpr, _, innerKind, _, _, _, _) and
+        // Punctuation-token guard. The walker emits Node rows for all direct
+        // children of JsxExpression including the brace tokens `{` and `}`
+        // (extract/walker.go enterNode is unconditional; tree-sitter's
+        // `Child(i)` iterates anonymous tokens too). Without this filter the
+        // unwrap binds 3× per JsxExpression rather than once. Currently inert
+        // downstream because brace tokens carry no ExprMayRef / ExprValueSource
+        // facts, so `mayResolveToCore(innerExpr, _)` never succeeds for them —
+        // but that's a fragile invariant. This filter makes the precision
+        // explicit at the unwrap rather than relying on downstream silence.
+        innerKind != "{" and
+        innerKind != "}"
+    )
 }
 
 /**

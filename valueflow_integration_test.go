@@ -473,6 +473,27 @@ func TestValueflow_JsxWrappedBranch(t *testing.T) {
 			"`<Provider value={X} />` case.")
 	}
 	t.Logf("mayResolveToJsxWrapped: %d row(s) on valueflow-base jsx_wrapped fixture", len(rs.Rows))
+
+	// Tighten the assertion: at least one row must resolve to an
+	// object-literal sourceExpr. The fixture has `const theme = { color: 'red' }`
+	// → mayResolveToJsxWrapped(value={theme}, {color:'red'}). A regression
+	// that resolves the wrapper to a non-literal sourceExpr (e.g. the
+	// Identifier `theme` itself) would still pass `len(rs.Rows) > 0` but
+	// silently fail the migration's semantic intent. The probe joins with
+	// isObjectLiteralExpr to pin the kind.
+	rsObj := runValueflowQuery(t,
+		"testdata/queries/v2/valueflow/branch_jsx_wrapped_object_source.ql",
+		"testdata/projects/valueflow-base")
+	if len(rsObj.Rows) == 0 {
+		t.Fatal("mayResolveToJsxWrapped returned no row whose sourceExpr is " +
+			"an object literal (per isObjectLiteralExpr) on valueflow-base. " +
+			"jsx_wrapped.tsx has `const theme = { color: 'red' }` and " +
+			"`<Provider value={theme}>`; the wrapper must resolve through " +
+			"the var-init branch to the object literal. A non-empty " +
+			"unfiltered result with an empty filtered result indicates " +
+			"the wrapper is binding to the wrong sourceExpr kind.")
+	}
+	t.Logf("mayResolveToJsxWrapped (object-literal source): %d row(s)", len(rsObj.Rows))
 }
 
 // TestValueflow_IntegrationOnReactFixture is the smoke test that
