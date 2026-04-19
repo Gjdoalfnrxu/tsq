@@ -215,12 +215,22 @@ func extractDB(t *testing.T, projectDir string) *db.DB {
 // (a uniform floor=1 only catches total absence; ~50% catches partial
 // regressions where a kind silently drops half its output).
 //
-// `ifsCallTargetRTA` floor is 0: the entire bridge corpus does not exercise
-// RTA-dispatched method calls (totals 0 across all 13 fixtures probed
-// during PR3 implementation). The synthetic unit test
-// (`TestIfsCallTargetRTA`) catches body-typo regressions; a real-fixture
-// floor would just be brittle. When a fixture surfaces RTA dispatch in
-// the future, raise the floor to ~50% of observed.
+// The `valueflow-rta-dispatch` fixture (added in PR3 review F1) is the
+// dedicated minimal RTA carrier — interface I, class C implements I, a
+// `new C()` instantiation, and an `o.f(v)` method call against an `I`
+// receiver. It supplies all the AST-derivable inputs `CallTargetRTA`
+// needs (`MethodCall`, `InterfaceDecl`, `Implements`, `NewExpr`,
+// `MethodDecl`).
+//
+// Why ifsCallTargetRTA's floor is still 0: `CallTargetRTA` additionally
+// requires `ExprType(recv, ifaceId)`, which is a tsgo-derived semantic
+// fact — see `extract/walker_v2.go` ("ExprType and SymbolType relations
+// are left empty" without tsgo). The test harness runs without tsgo, so
+// `CallTargetRTA` (and therefore `ifsCallTargetRTA`) is structurally 0
+// across the corpus. The floor reflects an environmental constraint, not
+// laziness. When tsgo enrichment lands in the test path, the
+// `valueflow-rta-dispatch` fixture will start emitting non-zero rows and
+// this floor must be raised to ~50% of observed.
 func TestInterFlowStepKindsNonZero(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 	if repoRoot == "" {
@@ -241,18 +251,28 @@ func TestInterFlowStepKindsNonZero(t *testing.T) {
 		"valueflow-multihop",
 		"valueflow-negative",
 		"valueflow-fnref",
+		"valueflow-rta-dispatch",
 	}
 
 	// Per-kind floors (~50% of observed totals during PR3 implementation).
-	// Observed: ifsCallArgToParam=10, ifsRetToCall=16, ifsImportExport=37,
-	// ifsCallTargetRTA=0, InterFlowStep=63, FlowStep=520.
+	// `InterFlowStep` and `FlowStep` are union/composite floors — they're
+	// derived from the per-kind sums above and don't add independent
+	// regression-guard signal beyond a smoke-test that the unions wire
+	// up. Kept for cheap end-to-end coverage.
+	// Per-kind floors (~50% of observed totals on this corpus).
+	// Observed (PR3 review F1+F2 measurement): ifsRetToCall=16,
+	// ifsImportExport=37, ifsCallTargetRTA=0 (tsgo-gated, see comment above),
+	// InterFlowStep=53, FlowStep=526.
+	//
+	// `InterFlowStep` and `FlowStep` floors are derived from per-kind
+	// sums and don't add independent regression-guard signal beyond a
+	// smoke-test that the union/composite rules wire up. Cheap to keep.
 	floors := map[string]int{
-		"ifsCallArgToParam": 5,
-		"ifsRetToCall":      8,
-		"ifsImportExport":   18,
-		"ifsCallTargetRTA":  0, // see comment above
-		"InterFlowStep":     31,
-		"FlowStep":          260,
+		"ifsRetToCall":     8,
+		"ifsImportExport":  18,
+		"ifsCallTargetRTA": 0, // tsgo-gated; see method comment above
+		"InterFlowStep":    26,
+		"FlowStep":         263,
 	}
 
 	totals := map[string]int{}
@@ -287,7 +307,9 @@ func TestInterFlowStepKindsNonZero(t *testing.T) {
 
 	for kind, floor := range floors {
 		if floor == 0 {
-			continue // RTA — synthetic-test-only guard, see comment.
+			// Tsgo-gated kind — see method-level comment for ifsCallTargetRTA.
+			// Synthetic unit test (TestIfsCallTargetRTA) guards body correctness.
+			continue
 		}
 		if totals[kind] < floor {
 			t.Errorf("regression guard: %s emitted %d rows across corpus, want >= %d",

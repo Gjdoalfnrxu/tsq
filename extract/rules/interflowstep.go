@@ -11,9 +11,17 @@ import (
 //
 // Each `ifs*` predicate models one syntactic carrier of a single value-flow
 // edge that crosses a function or module boundary. The top-level
-// `InterFlowStep(from, to)` union folds the four kinds into one relation;
+// `InterFlowStep(from, to)` union folds the kinds into one relation;
 // `FlowStep` stitches that together with PR2's `LocalFlowStep` so PR4's
 // recursive `mayResolveTo` can close over a single relation.
+//
+// Scope note: intra-call arg→param is `lfsParamBind`'s job (PR2, with
+// proper carve-outs for spread/rest/destructured slots); inter-procedural
+// call edges here are only the cross-module/RTA ones. An earlier draft of
+// PR3 also shipped `ifsCallArgToParam` as an unfiltered same-module
+// arg→param edge — it was strictly subsumed by `lfsParamBind` on the
+// common path and emitted nothing useful for destructured slots, so it
+// was deleted before merge (PR3 review F2).
 //
 // # Path erasure (PR3 vs plan §1.4)
 //
@@ -28,11 +36,8 @@ import (
 // non-zero rows on real fixtures (PR1 / PR2 outcome precedent — log-only
 // counts are not a guard, and floor=1 misses partial regressions).
 //
-// # The four kinds
+// # The three kinds
 //
-//   - ifsCallArgToParam — call-arg → callee parameter via direct CallTarget.
-//     Same wiring as ParamBinding (extract/rules/valueflow.go), expressed
-//     here as a step edge for the closure rather than a 4-arity binding row.
 //   - ifsRetToCall — callee `return e` → call-site expression, where the
 //     callee resolved through one import/export hop. Consumes
 //     `CallTargetCrossModule` (PR1) — the placeholder bridge wrapper added
@@ -52,47 +57,21 @@ import (
 // PR3 still ships zero recursion. The closure into `mayResolveTo` is PR4.
 // Bridge authors can manually depth-unroll over `FlowStep` in the interim.
 func InterFlowStepRules() []datalog.Rule {
-	out := make([]datalog.Rule, 0, 4+4+2)
+	// Capacity = ifsRules + interFlowStepUnion (one branch per kind) +
+	// flowStepUnion (2 branches). Derived from the kind count to avoid
+	// magic per-component numbers that drift when a kind is added.
+	kinds := 3
+	out := make([]datalog.Rule, 0, kinds+kinds+2)
 	out = append(out, ifsRules()...)
 	out = append(out, interFlowStepUnion()...)
 	out = append(out, flowStepUnion()...)
 	return out
 }
 
-// ifsRules returns the four per-kind rules. Each emits its named IDB head
+// ifsRules returns the per-kind rules. Each emits its named IDB head
 // and is consumed by interFlowStepUnion.
 func ifsRules() []datalog.Rule {
 	return []datalog.Rule{
-		// ifsCallArgToParam(from, to) :-
-		//     CallTarget(call, fn),
-		//     CallArg(call, idx, from),
-		//     Parameter(fn, idx, _, _, paramSym, _),
-		//     ExprMayRef(to, paramSym).
-		//
-		// Direct same-module call: argument expression flows to in-callee
-		// references of the bound parameter. Mirrors lfsParamBind via the
-		// pre-joined ParamBinding rel, but without the carve-outs (spread /
-		// rest / destructured) — those are silently included here. The
-		// closure in PR4 will route through ParamBinding-aware lfsParamBind
-		// for the carve-outs that matter; ifsCallArgToParam is the
-		// inter-procedural breadth-first analogue and intentionally less
-		// filtered to keep PR4's cross-call story uniform.
-		rule("ifsCallArgToParam",
-			[]datalog.Term{v("from"), v("to")},
-			pos("CallTarget", v("call"), v("fn")),
-			mustNamedLiteral("CallArg", map[string]datalog.Term{
-				"call":    v("call"),
-				"idx":     v("idx"),
-				"argNode": v("from"),
-			}),
-			mustNamedLiteral("Parameter", map[string]datalog.Term{
-				"fn":  v("fn"),
-				"idx": v("idx"),
-				"sym": v("paramSym"),
-			}),
-			pos("ExprMayRef", v("to"), v("paramSym")),
-		),
-
 		// ifsRetToCall(from, to) :-
 		//     CallTargetCrossModule(call, fn),
 		//     ReturnStmt(fn, _, from),
@@ -104,6 +83,12 @@ func ifsRules() []datalog.Rule {
 		// 4-table join at every step. This is the rule the PR1 bridge
 		// comment in tsq_callgraph.qll points at — PR3 lands the class
 		// wrapper alongside this consumer.
+		//
+		// PR4 follow-up: rare local-collision case where a function is both
+		// directly defined AND imported under an alias in the same module
+		// could surface a duplicate edge against `lfsReturnToCallSite` on
+		// the same `(from, to)` pair. Out of scope for PR3 (set semantics
+		// dedupe at the union); flagged for PR4 fixture coverage.
 		rule("ifsRetToCall",
 			[]datalog.Term{v("from"), v("to")},
 			pos("CallTargetCrossModule", v("call"), v("fn")),
@@ -125,6 +110,12 @@ func ifsRules() []datalog.Rule {
 		// importing module that references the matching local sym. Name-
 		// keyed; same over-bridging caveat as CallTargetCrossModule
 		// (plan §3.2 / §4.1 — fixing requires a real module resolver).
+		//
+		// Plan §1.4 sketched `to` as the local sym id; corrected here to
+		// match plan §1.1's expression-ID contract for `from`/`to` (two
+		// `ExprMayRef` joins). PR4 must verify this kind doesn't dominate
+		// the closure on Mastodon — cardinality grows with import-side
+		// reference frequency.
 		rule("ifsImportExport",
 			[]datalog.Term{v("from"), v("to")},
 			mustNamedLiteral("ImportBinding", map[string]datalog.Term{
@@ -162,13 +153,12 @@ func ifsRules() []datalog.Rule {
 	}
 }
 
-// interFlowStepUnion folds the four ifs* IDB heads into one
+// interFlowStepUnion folds the ifs* IDB heads into one
 // `InterFlowStep(from, to)` relation. Same per-branch lifting shape as
 // `localFlowStepUnion` (the #166 disjunction-poisoning workaround):
 // multiple-rule union, never inline `or`.
 func interFlowStepUnion() []datalog.Rule {
 	kinds := []string{
-		"ifsCallArgToParam",
 		"ifsRetToCall",
 		"ifsImportExport",
 		"ifsCallTargetRTA",

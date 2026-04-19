@@ -26,29 +26,6 @@ func evalInterStep(t *testing.T, baseRels map[string]*eval.Relation, pred string
 	return planAndEval(t, AllSystemRules(), queryStep(pred), baseRels)
 }
 
-// TestIfsCallArgToParam — direct-call argument flows to in-callee references
-// of the bound parameter.
-func TestIfsCallArgToParam(t *testing.T) {
-	// fn=1, paramSym=10, paramNode=80, idx=0
-	// CallTarget(call=300, fn=1) — derived from CallCalleeSym × FunctionSymbol.
-	// CallArg(300, 0, argExpr=400). ExprMayRef(useExpr=700, paramSym=10).
-	baseRels := interFlowStepBaseRels(map[string]*eval.Relation{
-		"Parameter":      makeRel("Parameter", 6, iv(1), iv(0), sv("p"), iv(80), iv(10), sv("")),
-		"CallCalleeSym":  makeRel("CallCalleeSym", 2, iv(300), iv(500)),
-		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(500), iv(1)),
-		"CallArg":        makeRel("CallArg", 3, iv(300), iv(0), iv(400)),
-		"ExprMayRef":     makeRel("ExprMayRef", 2, iv(700), iv(10)),
-	})
-	rs := evalInterStep(t, baseRels, "ifsCallArgToParam")
-	if len(rs.Rows) != 1 || !resultContains(rs, iv(400), iv(700)) {
-		t.Fatalf("expected ifsCallArgToParam(400, 700), got %v", rs.Rows)
-	}
-	rsUnion := evalInterStep(t, baseRels, "InterFlowStep")
-	if !resultContains(rsUnion, iv(400), iv(700)) {
-		t.Errorf("InterFlowStep should contain (400, 700), got %v", rsUnion.Rows)
-	}
-}
-
 // TestIfsRetToCall — cross-module return-to-call edge resolved through
 // CallTargetCrossModule (PR1's deferred consumer).
 func TestIfsRetToCall(t *testing.T) {
@@ -146,17 +123,10 @@ func TestIfsCallTargetRTA(t *testing.T) {
 }
 
 // TestInterFlowStepUnion populates one row per kind across disjoint id
-// ranges so the union row count equals the sum (modulo RTA, which can
-// over-bridge into other kinds via the same ExprIsCall edge — asserted
-// >= 4 rather than ==4).
+// ranges so the union row count equals the sum exactly (no cross-kind
+// contamination is possible with disjoint ids).
 func TestInterFlowStepUnion(t *testing.T) {
 	baseRels := interFlowStepBaseRels(map[string]*eval.Relation{
-		// --- ifsCallArgToParam: direct CHA call.
-		// CallCalleeSym(301, 501), FunctionSymbol(501, 1)  =>  CallTarget(301, 1).
-		// CallArg(301, 0, 401), Parameter(1, 0, _, _, 11, _), ExprMayRef(701, 11).
-		"Parameter": makeRel("Parameter", 6, iv(1), iv(0), sv("p"), iv(80), iv(11), sv("")),
-		"CallArg":   makeRel("CallArg", 3, iv(301), iv(0), iv(401)),
-
 		// --- ifsRetToCall: cross-module call.
 		// CallCalleeSym(302, 52), ImportBinding(52, _, "g"),
 		// ExportBinding("g", 60, _), FunctionSymbol(60, 2).
@@ -182,13 +152,11 @@ func TestInterFlowStepUnion(t *testing.T) {
 		"NewExpr":       makeRel("NewExpr", 2, iv(950), iv(910)),
 		"MethodDecl":    makeRel("MethodDecl", 3, iv(910), sv("m"), iv(3)),
 
-		// FunctionSymbol covers the symbols used above (call-graph CHA + cross-module).
+		// FunctionSymbol covers the cross-module symbol used above.
 		"FunctionSymbol": makeRel("FunctionSymbol", 2,
-			iv(501), iv(1),
 			iv(60), iv(2),
 		),
 		"CallCalleeSym": makeRel("CallCalleeSym", 2,
-			iv(301), iv(501), // ifsCallArgToParam (CHA)
 			iv(302), iv(52), // ifsRetToCall (cross-module)
 		),
 
@@ -204,18 +172,16 @@ func TestInterFlowStepUnion(t *testing.T) {
 		// --- ifsImportExport: use the second ImportBinding/ExportBinding pair.
 		// ExprMayRef(403, 62) on the export side; ExprMayRef(703, 54) on the import side.
 		"ExprMayRef": makeRel("ExprMayRef", 2,
-			iv(701), iv(11), // for ifsCallArgToParam
 			iv(403), iv(62), // for ifsImportExport (export-side ref)
 			iv(703), iv(54), // for ifsImportExport (import-side ref)
 		),
 	})
 
 	rs := evalInterStep(t, baseRels, "InterFlowStep")
-	if len(rs.Rows) < 4 {
-		t.Errorf("expected >= 4 InterFlowStep rows (one per kind minimum), got %d: %v", len(rs.Rows), rs.Rows)
+	if len(rs.Rows) != 3 {
+		t.Errorf("expected 3 InterFlowStep rows (one per kind, disjoint ids), got %d: %v", len(rs.Rows), rs.Rows)
 	}
 	want := [][2]int64{
-		{401, 701}, // ifsCallArgToParam
 		{402, 602}, // ifsRetToCall
 		{403, 703}, // ifsImportExport
 		{404, 604}, // ifsCallTargetRTA
@@ -234,14 +200,14 @@ func TestFlowStepUnion(t *testing.T) {
 	baseRels := interFlowStepBaseRels(map[string]*eval.Relation{
 		// Local-side: lfsAssign(401, 501)
 		"Assign": makeRel("Assign", 3, iv(101), iv(401), iv(11)),
-		// Inter-side: ifsCallArgToParam(402, 702)
-		"Parameter":      makeRel("Parameter", 6, iv(1), iv(0), sv("p"), iv(80), iv(12), sv("")),
-		"CallCalleeSym":  makeRel("CallCalleeSym", 2, iv(302), iv(502)),
-		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(502), iv(1)),
-		"CallArg":        makeRel("CallArg", 3, iv(302), iv(0), iv(402)),
+		// Inter-side: ifsImportExport(402, 702) via ImportBinding/ExportBinding
+		// name-keyed bridge.
+		"ImportBinding": makeRel("ImportBinding", 3, iv(50), sv("./mod"), sv("foo")),
+		"ExportBinding": makeRel("ExportBinding", 3, sv("foo"), iv(60), iv(900)),
 		"ExprMayRef": makeRel("ExprMayRef", 2,
 			iv(501), iv(11), // for lfsAssign
-			iv(702), iv(12), // for ifsCallArgToParam
+			iv(402), iv(60), // for ifsImportExport (export-side ref)
+			iv(702), iv(50), // for ifsImportExport (import-side ref)
 		),
 	})
 	rs := evalInterStep(t, baseRels, "FlowStep")
@@ -254,13 +220,17 @@ func TestFlowStepUnion(t *testing.T) {
 }
 
 // TestInterFlowStepRulesShape — at least one head per kind plus union
-// branches. >= 4 rather than ==N so adding genuine new kinds in PR4+
-// doesn't require touching this test (#166 disjunction-poisoning shape:
-// each kind gets its own head, never an inline `or`).
+// branches. Lower bound rather than ==N so adding genuine new kinds in
+// PR4+ doesn't require touching this test (#166 disjunction-poisoning
+// shape: each kind gets its own head, never an inline `or`).
+//
+// Floor of 3 = 3 ifs* kinds + 3 InterFlowStep union branches + 2
+// FlowStep union branches = 8 rules total at PR3, so 3 is a comfortable
+// lower bound on rule count.
 func TestInterFlowStepRulesShape(t *testing.T) {
 	got := len(InterFlowStepRules())
-	if got < 4 {
-		t.Errorf("expected >= 4 InterFlowStep rules (one per kind minimum, #166 workaround), got %d", got)
+	if got < 3 {
+		t.Errorf("expected >= 3 InterFlowStep rules (one per kind minimum, #166 workaround), got %d", got)
 	}
 }
 
