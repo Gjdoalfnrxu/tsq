@@ -154,7 +154,11 @@ func TestR3_LinkPredicates(t *testing.T) {
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
 
-	common := "import tsq::react\nimport tsq::base\nimport tsq::expressions\nimport tsq::functions\nimport tsq::calls\n"
+	// PR3: tsq::valueflow added because tsq_react.qll's resolveToObjectExpr
+	// now calls into mayResolveToObjectExpr, which depends on mayResolveTo
+	// from tsq_valueflow.qll. Without this import the union silently
+	// returns only the surviving non-valueflow branches.
+	common := "import tsq::react\nimport tsq::valueflow\nimport tsq::base\nimport tsq::expressions\nimport tsq::functions\nimport tsq::calls\n"
 
 	type qcase struct {
 		name      string
@@ -166,9 +170,14 @@ func TestR3_LinkPredicates(t *testing.T) {
 		// + 1 in negative (setNN) = 7
 		{"useStateSetterSym", common + "from int s where useStateSetterSym(s) select s", 7},
 		{"isObjectLiteralExpr", common + "from int o where isObjectLiteralExpr(o) select o", 4},
-		{"resolveToObjectExprDirect", common + "from int v, int o where resolveToObjectExprDirect(v, o) select v, o", 4},
+		// PR3: resolveToObjectExprDirect + resolveToObjectExprVarD1 deleted —
+		// subsumed by mayResolveToObjectExpr (tsq_react.qll) which composes
+		// the §2.1 base + §2.2 var-init + JsxExpression-wrapper-tolerant
+		// branches of mayResolveTo. The link probe now exercises the new
+		// helper directly; floor mirrors the baseline (4 Direct + 6 VarD1
+		// deduped to 10, then deduped further across paths to ≥10 on r3).
+		{"mayResolveToObjectExpr", common + "from int v, int o where mayResolveToObjectExpr(v, o) select v, o", 10},
 		{"resolveToObjectExprWrapped", common + "from int v, int o where resolveToObjectExprWrapped(v, o) select v, o", 1},
-		{"resolveToObjectExprVarD1", common + "from int v, int o where resolveToObjectExprVarD1(v, o) select v, o", 2},
 		// resolveToObjectExpr should fire for at least Indirect (1), Computed (1).
 		{"resolveToObjectExpr", common + "from int v, int o where resolveToObjectExpr(v, o) select v, o", 2},
 		// objectLiteralFieldThroughSpread: Indirect(2) + Spread(2 own + 1 spread) + Computed(2) + Negative(0) = 7
