@@ -158,15 +158,44 @@ func TestReadDB_BadMagic(t *testing.T) {
 	}
 }
 
-func TestReadDB_SchemaVersionMismatch(t *testing.T) {
+func TestReadDB_SchemaVersionTooNew(t *testing.T) {
+	// File schema is newer than this binary supports — must hard-fail since
+	// the reader cannot guess at the shape of new/changed relations.
 	data := make([]byte, 16)
 	copy(data[0:4], Magic)
-	binary.LittleEndian.PutUint32(data[4:8], 99) // wrong version
+	binary.LittleEndian.PutUint32(data[4:8], SchemaVersion+1)
 	binary.LittleEndian.PutUint32(data[8:12], 0)
 	binary.LittleEndian.PutUint32(data[12:16], 0)
 	_, err := ReadDB(bytes.NewReader(data), 16)
 	if err == nil {
-		t.Fatal("expected error for schema version mismatch")
+		t.Fatal("expected error for schema version newer than reader")
+	}
+}
+
+// TestReadDB_OlderSchemaVersionAccepted verifies that DBs written by an
+// older binary still load (with a one-time stderr warning, not surfaced
+// here). Schema is additive — new relations come up empty when queried.
+func TestReadDB_OlderSchemaVersionAccepted(t *testing.T) {
+	if SchemaVersion < 2 {
+		t.Skip("test requires SchemaVersion >= 2 to construct an older-version DB")
+	}
+
+	// Encode an empty DB normally, then patch the schema version byte down.
+	base := NewDB()
+	var buf bytes.Buffer
+	if err := base.Encode(&buf); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	data := buf.Bytes()
+	// Overwrite version field with SchemaVersion-1.
+	binary.LittleEndian.PutUint32(data[4:8], SchemaVersion-1)
+
+	db2, err := ReadDB(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("ReadDB should accept older schema version, got: %v", err)
+	}
+	if db2 == nil {
+		t.Fatal("expected non-nil DB from older-version load")
 	}
 }
 

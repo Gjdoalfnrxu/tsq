@@ -4,9 +4,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
+	"sync"
 
 	"github.com/Gjdoalfnrxu/tsq/extract/schema"
 )
+
+// schemaWarnOnce ensures the older-schema-version warning is only printed
+// once per process, no matter how many DBs get loaded.
+var schemaWarnOnce sync.Once
 
 // ReadDB reads a binary columnar fact database from r.
 func ReadDB(r io.ReaderAt, size int64) (*DB, error) {
@@ -21,8 +27,21 @@ func ReadDB(r io.ReaderAt, size int64) (*DB, error) {
 		return nil, fmt.Errorf("db: invalid magic %q", hdr[0:4])
 	}
 	schemaVer := le.Uint32(hdr[4:8])
-	if schemaVer != SchemaVersion {
-		return nil, fmt.Errorf("db: schema version mismatch: file has %d, reader expects %d", schemaVer, SchemaVersion)
+	// Forward-incompat (file is newer than this binary) is hard-fail: the
+	// reader can't know which new relations were added or whether existing
+	// ones changed shape. Backward-compat (file is older) is accepted with a
+	// one-time stderr warning recommending re-extract — the schema is
+	// additive, so missing relations come up empty when queried.
+	if schemaVer > SchemaVersion {
+		return nil, fmt.Errorf("db: schema version too new: file has %d, reader supports up to %d (re-build tsq)", schemaVer, SchemaVersion)
+	}
+	if schemaVer < SchemaVersion {
+		schemaWarnOnce.Do(func() {
+			fmt.Fprintf(os.Stderr,
+				"warning: db schema version %d is older than reader version %d; "+
+					"new relations will be empty. Re-extract for full coverage.\n",
+				schemaVer, SchemaVersion)
+		})
 	}
 	relCount := le.Uint32(hdr[8:12])
 	strCount := le.Uint32(hdr[12:16])
