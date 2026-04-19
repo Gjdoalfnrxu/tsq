@@ -1,7 +1,7 @@
 package plan
 
 import (
-	"strings"
+	"reflect"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
@@ -476,16 +476,20 @@ func TestEstimateRecursiveIDB_MayResolveToShape_SaturatesUnderHighFanOut(t *test
 // ----- documentation drift guard -------------------------------------
 
 func TestExportedAPIIsStable(t *testing.T) {
-	// Cheap reflection-free check that the public symbols documented
-	// in the wiki page are still in this package. Drift here is the
-	// adversarial-review-bait failure mode where an estimator gets
-	// silently renamed and downstream callers (recursive-IDB
-	// integration in cmd/tsq, future PR4) compile against the old
-	// name via stale type aliases.
-	for _, sym := range []string{"IdentifyRecursiveIDBs", "EstimateRecursiveIDB", "SchemaStatsLookup"} {
-		if !strings.Contains(sym, "") {
-			// dummy use of strings to keep import minimal
-			t.Fatal("unreachable")
-		}
+	// Pin the exported signatures the wiki page (and downstream callers
+	// in cmd/tsq, eval) rely on. A signature change here forces a
+	// deliberate test update rather than a silent rename slipping
+	// through review.
+	wantIdentify := reflect.TypeOf((func(*datalog.Program, map[string]bool) []RecursiveIDB)(nil))
+	if got := reflect.TypeOf(IdentifyRecursiveIDBs); got != wantIdentify {
+		t.Errorf("IdentifyRecursiveIDBs signature drifted: got %v, want %v", got, wantIdentify)
+	}
+	wantEstimate := reflect.TypeOf((func(RecursiveIDB, int64, StatsLookup) int64)(nil))
+	if got := reflect.TypeOf(EstimateRecursiveIDB); got != wantEstimate {
+		t.Errorf("EstimateRecursiveIDB signature drifted: got %v, want %v", got, wantEstimate)
+	}
+	wantAdapter := reflect.TypeOf((func(*stats.Schema) StatsLookup)(nil))
+	if got := reflect.TypeOf(SchemaStatsLookup); got != wantAdapter {
+		t.Errorf("SchemaStatsLookup signature drifted: got %v, want %v", got, wantAdapter)
 	}
 }
