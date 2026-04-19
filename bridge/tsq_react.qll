@@ -582,22 +582,24 @@ predicate resolveToObjectExprVarD2(int valueExpr, int objExpr) {
  */
 
 // Selectivity helper: `hookFn` directly returns ObjectLiteral `objExpr`.
-// Anchored on `isObjectLiteralExpr(objExpr)` (the small end) to keep planner
-// seeds tight — without this, joining ReturnStmt by hookFn first explodes on
-// real corpora (mastodon: `_disj_2` cap at step 6 of the unrolled join).
+// Seeded by `ReturnStmt` (small) before `isObjectLiteralExpr` (large in real
+// corpora). Mastodon has tens of thousands of object literals — anchoring on
+// the literal blew step 1 of the inner join past the 5M cap.
 predicate hookFnReturnsObjectLiteralDirect(int hookFn, int objExpr) {
-    isObjectLiteralExpr(objExpr) and
-    ReturnStmt(hookFn, _, objExpr)
+    ReturnStmt(hookFn, _, objExpr) and
+    isObjectLiteralExpr(objExpr)
 }
 
 // Selectivity helper: `hookFn` returns a var whose VarDecl init is
-// ObjectLiteral `objExpr`. Same anchor discipline.
+// ObjectLiteral `objExpr`. Seeded by `ReturnStmt` (small) — walks
+// retExpr → retSym → VarDecl init → ObjectLiteral gate. Same anchor
+// discipline as the direct helper.
 predicate hookFnReturnsObjectLiteralVar(int hookFn, int objExpr) {
-    exists(int retSym, int retExpr, int innerVarDecl |
-        isObjectLiteralExpr(objExpr) and
-        VarDecl(innerVarDecl, retSym, objExpr, _) and
+    exists(int retExpr, int retSym, int innerVarDecl |
+        ReturnStmt(hookFn, _, retExpr) and
         ExprMayRef(retExpr, retSym) and
-        ReturnStmt(hookFn, _, retExpr)
+        VarDecl(innerVarDecl, retSym, objExpr, _) and
+        isObjectLiteralExpr(objExpr)
     )
 }
 
