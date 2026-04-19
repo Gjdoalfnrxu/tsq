@@ -510,7 +510,10 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dbFile := fs.String("db", "tsq.db", "fact database file")
-	format := fs.String("format", "json", "output format: sarif, json, csv")
+	format := fs.String("format", "json", "output format: sarif, json, csv, markdown")
+	sourceRoot := fs.String("source-root", "", "base directory for resolving file paths in markdown snippets (default: current dir)")
+	mdFileCol := fs.Int("md-file-col", -1, "markdown: column index containing file paths (default: -1, infer from column names)")
+	mdLineCol := fs.Int("md-line-col", -1, "markdown: column index containing line numbers (default: -1, infer from column names)")
 	maxBindingsPerRule := fs.Int("max-bindings-per-rule", eval.DefaultMaxBindingsPerRule, "per-rule cap on intermediate join binding cardinality (0 = unlimited; prevents OOM on weak joins, see issue #80)")
 	maxIterations := fs.Int("max-iterations", eval.DefaultMaxIterations, "max semi-naive fixpoint iterations per stratum before erroring (0 = unlimited; see issue #79)")
 	allowPartial := fs.Bool("allow-partial", false, "if --max-iterations is hit, log a warning and return partial results instead of erroring (legacy behaviour)")
@@ -534,7 +537,7 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(stderr, "error: query requires a QUERY_FILE argument")
-		fmt.Fprintln(stderr, "usage: tsq query [--db FILE] [--format sarif|json|csv] QUERY_FILE")
+		fmt.Fprintln(stderr, "usage: tsq query [--db FILE] [--format sarif|json|csv|markdown] QUERY_FILE")
 		return 2
 	}
 	queryFile := fs.Arg(0)
@@ -542,8 +545,10 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	// Validate format.
 	switch *format {
 	case "json", "sarif", "csv":
+	case "markdown", "md":
+		*format = "markdown"
 	default:
-		fmt.Fprintf(stderr, "error: unknown format %q (must be json, sarif, or csv)\n", *format)
+		fmt.Fprintf(stderr, "error: unknown format %q (must be json, sarif, csv, or markdown)\n", *format)
 		return 1
 	}
 
@@ -618,7 +623,9 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if *verbose {
 		bopts.verboseOut = stderr
 	}
+	queryStart := time.Now()
 	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule, *maxIterations, *allowPartial, bopts)
+	queryWall := time.Since(queryStart)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		writeMemProfile(*memProfile, stderr)
@@ -645,6 +652,29 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case "csv":
 		if err := output.WriteCSV(stdout, rs); err != nil {
 			fmt.Fprintf(stderr, "error: write CSV output: %v\n", err)
+			return 1
+		}
+	case "markdown":
+		mdOpts := output.MarkdownOptions{
+			QueryName:   filepath.Base(strings.TrimSuffix(queryFile, ".ql")),
+			ToolVersion: version,
+			SourceRoot:  *sourceRoot,
+			WallTime:    queryWall,
+			FileColumn:  *mdFileCol,
+			LineColumn:  *mdLineCol,
+		}
+		// Best-effort: parse leading /** ... */ block for richer header.
+		if src, rerr := os.ReadFile(queryFile); rerr == nil {
+			if name, desc, id := output.ParseQueryMetadata(string(src)); name != "" || desc != "" || id != "" {
+				if name != "" {
+					mdOpts.QueryName = name
+				}
+				mdOpts.QueryDescription = desc
+				mdOpts.QueryID = id
+			}
+		}
+		if err := output.WriteMarkdown(stdout, rs, mdOpts); err != nil {
+			fmt.Fprintf(stderr, "error: write markdown output: %v\n", err)
 			return 1
 		}
 	}
