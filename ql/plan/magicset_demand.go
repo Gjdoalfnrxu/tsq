@@ -243,6 +243,10 @@ func buildDemandSeedsForPred(
 ) []datalog.Rule {
 	var seeds []datalog.Rule
 	magicPred := magicName(pred)
+	// Hoisted out of the per-literal hot loop below: the (name, arity) IDB
+	// head index is a function of `prog` only and was previously rebuilt
+	// for every preceding-literal scan. Compute once per call.
+	idbByArity := idbHeadByArity(prog)
 
 	for _, rule := range prog.Rules {
 		// Skip self-recursion on pred — a rule whose head IS pred
@@ -311,11 +315,7 @@ func buildDemandSeedsForPred(
 			// `argFn` in the magic-set seed body. Result: isSafe rejects the
 			// seed (head var not body-bound), no seed is emitted, the synth-
 			// disj rewrite drops on the floor, and `_disj_2` blows the
-			// binding cap on its 5-atom join. (Mirrors P3a / fragility-audit
-			// finding #3 and #9 on InferBackwardDemand's mixed-arity guard,
-			// applied here at the seed-body construction site where the
-			// shadow first matters.)
-			idbByArity := idbHeadByArity(prog)
+			// binding cap on its 5-atom join.
 			for j := 0; j < i; j++ {
 				prev := rule.Body[j]
 				if prev.Agg != nil {
