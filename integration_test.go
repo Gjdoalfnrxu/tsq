@@ -85,6 +85,7 @@ func makeBridgeImportLoader(bridgeFiles map[string][]byte) func(path string) (*a
 		"tsq::summaries":   "tsq_summaries.qll",
 		"tsq::composition": "tsq_composition.qll",
 		"tsq::taint":       "tsq_taint.qll",
+		"tsq::valueflow":   "tsq_valueflow.qll",
 		"tsq::express":     "tsq_express.qll",
 		"tsq::react":       "tsq_react.qll",
 		"tsq::node":        "tsq_node.qll",
