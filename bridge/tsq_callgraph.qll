@@ -41,6 +41,11 @@ class CallTargetRTA extends @call_target_rta {
     string toString() { result = "CallTargetRTA" }
 }
 
+// CallTargetCrossModule: extractor relation present (system rule in
+// extract/rules/valueflow.go, manifest-declared as shipping from this file).
+// QL consumer pending — will be imported by Phase C PR3 (`ifsRetToCall`).
+// Class wrapper intentionally deferred to PR3 alongside its first user.
+
 /**
  * An instantiated class (observed via `new ClassName()`).
  * Used by RTA to prune infeasible call targets.

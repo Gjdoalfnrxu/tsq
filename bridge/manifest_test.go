@@ -21,8 +21,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// Round-3 setState alias (context, spread/computed/indirect): +1 ObjectLiteralSpread = 122
 	// Value-flow Phase A PR1: +3 ExprValueSource + AssignExpr + ParamBinding = 125
 	// Value-flow Phase A PR1 review: +1 ParameterDestructured (carve-out flag) = 126
-	if got := len(m.Available); got != 126 {
-		t.Errorf("expected 126 available classes, got %d", got)
+	// Value-flow Phase C PR1: +1 CallTargetCrossModule = 127
+	if got := len(m.Available); got != 127 {
+		t.Errorf("expected 127 available classes, got %d", got)
 	}
 }
 

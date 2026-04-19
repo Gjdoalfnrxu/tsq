@@ -279,6 +279,18 @@ func init() {
 		{Name: "call", Type: TypeEntityRef},
 		{Name: "fn", Type: TypeEntityRef},
 	}})
+	// Value-flow Phase C PR1: pre-joined Call × Import × Export × FunctionSymbol.
+	// Bridges a call site whose callee is a name imported from another module to
+	// the function definition the export resolves to. Name-only join across the
+	// import/export pair (over-bridges on name collisions — same posture as the
+	// existing bridge `importedFunctionSymbol` predicate; see
+	// docs/design/valueflow-phase-c-plan.md §3.2). Wired by Phase C PR3's
+	// `ifsRetToCall` to avoid a 4-table join in the recursive `mayResolveTo`
+	// closure body. Populated as a system rule in extract/rules/valueflow.go.
+	RegisterRelation(RelationDef{Name: "CallTargetCrossModule", Version: 2, Columns: []ColumnDef{
+		{Name: "call", Type: TypeEntityRef},
+		{Name: "fn", Type: TypeEntityRef},
+	}})
 	RegisterRelation(RelationDef{Name: "Instantiated", Version: 2, Columns: []ColumnDef{
 		{Name: "classId", Type: TypeEntityRef},
 	}})

@@ -95,6 +95,11 @@ func v2Manifest() *CapabilityManifest {
 			// v2 Phase B: call graph derived relations
 			{Name: "CallTarget", Relation: "CallTarget", File: "tsq_callgraph.qll"},
 			{Name: "CallTargetRTA", Relation: "CallTargetRTA", File: "tsq_callgraph.qll"},
+			// Value-flow Phase C PR1: cross-module call target. Populated as a
+			// system rule (extract/rules/valueflow.go); QL consumer arrives in
+			// Phase C PR3 (`ifsRetToCall`). Manifest entry exists now to keep
+			// `TestAllRelationsCovered` green.
+			{Name: "CallTargetCrossModule", Relation: "CallTargetCrossModule", File: "tsq_callgraph.qll"},
 			{Name: "Instantiated", Relation: "Instantiated", File: "tsq_callgraph.qll"},
 			{Name: "MethodDeclDirect", Relation: "MethodDeclDirect", File: "tsq_callgraph.qll"},
 			{Name: "MethodDeclInherited", Relation: "MethodDeclInherited", File: "tsq_callgraph.qll"},

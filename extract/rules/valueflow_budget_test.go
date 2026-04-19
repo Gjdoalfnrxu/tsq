@@ -88,6 +88,42 @@ func TestParamBindingBudget(t *testing.T) {
 	}
 }
 
+// TestCallTargetCrossModuleNonZero is a regression guard for the Phase C PR1
+// CallTargetCrossModule rule. The budget test above only logs per-fixture
+// counts; if a future change broke the rule body or column semantics drifted,
+// the rule could silently emit zero rows on every fixture and CI would still
+// pass. This test asserts that at least one of the cross-module-shaped
+// fixtures (imports, destructuring, full-ts-project) yields a non-trivial
+// row count. Floor is intentionally low to avoid brittleness — a true
+// regression would zero out all three.
+func TestCallTargetCrossModuleNonZero(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	if repoRoot == "" {
+		t.Fatal("repo root not found from CWD; regression guard cannot run")
+	}
+
+	fixtures := []string{"imports", "destructuring", "full-ts-project"}
+	total := 0
+	present := 0
+	for _, name := range fixtures {
+		dir := filepath.Join(repoRoot, "testdata", "projects", name)
+		if _, err := os.Stat(dir); err != nil {
+			t.Logf("fixture not present: %s", dir)
+			continue
+		}
+		present++
+		counts := extractAndCount(t, dir)
+		t.Logf("%s: CallTargetCrossModule=%d", name, counts["CallTargetCrossModule"])
+		total += counts["CallTargetCrossModule"]
+	}
+	if present == 0 {
+		t.Fatal("no cross-module fixtures present")
+	}
+	if total < 5 {
+		t.Errorf("CallTargetCrossModule regression: sum across %v = %d, want >= 5", fixtures, total)
+	}
+}
+
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -143,6 +179,12 @@ func extractAndCount(t *testing.T, projectDir string) map[string]int {
 		t.Fatalf("eval CallTargetRTA: %v", err)
 	}
 	counts["CallTargetRTA"] = rtaCount
+
+	xmodCount, err := evalCount(baseRels, "CallTargetCrossModule", 2)
+	if err != nil {
+		t.Fatalf("eval CallTargetCrossModule: %v", err)
+	}
+	counts["CallTargetCrossModule"] = xmodCount
 	return counts
 }
 
@@ -197,7 +239,7 @@ func evalCount(baseRels map[string]*eval.Relation, pred string, arity int) (int,
 }
 
 func formatCounts(c map[string]int) string {
-	keys := []string{"Node", "CallArg", "Parameter", "CallTarget", "CallTargetRTA", "ParamBinding", "ExprValueSource", "AssignExpr", "Assign"}
+	keys := []string{"Node", "CallArg", "Parameter", "CallTarget", "CallTargetRTA", "CallTargetCrossModule", "ParamBinding", "ExprValueSource", "AssignExpr", "Assign"}
 	var b strings.Builder
 	for _, k := range keys {
 		b.WriteString(k)
