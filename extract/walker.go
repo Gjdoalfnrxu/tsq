@@ -29,6 +29,19 @@ type FactWalker struct {
 	rootSeen         bool  // has scope been built (on root Program node)?
 	currentDeclConst int32 // 1 if current LexicalDeclaration is const, else 0
 
+	// constStringDecls maps the binding name of a `const X = "literal"` to the
+	// underlying string literal (quotes stripped) for the current file. Populated
+	// during VariableDeclarator emission. Used by emitObjectLiteral to resolve
+	// computed-key identifier references at extraction time:
+	//
+	//     const KEY = "setX";
+	//     const obj = { [KEY]: setSomething };  // emit ObjectLiteralField(obj, "setX", ...)
+	//
+	// Same-file, same-pass; const decls precede their use under normal TS scope
+	// rules so a top-down walk gets the binding before it's referenced. This is
+	// reset in EnterFile.
+	constStringDecls map[string]string
+
 	// parent tracking: stack of node IDs (push on Enter, pop on Leave)
 	stack []uint32
 
@@ -61,6 +74,7 @@ func (fw *FactWalker) EnterFile(path string) error {
 	fw.stack = fw.stack[:0]
 	fw.jsxElementStack = fw.jsxElementStack[:0]
 	fw.scope = NewScopeAnalyzer(path)
+	fw.constStringDecls = make(map[string]string)
 
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -220,6 +234,27 @@ func (fw *FactWalker) detectConst(n ASTNode) int32 {
 // Delegates to the package-level ChildByField helper in tree.go.
 func childByField(n ASTNode, field string) ASTNode {
 	return ChildByField(n, field)
+}
+
+// firstNonPunctChild returns the first direct child of n that is not a
+// punctuation token (`[`, `]`, `(`, `)`, `{`, `}`, `,`, `:`, `...`). Used by
+// emitObjectLiteral to step into ComputedPropertyName / SpreadElement nodes
+// without depending on field-name access (tree-sitter typescript grammar
+// doesn't always tag the inner expression with a stable field name).
+func firstNonPunctChild(n ASTNode) ASTNode {
+	count := n.ChildCount()
+	for i := 0; i < count; i++ {
+		child := n.Child(i)
+		if child == nil {
+			continue
+		}
+		switch child.Kind() {
+		case "[", "]", "(", ")", "{", "}", ",", ":", "...":
+			continue
+		}
+		return child
+	}
+	return nil
 }
 
 // childByKind returns the first direct child with the given normalised kind.
@@ -446,6 +481,37 @@ func (fw *FactWalker) emitVarDecl(node ASTNode, id uint32) {
 	}
 
 	fw.emit("VarDecl", id, symID, initID, fw.currentDeclConst)
+
+	// Round-3: capture `const X = "literal"` mappings so emitObjectLiteral can
+	// resolve computed-key identifier references at extraction time.
+	if fw.currentDeclConst == 1 && nameNode != nil && initNode != nil &&
+		initNode.Kind() == "String" {
+		if s, ok := stripStringLiteralQuotes(initNode.Text()); ok {
+			fw.constStringDecls[nameNode.Text()] = s
+		}
+	}
+}
+
+// stripStringLiteralQuotes removes a single matched pair of leading/trailing
+// quote characters (`"`, `'`, or backtick) from the textual form of a tree-sitter
+// String node. Returns false if the input is not a valid quote-delimited literal.
+// Escape sequences inside the string are NOT processed — for the round-3 use
+// case (matching computed property names against object literal field names)
+// the literal text suffices because the source-level destructure binding would
+// share the same byte sequence.
+func stripStringLiteralQuotes(s string) (string, bool) {
+	if len(s) < 2 {
+		return "", false
+	}
+	first := s[0]
+	last := s[len(s)-1]
+	if first != last {
+		return "", false
+	}
+	if first != '"' && first != '\'' && first != '`' {
+		return "", false
+	}
+	return s[1 : len(s)-1], true
 }
 
 // ---- Assign ----
@@ -609,21 +675,60 @@ func (fw *FactWalker) emitObjectLiteral(node ASTNode, id uint32) {
 			if keyNode == nil || valNode == nil {
 				continue
 			}
-			// Skip computed keys and string/numeric literal keys — only
-			// PropertyIdentifier keys produce a stable named field.
-			if keyNode.Kind() != "PropertyIdentifier" && keyNode.Kind() != "Identifier" {
+			switch keyNode.Kind() {
+			case "PropertyIdentifier", "Identifier":
+				name := keyNode.Text()
+				valID := fw.nid(valNode)
+				fw.emit("ObjectLiteralField", id, name, valID)
+			case "String":
+				// String-literal key, e.g. `{ "setX": foo }`. Treat as a
+				// stable named field equal to the string's content.
+				if name, ok := stripStringLiteralQuotes(keyNode.Text()); ok {
+					valID := fw.nid(valNode)
+					fw.emit("ObjectLiteralField", id, name, valID)
+				}
+			case "ComputedPropertyName":
+				// Round-3: `{ [KEY]: foo }` — resolve at extraction time when
+				// the key is a string literal, OR an Identifier that resolves
+				// to a `const KEY = "..."` binding earlier in the same file.
+				// Anything else (computed expression, non-const var, cross-file
+				// import) is silently skipped — over-approximating to all field
+				// names would generate noisy false positives.
+				inner := firstNonPunctChild(keyNode)
+				if inner == nil {
+					continue
+				}
+				var name string
+				var ok bool
+				switch inner.Kind() {
+				case "String":
+					name, ok = stripStringLiteralQuotes(inner.Text())
+				case "Identifier":
+					name, ok = fw.constStringDecls[inner.Text()]
+				}
+				if ok {
+					valID := fw.nid(valNode)
+					fw.emit("ObjectLiteralField", id, name, valID)
+				}
+			default:
+				// numeric keys, template-literal keys, etc. — skip.
 				continue
 			}
-			name := keyNode.Text()
-			valID := fw.nid(valNode)
-			fw.emit("ObjectLiteralField", id, name, valID)
 		case "MethodDefinition":
 			// `{ foo() { ... } }` — method shorthand. Skip for v1; not
 			// load-bearing for context-alias tracking.
 			continue
 		case "SpreadElement":
-			// `{ ...rest }` — skipped for v1.
-			continue
+			// Round-3: `{ ...base }` — emit ObjectLiteralSpread so the bridge
+			// can union spread-contributed fields into the parent object's
+			// effective field set. The spread's value expression is the inner
+			// expression after `...`.
+			inner := firstNonPunctChild(child)
+			if inner == nil {
+				continue
+			}
+			innerID := fw.nid(inner)
+			fw.emit("ObjectLiteralSpread", id, innerID)
 		}
 	}
 }

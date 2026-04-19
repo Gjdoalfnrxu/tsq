@@ -473,6 +473,240 @@ predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
     Contains(valueAttrExpr, objExpr)
 }
 
+/* -----------------------------------------------------------------------
+ * Round-3: variable-indirect Provider value, spread fields, computed keys
+ * -----------------------------------------------------------------------
+ *
+ * `resolveToObjectExpr(valueExpr, objExpr)` — true if `valueExpr` *is* or
+ * *resolves to* an ObjectLiteral expression `objExpr`. Two shapes are
+ * recognised at v1:
+ *
+ *   1. Direct: `value={{ ... }}` — `valueExpr = objExpr` and `objExpr` has
+ *      at least one ObjectLiteralField or ObjectLiteralSpread row.
+ *   2. Single VarDecl indirection:
+ *          const actions = { ... };
+ *          <Ctx.Provider value={actions} />
+ *      — `valueExpr` is an Identifier that may-refs a symbol bound by a
+ *      `VarDecl` whose initialiser is an ObjectLiteral expression `objExpr`.
+ *
+ * Adversarial concerns (documented):
+ *  - **Circular VarDecl chains** (`const a = b; const b = a;`). Hand-unrolled
+ *    to depth 2 like the round-1/2 alias closures; circular chains terminate
+ *    by depth, not by reasoning about the cycle. A closure of two non-object
+ *    VarDecls cannot reach an ObjectLiteral so the result set is empty for
+ *    pathological cycles — no infinite work.
+ *  - **Aliasing through reassignment** (`let obj = {a}; obj = {b};
+ *    <Provider value={obj}>`). Last-write semantics aren't modelled. The
+ *    over-approximation is "union all RHS object literals reachable", which
+ *    here means the depth-2 chain may surface either or both.
+ *  - The depth-2 path uses two VarDecl hops: `valueExpr` may-refs sym1,
+ *    sym1's init is an Identifier may-refing sym2, sym2's init is an
+ *    ObjectLiteral. Covers `const obj = base; const base = {a};` patterns.
+ */
+/**
+ * Holds when `valueExpr` itself is the ObjectLiteral expression `objExpr`.
+ * Split out as a named branch so the top-level `resolveToObjectExpr`
+ * disjunction is an `or`-of-calls, sidestepping disjunction-poisoning bug
+ * #166 that round-2 hit on `hookIndirection` and the through-context predicate.
+ */
+predicate resolveToObjectExprDirect(int valueExpr, int objExpr) {
+    valueExpr = objExpr and
+    isObjectLiteralExpr(objExpr)
+}
+
+/**
+ * Holds when `valueExpr` is a JsxExpression-style wrapper that immediately
+ * contains the ObjectLiteral expression `objExpr` — the canonical
+ * `value={{ ... }}` shape where the JsxAttribute valueExpr column points
+ * at the wrapper, not the inner Object.
+ */
+predicate resolveToObjectExprWrapped(int valueExpr, int objExpr) {
+    Contains(valueExpr, objExpr) and
+    isObjectLiteralExpr(objExpr) and
+    valueExpr != objExpr
+}
+
+/**
+ * Depth-1 variable indirection: `const X = { ... }; <Provider value={X} />`.
+ * `valueExpr` may be the JsxExpression wrapper or the bare Identifier — we
+ * tolerate both via the (eq or Contains) idiom.
+ */
+predicate resolveToObjectExprVarD1(int valueExpr, int objExpr) {
+    exists(int identExpr, int sym, int varDecl |
+        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
+        ExprMayRef(identExpr, sym) and
+        VarDecl(varDecl, sym, objExpr, _) and
+        isObjectLiteralExpr(objExpr)
+    )
+}
+
+/**
+ * Depth-2 variable indirection: `const Y = { ... }; const X = Y; ... value={X}`.
+ * Two-step VarDecl chain. Pathological circular chains terminate at depth 2
+ * by construction (no infinite loops). Last-write semantics aren't modelled —
+ * if a `let` is reassigned the analysis over-approximates by surfacing the
+ * RHS reachable through this depth.
+ */
+predicate resolveToObjectExprVarD2(int valueExpr, int objExpr) {
+    exists(int identExpr, int sym1, int varDecl1, int midExpr, int sym2, int varDecl2 |
+        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
+        ExprMayRef(identExpr, sym1) and
+        VarDecl(varDecl1, sym1, midExpr, _) and
+        ExprMayRef(midExpr, sym2) and
+        VarDecl(varDecl2, sym2, objExpr, _) and
+        isObjectLiteralExpr(objExpr)
+    )
+}
+
+predicate resolveToObjectExpr(int valueExpr, int objExpr) {
+    resolveToObjectExprDirect(valueExpr, objExpr)
+    or
+    resolveToObjectExprWrapped(valueExpr, objExpr)
+    or
+    resolveToObjectExprVarD1(valueExpr, objExpr)
+    or
+    resolveToObjectExprVarD2(valueExpr, objExpr)
+}
+
+/**
+ * Holds if `objExpr` is the parent of at least one ObjectLiteralField or
+ * ObjectLiteralSpread row — i.e. it is an object literal expression in the
+ * source. We don't have a dedicated `ObjectLiteralExpr` class so we infer
+ * it from the presence of at least one own field or spread element. Empty
+ * object literals are not relevant to alias tracking and would not match
+ * downstream predicates anyway.
+ */
+predicate isObjectLiteralExprOwnField(int objExpr) {
+    ObjectLiteralField(objExpr, _, _)
+}
+
+predicate isObjectLiteralExprSpread(int objExpr) {
+    ObjectLiteralSpread(objExpr, _)
+}
+
+predicate isObjectLiteralExpr(int objExpr) {
+    isObjectLiteralExprOwnField(objExpr)
+    or
+    isObjectLiteralExprSpread(objExpr)
+}
+
+/**
+ * Holds if `objExpr` (an ObjectLiteral expression) effectively exposes
+ * `fieldName` bound to value-position expression `valueExpr`, including
+ * fields contributed by spread elements `{ ...base }` where `base` resolves
+ * to another ObjectLiteral.
+ *
+ * Hand-unrolled to spread depth 2:
+ *   - depth 0: own fields of `objExpr`
+ *   - depth 1: fields of a directly-spread `base` ObjectLiteral
+ *   - depth 2: fields of a `base` whose own spread targets a deeper
+ *     ObjectLiteral
+ *
+ * Same planner-sizing rationale as `useStateSetterAlias` and
+ * `functionContainsStar`: recursive IDB form blows the trivial-IDB pre-pass
+ * sizing budget. `{ ...x, ...y, ...z }` chained-spread patterns deeper than
+ * two are rare and intentionally out of scope for v1.
+ */
+/**
+ * Round-3: the spread-union body splits its three depth branches into named
+ * helpers and unions at the top. Same #166-class poisoning workaround as
+ * `resolveToObjectExpr`, `contextSetterAliasStep`, and `contextSymLink`.
+ */
+predicate objectLiteralFieldOwn(int objExpr, string fieldName, int valueExpr) {
+    ObjectLiteralField(objExpr, fieldName, valueExpr)
+}
+
+/**
+ * Round-3: spread depth-1, three sub-shapes inlined to avoid an unbounded
+ * `resolveToObjectExpr` call from inside this body. Each sub-shape is
+ * named at the top level so the union is `or`-of-calls.
+ */
+predicate objectLiteralFieldSpreadD1Direct(int objExpr, string fieldName, int valueExpr) {
+    exists(int spreadValueExpr |
+        ObjectLiteralSpread(objExpr, spreadValueExpr) and
+        ObjectLiteralField(spreadValueExpr, fieldName, valueExpr)
+    )
+}
+
+predicate objectLiteralFieldSpreadD1Var(int objExpr, string fieldName, int valueExpr) {
+    exists(int spreadValueExpr, int spreadObj, int sym, int varDecl |
+        ObjectLiteralSpread(objExpr, spreadValueExpr) and
+        ExprMayRef(spreadValueExpr, sym) and
+        VarDecl(varDecl, sym, spreadObj, _) and
+        ObjectLiteralField(spreadObj, fieldName, valueExpr)
+    )
+}
+
+predicate objectLiteralFieldSpreadD1(int objExpr, string fieldName, int valueExpr) {
+    objectLiteralFieldSpreadD1Direct(objExpr, fieldName, valueExpr)
+    or
+    objectLiteralFieldSpreadD1Var(objExpr, fieldName, valueExpr)
+}
+
+/**
+ * Round-3: spread depth-2 — composes spread-D1 with another VarDecl-bound
+ * spread. Two named sub-shapes (direct/var) for the second hop, sharing
+ * the same VarDecl indirection treatment as D1.
+ */
+predicate objectLiteralFieldSpreadD2DirectDirect(int objExpr, string fieldName, int valueExpr) {
+    exists(int spreadValueExpr1, int spreadValueExpr2 |
+        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
+        ObjectLiteralSpread(spreadValueExpr1, spreadValueExpr2) and
+        ObjectLiteralField(spreadValueExpr2, fieldName, valueExpr)
+    )
+}
+
+predicate objectLiteralFieldSpreadD2DirectVar(int objExpr, string fieldName, int valueExpr) {
+    exists(int spreadValueExpr1, int spreadValueExpr2, int sym, int varDecl, int spreadObj2 |
+        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
+        ObjectLiteralSpread(spreadValueExpr1, spreadValueExpr2) and
+        ExprMayRef(spreadValueExpr2, sym) and
+        VarDecl(varDecl, sym, spreadObj2, _) and
+        ObjectLiteralField(spreadObj2, fieldName, valueExpr)
+    )
+}
+
+predicate objectLiteralFieldSpreadD2VarDirect(int objExpr, string fieldName, int valueExpr) {
+    exists(int spreadValueExpr1, int spreadObj1, int sym1, int varDecl1, int spreadValueExpr2 |
+        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
+        ExprMayRef(spreadValueExpr1, sym1) and
+        VarDecl(varDecl1, sym1, spreadObj1, _) and
+        ObjectLiteralSpread(spreadObj1, spreadValueExpr2) and
+        ObjectLiteralField(spreadValueExpr2, fieldName, valueExpr)
+    )
+}
+
+predicate objectLiteralFieldSpreadD2VarVar(int objExpr, string fieldName, int valueExpr) {
+    exists(int spreadValueExpr1, int spreadObj1, int sym1, int varDecl1,
+           int spreadValueExpr2, int spreadObj2, int sym2, int varDecl2 |
+        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
+        ExprMayRef(spreadValueExpr1, sym1) and
+        VarDecl(varDecl1, sym1, spreadObj1, _) and
+        ObjectLiteralSpread(spreadObj1, spreadValueExpr2) and
+        ExprMayRef(spreadValueExpr2, sym2) and
+        VarDecl(varDecl2, sym2, spreadObj2, _) and
+        ObjectLiteralField(spreadObj2, fieldName, valueExpr)
+    )
+}
+
+predicate objectLiteralFieldSpreadD2(int objExpr, string fieldName, int valueExpr) {
+    objectLiteralFieldSpreadD2DirectDirect(objExpr, fieldName, valueExpr)
+    or
+    objectLiteralFieldSpreadD2DirectVar(objExpr, fieldName, valueExpr)
+    or
+    objectLiteralFieldSpreadD2VarDirect(objExpr, fieldName, valueExpr)
+    or
+    objectLiteralFieldSpreadD2VarVar(objExpr, fieldName, valueExpr)
+}
+
+predicate objectLiteralFieldThroughSpread(int objExpr, string fieldName, int valueExpr) {
+    objectLiteralFieldOwn(objExpr, fieldName, valueExpr)
+    or
+    objectLiteralFieldSpreadD1(objExpr, fieldName, valueExpr)
+    or
+    objectLiteralFieldSpreadD2(objExpr, fieldName, valueExpr)
+}
+
 /**
  * Holds if a JSX element `elem` is a Provider for context symbol `ctxSym`
  * — i.e. its tag is the member access `<ctxSym.Provider ...>` — and its
@@ -507,13 +741,117 @@ predicate contextProviderValueObject(int ctxSym, int objExpr) {
  * shorthand form `{ setX }` is the load-bearing case — the walker emits
  * the field with valueExpr pointing at the Identifier node and the
  * Identifier emit-pass produces the ExprMayRef row we then look up.
+ *
+ * NOTE: this is the round-2 form. `contextProviderField` is kept as the
+ * union of the round-2 form and the round-3 expanded form
+ * (`contextProviderFieldV3Direct` + `contextProviderFieldV3Indirect`)
+ * so existing call sites continue to fire on round-2 fixtures while
+ * round-3 (variable-indirect Provider value, spread, computed keys)
+ * adds new positive matches.
+ *
+ * Disjunction-poisoning workaround (#166): we split the alternatives into
+ * named branches and union them by `or`-of-calls at the predicate
+ * boundary, exactly as round-2 had to do for `hookIndirection` and
+ * `setStateUpdaterCallsOtherSetStateThroughContext`.
  */
-predicate contextProviderField(int ctxSym, string fieldName, int valueSym) {
+predicate contextProviderFieldR2(int ctxSym, string fieldName, int valueSym) {
     exists(int objExpr, int valueExpr |
         contextProviderValueObject(ctxSym, objExpr) and
         ObjectLiteralField(objExpr, fieldName, valueExpr) and
         ExprMayRef(valueExpr, valueSym)
     )
+}
+
+/**
+ * Round-3 variable-indirect path: the Provider's value attribute is an
+ * Identifier resolving to an ObjectLiteral via `resolveToObjectExpr`.
+ * Spread + computed-string-key fields of the resolved object are visible.
+ */
+predicate contextProviderFieldR3VarIndirectOwn(int ctxSym, string fieldName, int valueSym) {
+    exists(int elem, int tagNode, int valueAttrExpr, int objExpr, int valueExpr |
+        JsxElement(elem, tagNode, _) and
+        FieldRead(tagNode, ctxSym, "Provider") and
+        JsxAttribute(elem, "value", valueAttrExpr) and
+        resolveToObjectExpr(valueAttrExpr, objExpr) and
+        objectLiteralFieldOwn(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+predicate contextProviderFieldR3VarIndirectSpreadD1(int ctxSym, string fieldName, int valueSym) {
+    exists(int elem, int tagNode, int valueAttrExpr, int objExpr, int valueExpr |
+        JsxElement(elem, tagNode, _) and
+        FieldRead(tagNode, ctxSym, "Provider") and
+        JsxAttribute(elem, "value", valueAttrExpr) and
+        resolveToObjectExpr(valueAttrExpr, objExpr) and
+        objectLiteralFieldSpreadD1(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+predicate contextProviderFieldR3VarIndirectSpreadD2(int ctxSym, string fieldName, int valueSym) {
+    exists(int elem, int tagNode, int valueAttrExpr, int objExpr, int valueExpr |
+        JsxElement(elem, tagNode, _) and
+        FieldRead(tagNode, ctxSym, "Provider") and
+        JsxAttribute(elem, "value", valueAttrExpr) and
+        resolveToObjectExpr(valueAttrExpr, objExpr) and
+        objectLiteralFieldSpreadD2(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+predicate contextProviderFieldR3VarIndirect(int ctxSym, string fieldName, int valueSym) {
+    contextProviderFieldR3VarIndirectOwn(ctxSym, fieldName, valueSym)
+    or
+    contextProviderFieldR3VarIndirectSpreadD1(ctxSym, fieldName, valueSym)
+    or
+    contextProviderFieldR3VarIndirectSpreadD2(ctxSym, fieldName, valueSym)
+}
+
+/**
+ * Round-3 direct-literal path with spread + computed-key extensions on the
+ * inline object literal. Reuses `contextProviderValueObject` (which already
+ * grounds the object literal node via `Contains(valueAttrExpr, objExpr)`)
+ * and unions in spread/computed fields via `objectLiteralFieldThroughSpread`.
+ */
+predicate contextProviderFieldR3DirectOwn(int ctxSym, string fieldName, int valueSym) {
+    exists(int objExpr, int valueExpr |
+        contextProviderValueObject(ctxSym, objExpr) and
+        objectLiteralFieldOwn(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+predicate contextProviderFieldR3DirectSpreadD1(int ctxSym, string fieldName, int valueSym) {
+    exists(int objExpr, int valueExpr |
+        contextProviderValueObject(ctxSym, objExpr) and
+        objectLiteralFieldSpreadD1(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+predicate contextProviderFieldR3DirectSpreadD2(int ctxSym, string fieldName, int valueSym) {
+    exists(int objExpr, int valueExpr |
+        contextProviderValueObject(ctxSym, objExpr) and
+        objectLiteralFieldSpreadD2(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+predicate contextProviderFieldR3DirectSpread(int ctxSym, string fieldName, int valueSym) {
+    contextProviderFieldR3DirectOwn(ctxSym, fieldName, valueSym)
+    or
+    contextProviderFieldR3DirectSpreadD1(ctxSym, fieldName, valueSym)
+    or
+    contextProviderFieldR3DirectSpreadD2(ctxSym, fieldName, valueSym)
+}
+
+predicate contextProviderField(int ctxSym, string fieldName, int valueSym) {
+    contextProviderFieldR2(ctxSym, fieldName, valueSym)
+    or
+    contextProviderFieldR3DirectSpread(ctxSym, fieldName, valueSym)
+    or
+    contextProviderFieldR3VarIndirect(ctxSym, fieldName, valueSym)
 }
 
 /**
@@ -667,22 +1005,73 @@ predicate contextDestructureBinding(int ctxSym, string fieldName, int paramSym) 
  * name match. v1 doesn't try to disambiguate module paths — same-name
  * collisions are over-approximated.
  */
-predicate contextSymLink(int providerCtxSym, int consumerCtxSym) {
-    providerCtxSym = consumerCtxSym
-    or
+/**
+ * Round-3: split the equality and cross-file branches into named helpers
+ * so the top-level disjunction is `or`-of-calls (workaround for #166). The
+ * round-2 form had an unbound equality `providerCtxSym = consumerCtxSym`
+ * inside the disjunction body, which the planner could not ground in the
+ * single-file (same-symbol) case — round-2's only fixture happened to use
+ * the cross-file branch so this latent bug never surfaced. Ground the
+ * equality on `contextSym` to give the planner something to anchor on.
+ */
+predicate contextSymLinkSame(int providerCtxSym, int consumerCtxSym) {
+    contextSym(providerCtxSym) and
+    consumerCtxSym = providerCtxSym
+}
+
+predicate contextSymLinkCrossFile(int providerCtxSym, int consumerCtxSym) {
     exists(string name |
         ExportBinding(name, providerCtxSym, _) and
         ImportBinding(consumerCtxSym, _, name)
     )
 }
 
-predicate contextSetterAliasStep(int valueSym, int paramSym) {
+predicate contextSymLink(int providerCtxSym, int consumerCtxSym) {
+    contextSymLinkSame(providerCtxSym, consumerCtxSym)
+    or
+    contextSymLinkCrossFile(providerCtxSym, consumerCtxSym)
+}
+
+/**
+ * Round-3: split `contextSetterAliasStep` into per-`contextProviderField`-branch
+ * helpers and union at the top level. The 3-way disjunct shape of
+ * `contextProviderField` (round-2 ∨ round-3 direct-spread ∨ round-3
+ * variable-indirect) was being poisoned inside the single-body form of
+ * `contextSetterAliasStep` — same pathology as #166.
+ */
+predicate contextSetterAliasStepR2(int valueSym, int paramSym) {
     exists(int providerCtxSym, int consumerCtxSym, string fieldName |
         contextSym(providerCtxSym) and
-        contextProviderField(providerCtxSym, fieldName, valueSym) and
+        contextProviderFieldR2(providerCtxSym, fieldName, valueSym) and
         contextSymLink(providerCtxSym, consumerCtxSym) and
         contextDestructureBinding(consumerCtxSym, fieldName, paramSym)
     )
+}
+
+predicate contextSetterAliasStepR3DirectSpread(int valueSym, int paramSym) {
+    exists(int providerCtxSym, int consumerCtxSym, string fieldName |
+        contextSym(providerCtxSym) and
+        contextProviderFieldR3DirectSpread(providerCtxSym, fieldName, valueSym) and
+        contextSymLink(providerCtxSym, consumerCtxSym) and
+        contextDestructureBinding(consumerCtxSym, fieldName, paramSym)
+    )
+}
+
+predicate contextSetterAliasStepR3VarIndirect(int valueSym, int paramSym) {
+    exists(int providerCtxSym, int consumerCtxSym, string fieldName |
+        contextSym(providerCtxSym) and
+        contextProviderFieldR3VarIndirect(providerCtxSym, fieldName, valueSym) and
+        contextSymLink(providerCtxSym, consumerCtxSym) and
+        contextDestructureBinding(consumerCtxSym, fieldName, paramSym)
+    )
+}
+
+predicate contextSetterAliasStep(int valueSym, int paramSym) {
+    contextSetterAliasStepR2(valueSym, paramSym)
+    or
+    contextSetterAliasStepR3DirectSpread(valueSym, paramSym)
+    or
+    contextSetterAliasStepR3VarIndirect(valueSym, paramSym)
 }
 
 /**

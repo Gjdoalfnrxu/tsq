@@ -60,6 +60,7 @@ var stdlibCoverageAllowlist = map[string]string{
 	"ArrayDestructure":    "array destructuring; coverage_probe.ql added",
 	"DestructureRest":     "destructure rest; coverage_probe.ql added",
 	"ObjectLiteralField":  "object literal field; covered by react context-alias integration test (round-2)",
+	"ObjectLiteralSpread": "object literal spread element; covered by react context-alias integration test (round-3)",
 	"JsxElement":          "JSX; coverage_probe.ql added",
 	"JsxAttribute":        "JSX attribute; coverage_probe.ql added",
 	"ImportBinding":       "import binding; coverage_probe.ql added",

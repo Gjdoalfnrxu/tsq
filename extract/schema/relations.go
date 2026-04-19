@@ -170,6 +170,16 @@ func init() {
 		{Name: "fieldName", Type: TypeString},
 		{Name: "valueExpr", Type: TypeEntityRef},
 	}})
+	// ObjectLiteralSpread: a `...expr` element of an object literal.
+	// `parent` is the enclosing object expression node id; `valueExpr` is
+	// the expression node after the `...` (typically an Identifier).
+	// Round-3 of the React context-alias work uses this together with a
+	// VarDecl-to-ObjectExpression resolution to compute the union of own
+	// fields and spread-contributed fields of a Provider value object.
+	RegisterRelation(RelationDef{Name: "ObjectLiteralSpread", Version: 1, Columns: []ColumnDef{
+		{Name: "parent", Type: TypeEntityRef},
+		{Name: "valueExpr", Type: TypeEntityRef},
+	}})
 	// JSX
 	RegisterRelation(RelationDef{Name: "JsxElement", Version: 1, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},

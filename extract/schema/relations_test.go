@@ -15,6 +15,7 @@ func TestAllRelationsRegistered(t *testing.T) {
 		"DestructureField", "ArrayDestructure", "DestructureRest",
 		"ImportBinding", "ExportBinding", "TypeFromLib",
 		"ObjectLiteralField",
+		"ObjectLiteralSpread",
 		"JsxElement", "JsxAttribute",
 		// v2 type-aware relations
 		"ClassDecl", "InterfaceDecl", "Implements", "Extends",
@@ -50,8 +51,8 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 94 {
-		t.Fatalf("expected 94 relations in registry, got %d", len(Registry))
+	if len(Registry) != 95 {
+		t.Fatalf("expected 95 relations in registry, got %d", len(Registry))
 	}
 }
 
