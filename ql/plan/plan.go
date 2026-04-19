@@ -149,6 +149,17 @@ type MaterialisingEstimatorHook func(prog *datalog.Program, sizeHints map[string
 // is in use, without EstimateAndPlan needing to know about magic-set options.
 type Func func(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []error)
 
+// FuncWithClassExtents is the disj2-round3 planner entry point: like
+// Func but receives the set of class-extent base predicate names that
+// EstimateAndPlanWithExtentsCtx materialised before planning. The
+// planner uses this set to ground vars sourced from stripped class
+// extents (see PlanWithClassExtents / InferBackwardDemandWithClassExtents
+// for rationale).
+//
+// classExtentNames may be nil (empty set); the planner must degrade
+// cleanly to the non-class-extent behaviour.
+type FuncWithClassExtents func(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*ExecutionPlan, []error)
+
 // EstimateAndPlan is the single estimate-then-plan entry point. It owns the
 // order: stratify (implicit, via planFn) → identify trivial IDBs and estimate
 // their sizes via the eval-supplied hook → plan everything once with full
@@ -223,8 +234,43 @@ func EstimateAndPlanWithExtents(
 	matExtHook MaterialisingEstimatorHook,
 	planFn Func,
 ) (*ExecutionPlan, []error) {
+	// Adapter: a Func that ignores classExtentNames preserves the
+	// pre-disj2-round3 contract for callers that pass plain plan.Plan.
+	var ctxFn FuncWithClassExtents
+	if planFn != nil {
+		fn := planFn
+		ctxFn = func(p *datalog.Program, h map[string]int, _ map[string]bool) (*ExecutionPlan, []error) {
+			return fn(p, h)
+		}
+	}
+	return EstimateAndPlanWithExtentsCtx(prog, sizeHints, maxBindingsPerRule, estimator, matExtHook, ctxFn)
+}
+
+// EstimateAndPlanWithExtentsCtx is the disj2-round3 entry point. It is
+// identical to EstimateAndPlanWithExtents except `planFn` is a
+// FuncWithClassExtents — the planner receives the set of class-extent
+// base names that the materialising hook produced AND that were
+// stripped from the planning program. This lets the planner ground vars
+// sourced from those (now-base-like) extents in backward-demand
+// inference, fixing the disj2-round3 cap-hit failure mode where a
+// stripped class extent was the sole grounder for a downstream synth
+// `_disj_*` predicate.
+//
+// The same materialised-extents set is also used to filter rules out
+// of the planning program (mirroring EstimateAndPlanWithExtents'
+// stripping behaviour).
+func EstimateAndPlanWithExtentsCtx(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	maxBindingsPerRule int,
+	estimator EstimatorHook,
+	matExtHook MaterialisingEstimatorHook,
+	planFn FuncWithClassExtents,
+) (*ExecutionPlan, []error) {
 	if planFn == nil {
-		planFn = Plan
+		planFn = func(p *datalog.Program, h map[string]int, ce map[string]bool) (*ExecutionPlan, []error) {
+			return PlanWithClassExtents(p, h, ce)
+		}
 	}
 	if sizeHints == nil {
 		sizeHints = map[string]int{}
@@ -264,13 +310,31 @@ func EstimateAndPlanWithExtents(
 		}
 	}
 
-	return planFn(planProg, sizeHints)
+	return planFn(planProg, sizeHints, materialisedExtents)
 }
 
 // Plan produces an ExecutionPlan from a Datalog program.
 // sizeHints maps relation names to estimated tuple counts (for join ordering).
 // Unknown relations default to 1000.
 func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []error) {
+	return PlanWithClassExtents(prog, sizeHints, nil)
+}
+
+// PlanWithClassExtents is the disj2-round3 entry point: like Plan, but
+// additionally honours a caller-supplied set of materialised
+// class-extent base predicate names. Those names are treated as
+// grounders for any var they bind in any rule body, regardless of size
+// hint, when computing backward demand. This is the load-bearing fix
+// for the case where EstimateAndPlanWithExtents materialises a class
+// extent and STRIPS its defining rule from the planning program: the
+// arity-1 structural detector (PR #158) cannot match a stripped rule,
+// so without explicit class-extent membership the consuming rule's
+// demand collapses and the synth-disj cap-hits at evaluation time.
+//
+// classExtentNames may be nil (degrades to the plain Plan behaviour).
+//
+//revive:disable-next-line:exported The "Plan" prefix mirrors EstimateAndPlanWithExtents; renaming would obscure the entry-point family.
+func PlanWithClassExtents(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*ExecutionPlan, []error) {
 	// Validate all rules first.
 	var errs []error
 	for _, rule := range prog.Rules {
@@ -298,7 +362,7 @@ func Plan(prog *datalog.Program, sizeHints map[string]int) (*ExecutionPlan, []er
 	// (e.g. no IDB is caller-grounded) orderJoinsWithDemand degrades to
 	// the same behaviour as orderJoins, preserving all prior plans as
 	// a lower bound.
-	demand := InferBackwardDemand(prog, sizeHints)
+	demand := InferBackwardDemandWithClassExtents(prog, sizeHints, classExtentNames)
 
 	ep := &ExecutionPlan{Demand: demand}
 	for _, stratum := range strata {

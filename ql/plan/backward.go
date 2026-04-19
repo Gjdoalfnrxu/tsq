@@ -199,6 +199,27 @@ func isLargeArity1Grounder(pred string, sizeHints map[string]int, large map[stri
 	return sz > 0 && sz <= LargeArityOneExtentThreshold
 }
 
+// isMaterialisedClassExtentGrounder returns true if `pred` is in the
+// caller-supplied class-extent name set. This is the disj2-round3 fix:
+// when EstimateAndPlanWithExtents materialises a class-extent rule and
+// strips it from the planning program, the structural detector
+// `arity1BaseGroundedIDBs` cannot find the rule any more (it's gone)
+// and the consuming rule's body literal looks like a base atom whose
+// only signal is its sizeHint. For materialised class extents the
+// extent has ALREADY been computed once, lives in RAM as a base-like
+// relation, and per-tuple iteration of its single column is cheap
+// regardless of size — so it is safe to ground its arg vars at any size,
+// including the SaturatedSizeHint marker (the materialising hook is the
+// authoritative signal that the extent was successfully built; size
+// hint can be unrelated).
+//
+// classExtentNames may be nil; nil means "no materialised extents
+// declared" and degrades to the PR #158 behaviour (arity-1 structural
+// detector only).
+func isMaterialisedClassExtentGrounder(pred string, classExtentNames map[string]bool) bool {
+	return classExtentNames[pred]
+}
+
 // DemandMap records, per predicate name, the argument positions whose
 // values are known to be bound at rule-evaluation time because every
 // caller of this predicate grounds them. Keys are predicate names;
@@ -239,6 +260,23 @@ type DemandMap map[string][]int
 // body-internal sideways passing. Nil hints → every literal is treated
 // as unknown-size, which degenerates to "constant-only" grounding.
 func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) DemandMap {
+	return InferBackwardDemandWithClassExtents(prog, sizeHints, nil)
+}
+
+// InferBackwardDemandWithClassExtents is the disj2-round3 entry point
+// that additionally honours a caller-supplied set of materialised
+// class-extent base names. Those names are treated as grounders for any
+// var they bind in any rule body, regardless of size hint or the
+// structural arity-1 detector. See isMaterialisedClassExtentGrounder
+// for rationale.
+//
+// The plain InferBackwardDemand wrapper passes nil, preserving its
+// pre-disj2-round3 behaviour.
+func InferBackwardDemandWithClassExtents(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+) DemandMap {
 	if prog == nil || len(prog.Rules) == 0 {
 		return DemandMap{}
 	}
@@ -320,7 +358,7 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 		// references. Adversarial-review Finding 1 on PR #143.
 		if prog.Query != nil && len(prog.Query.Body) > 0 {
 			queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
-			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{}, largeArity1IDBs)
+			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{}, largeArity1IDBs, classExtentNames)
 			for _, lit := range prog.Query.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 					continue
@@ -351,7 +389,7 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 					headBoundVars[v.Name] = true
 				}
 			}
-			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars, largeArity1IDBs)
+			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars, largeArity1IDBs, classExtentNames)
 
 			for _, lit := range rule.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
@@ -448,6 +486,7 @@ func bodyContextGroundedVars(
 	sizeHints map[string]int,
 	headBoundVars map[string]bool,
 	largeArity1IDBs map[string]bool,
+	classExtentNames map[string]bool,
 ) map[string]bool {
 	bound := map[string]bool{}
 	for v := range headBoundVars {
@@ -482,7 +521,8 @@ func bodyContextGroundedVars(
 			// exceeds SmallExtentThreshold — see disj2-round2 / PR #158
 			// rationale on LargeArityOneExtentThreshold.
 			if isSmallExtent(lit.Atom.Predicate, sizeHints) ||
-				isLargeArity1Grounder(lit.Atom.Predicate, sizeHints, largeArity1IDBs) {
+				isLargeArity1Grounder(lit.Atom.Predicate, sizeHints, largeArity1IDBs) ||
+				isMaterialisedClassExtentGrounder(lit.Atom.Predicate, classExtentNames) {
 				for _, arg := range lit.Atom.Args {
 					if v, ok := arg.(datalog.Var); ok && v.Name != "_" {
 						if !bound[v.Name] {
