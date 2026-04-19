@@ -24,8 +24,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// Value-flow Phase C PR1: +1 CallTargetCrossModule = 127
 	// Value-flow Phase C PR2: +1 LocalFlowStep = 128
 	// Value-flow Phase C PR3: +2 InterFlowStep + FlowStep = 130
-	if got := len(m.Available); got != 130 {
-		t.Errorf("expected 130 available classes, got %d", got)
+	// Value-flow Phase C PR4: +1 MayResolveTo = 131
+	if got := len(m.Available); got != 131 {
+		t.Errorf("expected 131 available classes, got %d", got)
 	}
 }
 

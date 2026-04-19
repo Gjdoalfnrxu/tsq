@@ -794,7 +794,8 @@ func TestAllSystemRulesCountWithTaint(t *testing.T) {
 	vf := ValueFlowRules()
 	lfs := LocalFlowStepRules()
 	ifs := InterFlowStepRules()
-	expected := len(cg) + len(lf) + len(sm) + len(co) + len(ta) + len(fw) + len(ho) + len(vf) + len(lfs) + len(ifs)
+	mr := MayResolveToRules()
+	expected := len(cg) + len(lf) + len(sm) + len(co) + len(ta) + len(fw) + len(ho) + len(vf) + len(lfs) + len(ifs) + len(mr)
 	if len(all) != expected {
 		t.Errorf("expected %d rules, got %d", expected, len(all))
 	}

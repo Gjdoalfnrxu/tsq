@@ -257,9 +257,37 @@ predicate mayResolveToJsxWrapped(int valueExpr, int sourceExpr) {
  * case, breaking subsumption with `resolveToObjectExprVarD1`. Adding
  * `mayResolveToJsxWrapped` closes that gap before PR3's bridge migration.
  */
+// PHASE-C-PR6 NOTE: prefer mayResolveToRec for new code; this Phase A
+// wrapper is being retired.
 predicate mayResolveTo(int valueExpr, int sourceExpr) {
     mayResolveToCore(valueExpr, sourceExpr)
     or mayResolveToJsxWrapped(valueExpr, sourceExpr)
+}
+
+/**
+ * Phase C PR4 — recursive may-resolve-to closure.
+ *
+ * `mayResolveToRec(v, s)` is the transitive closure of PR3's `FlowStep`
+ * starting from `ExprValueSource`. It is the consumer-facing wrapper for
+ * the system Datalog `MayResolveTo` relation populated by
+ * extract/rules/mayresolveto.go (see docs/design/valueflow-phase-c-plan.md
+ * §1.2).
+ *
+ * Path-erased (arity-2). Field sensitivity is PR5; bridge migration of
+ * the R1–R4 shape predicates in tsq_react.qll over to this recursive
+ * form is PR6. Until PR6, Phase A's non-recursive `mayResolveTo` (above)
+ * remains the consumer surface for existing bridge code; new consumers
+ * that want the closure should call `mayResolveToRec` directly.
+ *
+ * The wrapper is a one-line forward to the system relation rather than a
+ * recursive QL predicate of its own. Recursion is evaluated by the system
+ * Datalog rules with the planner's recursive-IDB cardinality estimator
+ * (Phase B PR3) and magic-set propagation (Phase B PR4/PR5) attached. A
+ * QL-side recursive predicate would re-do the work the planner already
+ * sized.
+ */
+predicate mayResolveToRec(int v, int s) {
+    MayResolveTo(v, s)
 }
 
 /**

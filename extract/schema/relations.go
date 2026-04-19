@@ -551,6 +551,21 @@ func init() {
 		{Name: "to", Type: TypeEntityRef},
 	}})
 
+	// Value-flow Phase C PR4: recursive may-resolve-to closure.
+	// MayResolveTo(v, s) is the transitive closure of FlowStep starting
+	// from ExprValueSource — "expression v's runtime value may be the
+	// value produced at expression s". Populated by system rules in
+	// extract/rules/mayresolveto.go (two heads: ExprValueSource base case
+	// + FlowStep-then-MayResolveTo recursive case). Path-erased (arity-2);
+	// PR5 widens to (v, s, path) for field sensitivity. Bridge migration
+	// (PR6) swaps existing R1–R4 shape predicates for `mayResolveToRec`
+	// consumers in tsq_react.qll. See
+	// docs/design/valueflow-phase-c-plan.md §1.2.
+	RegisterRelation(RelationDef{Name: "MayResolveTo", Version: 2, Columns: []ColumnDef{
+		{Name: "v", Type: TypeEntityRef},
+		{Name: "s", Type: TypeEntityRef},
+	}})
+
 	// C1: Template literal extraction
 	RegisterRelation(RelationDef{Name: "TemplateLiteral", Version: 2, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},
