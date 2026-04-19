@@ -149,7 +149,9 @@ predicate mayResolveToObjectField(int valueExpr, int sourceExpr) {
  * a single rule body, so the binding-loss case never fires. If a
  * regression appears here in the future (per-branch row count > 0 but
  * union row count = 0), that is the classic #166 signature — escalate to
- * the planner team rather than rewriting the value-flow rules.
+ * the planner team rather than rewriting the value-flow rules. The
+ * regression guard is `TestValueflow_UnionMatchesSumOfBranches` in
+ * `valueflow_integration_test.go`.
  */
 predicate mayResolveTo(int valueExpr, int sourceExpr) {
     mayResolveToBase(valueExpr, sourceExpr)

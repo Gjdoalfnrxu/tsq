@@ -241,9 +241,10 @@ func TestValueflow_NegativeFixtureNoLeakage(t *testing.T) {
 	rs := runValueflowQuery(t, "testdata/queries/v2/valueflow/all_mayResolveTo.ql",
 		"testdata/projects/valueflow-negative")
 
-	// Loose upper bound: 3 fixture files × ~10 expected rows each (identity
-	// literals + 1 depth-1 var-init each) = ~30. A genuine recursion bug
-	// would multiply this by the per-fixture symbol count.
+	// Defence-in-depth: aggregate row count must stay bounded. 3 fixture
+	// files × ~10 expected rows each (identity literals + depth-1 var-init)
+	// = ~30. A genuine recursion bug would multiply this by the per-fixture
+	// symbol count.
 	const upperBound = 60
 	if len(rs.Rows) > upperBound {
 		t.Errorf("valueflow-negative fixture emitted %d mayResolveTo rows (expected ≤ %d). "+
@@ -252,16 +253,102 @@ func TestValueflow_NegativeFixtureNoLeakage(t *testing.T) {
 			len(rs.Rows), upperBound)
 	}
 	t.Logf("valueflow-negative mayResolveTo row count: %d (upper bound %d)", len(rs.Rows), upperBound)
+
+	// Per-fixture pinned assertions (plan §4.1). Run the location-projected
+	// probe and confirm no row joins a known use-site at line `useLine` to
+	// the unreachable literal at `forbiddenSourceLine`. These are the
+	// signatures of the Phase A out-of-scope shapes (two-hop var, spread,
+	// alias-base field write — the last is documented as a possible
+	// over-approximation; see the fixture comment in
+	// field_write_aliased_base.ts for context).
+	probe := runValueflowQuery(t,
+		"testdata/queries/v2/valueflow/negative_use_site_resolutions.ql",
+		"testdata/projects/valueflow-negative")
+
+	type forbidden struct {
+		fileSuffix          string // matched as suffix on path so test is repo-root agnostic
+		useLine             int64  // line of the use-site expression
+		forbiddenSourceLine int64  // line of the unreachable literal
+		shape               string // human label for the failure message
+	}
+	cases := []forbidden{
+		// two_hop_var.ts:  const b = { k: 1 };  (line 5, literal)
+		//                  const a = b;          (line 6)
+		//                  const r = use(a);     (line 8, use-site `a`)
+		// Phase A must NOT resolve `a` (line 8) to the literal `{ k: 1 }`
+		// (line 5) — that requires recursive var-init traversal.
+		{"two_hop_var.ts", 8, 5, "two-hop var indirection (a → b → {k:1})"},
+
+		// spread_carrier.ts: const base = { k: 1 };  (line 5, literal)
+		//                    const o = { ...base }; (line 6, spread)
+		//                    const r = o.k;         (line 7, use-site)
+		// Phase A must NOT resolve `o.k` (line 7) to `1` (line 5) — spread
+		// is unmodelled.
+		{"spread_carrier.ts", 7, 5, "object-literal spread (o.k → ...base → 1)"},
+	}
+	// Note: field_write_aliased_base.ts is intentionally NOT pinned. Its
+	// own fixture comment flags that whether `o` and `o2` collapse to the
+	// same baseSym is extractor-dependent; if they do, Phase A's
+	// no-alias-tracking field-read branch will resolve through, and that's
+	// recorded as a known v1 over-approximation rather than a leak.
+
+	for _, fc := range cases {
+		fc := fc
+		t.Run(fc.fileSuffix, func(t *testing.T) {
+			leaks := 0
+			for _, row := range probe.Rows {
+				if len(row) < 4 {
+					continue
+				}
+				vpv, ok1 := row[0].(eval.StrVal)
+				vlv, ok2 := row[1].(eval.IntVal)
+				spv, ok3 := row[2].(eval.StrVal)
+				slv, ok4 := row[3].(eval.IntVal)
+				if !ok1 || !ok2 || !ok3 || !ok4 {
+					continue
+				}
+				vp, vl, sp, sl := vpv.V, vlv.V, spv.V, slv.V
+				if !endsWith(vp, fc.fileSuffix) || !endsWith(sp, fc.fileSuffix) {
+					continue
+				}
+				if vl == fc.useLine && sl == fc.forbiddenSourceLine {
+					leaks++
+					t.Errorf("Phase A leak: mayResolveTo row %s:%d → %s:%d "+
+						"(shape: %s). Phase A must not resolve through this step; "+
+						"if a branch was made recursive this is the regression site.",
+						vp, vl, sp, sl, fc.shape)
+				}
+			}
+			t.Logf("%s: 0-leak assertion held (use-line %d ↛ source-line %d, shape: %s; %d total leak rows)",
+				fc.fileSuffix, fc.useLine, fc.forbiddenSourceLine, fc.shape, leaks)
+		})
+	}
+}
+
+// endsWith is a small dependency-free suffix check so the negative-fixture
+// test is repo-root-agnostic (CI may extract from absolute paths).
+func endsWith(s, suffix string) bool {
+	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
 
 // TestValueflow_RowCountBudget enforces the row-count budget gate from plan
 // §2.7: `mayResolveTo` aggregate row count is bounded by N × ExprValueSource.
-// Per the plan, on Mastodon the union sits at ~10^5–10^6 rows against an
-// ExprValueSource population of ~10^5–5*10^5. Conservative ratio cap: 10x.
 //
-// On the small valueflow-base fixture this is decorative; the gate exists
-// to break CI loud and early when the same predicate is re-run against
-// larger fixtures (full-ts-project, react-usestate-context-alias-r3).
+// Two thresholds are in play:
+//
+//   - Small-fixture local guard: 3.0×. Observed ratios on the four small
+//     fixtures here sit between 1.08× and 1.85×; a 5× regression would
+//     pass a 10× cap silently, so the small-fixture gate is tightened to
+//     3.0× and a regression rules out routine drift while still leaving
+//     headroom for fixture growth.
+//   - Mastodon-scale gate: 10.0× — appropriate when this test is re-run
+//     against the larger fixtures (full-ts-project,
+//     react-usestate-context-alias-r3) where per-symbol fan-out is denser
+//     and Phase A's union sits at ~10^5–10^6 rows over an ExprValueSource
+//     population of ~10^5–5*10^5.
+//
+// When wiring the larger fixtures in a follow-up, hoist `cap` into the
+// fixture struct so each fixture carries its own threshold.
 func TestValueflow_RowCountBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping extraction-heavy integration test in short mode")
@@ -288,14 +375,62 @@ func TestValueflow_RowCountBudget(t *testing.T) {
 			}
 			t.Logf("fixture=%s ExprValueSource=%d mayResolveTo=%d ratio=%.2f",
 				fixture, evsCount, len(rs.Rows), ratio)
-			if evsCount > 0 && ratio > 10.0 {
-				t.Errorf("budget gate: mayResolveTo (%d) > 10x ExprValueSource (%d) — ratio %.2f. "+
+			// Small-fixture cap. See doc above for the 10× Mastodon-scale
+			// threshold that applies once larger fixtures are wired in.
+			const smallFixtureRatioCap = 3.0
+			if evsCount > 0 && ratio > smallFixtureRatioCap {
+				t.Errorf("budget gate: mayResolveTo (%d) > %.1fx ExprValueSource (%d) — ratio %.2f. "+
 					"Phase A union should not balloon multiplicatively over the EDB base; "+
-					"investigate per-branch row counts via the branch_*.ql queries.",
-					len(rs.Rows), evsCount, ratio)
+					"investigate per-branch row counts via the branch_*.ql queries. "+
+					"(10× is the Mastodon-scale threshold; this 3× gate is the small-fixture local guard.)",
+					len(rs.Rows), smallFixtureRatioCap, evsCount, ratio)
 			}
 		})
 	}
+}
+
+// TestValueflow_ResolvesToFunctionDirect exercises the
+// `resolvesToFunctionDirect(callee, fnId)` derived helper in
+// `bridge/tsq_valueflow.qll`. The helper is the Phase A surface PR3 will
+// consume to rewrite `tsq_react.qll`'s easy `resolveToObjectExpr*` branches
+// onto value-flow. Shipping it without a direct test means a slot-swap bug
+// in the `FunctionSymbol(sym, fnId)` wiring would land silently and only
+// surface when PR3 lands; this test catches it at PR2 boundary.
+//
+// Fixture: `const cb = () => 42; const r = cb();` — the use-site `cb` in
+// `cb()` is the callee, and the arrow-function init is both the
+// ExprValueSource (var-init branch resolves through to it) and the
+// FunctionSymbol target. The two must agree on the function node id.
+func TestValueflow_ResolvesToFunctionDirect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping extraction-heavy integration test in short mode")
+	}
+	rs := runValueflowQuery(t,
+		"testdata/queries/v2/valueflow/resolves_to_function_direct.ql",
+		"testdata/projects/valueflow-fnref")
+	if len(rs.Rows) == 0 {
+		t.Fatal("resolvesToFunctionDirect returned 0 rows on valueflow-fnref " +
+			"fixture; either the FunctionSymbol/sourceExpr equality wiring is " +
+			"broken or the var-init branch regressed. Each row should bind " +
+			"(useExprId, arrowFnNodeId).")
+	}
+	// Every row must be a (callee, fnId) IntVal pair where fnId is non-zero
+	// (a real node id). Defensive shape check guards against a future schema
+	// drift that would silently land null/zero ids and pass the count check.
+	for i, row := range rs.Rows {
+		if len(row) != 2 {
+			t.Fatalf("row %d: expected arity 2, got %d", i, len(row))
+		}
+		c, ok1 := row[0].(eval.IntVal)
+		f, ok2 := row[1].(eval.IntVal)
+		if !ok1 || !ok2 {
+			t.Fatalf("row %d: expected (IntVal, IntVal), got (%T, %T)", i, row[0], row[1])
+		}
+		if c.V == 0 || f.V == 0 {
+			t.Errorf("row %d: zero node id (callee=%d fnId=%d) — schema drift suspected", i, c.V, f.V)
+		}
+	}
+	t.Logf("resolvesToFunctionDirect: %d row(s) on valueflow-fnref", len(rs.Rows))
 }
 
 // TestValueflow_IntegrationOnReactFixture is the smoke test that
