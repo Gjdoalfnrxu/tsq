@@ -581,70 +581,72 @@ predicate resolveToObjectExprVarD2(int valueExpr, int objExpr) {
  * the hook body is intentionally out of scope for v1.
  */
 
-// Shape A — return expression IS the ObjectLiteral, same-module FunctionSymbol.
-predicate resolveToObjectExprHookReturnDirectSame(int valueExpr, int objExpr) {
-    exists(int identExpr, int sym, int varDecl, int callExpr, int call,
-           int hookSym, int hookFn |
+// Selectivity helper: `hookFn` directly returns ObjectLiteral `objExpr`.
+// Anchored on `isObjectLiteralExpr(objExpr)` (the small end) to keep planner
+// seeds tight — without this, joining ReturnStmt by hookFn first explodes on
+// real corpora (mastodon: `_disj_2` cap at step 6 of the unrolled join).
+predicate hookFnReturnsObjectLiteralDirect(int hookFn, int objExpr) {
+    isObjectLiteralExpr(objExpr) and
+    ReturnStmt(hookFn, _, objExpr)
+}
+
+// Selectivity helper: `hookFn` returns a var whose VarDecl init is
+// ObjectLiteral `objExpr`. Same anchor discipline.
+predicate hookFnReturnsObjectLiteralVar(int hookFn, int objExpr) {
+    exists(int retSym, int retExpr, int innerVarDecl |
+        isObjectLiteralExpr(objExpr) and
+        VarDecl(innerVarDecl, retSym, objExpr, _) and
+        ExprMayRef(retExpr, retSym) and
+        ReturnStmt(hookFn, _, retExpr)
+    )
+}
+
+// Caller-side seed: the value expression resolves to a CallExpression whose
+// callee symbol is `hookSym`. Shared across all four hook-return branches.
+predicate valueExprCallsHook(int valueExpr, int hookSym) {
+    exists(int identExpr, int sym, int varDecl, int callExpr, int call |
         (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
         ExprMayRef(identExpr, sym) and
         VarDecl(varDecl, sym, callExpr, _) and
         ExprIsCall(callExpr, call) and
-        CallCalleeSym(call, hookSym) and
+        CallCalleeSym(call, hookSym)
+    )
+}
+
+// Shape A — return expression IS the ObjectLiteral, same-module FunctionSymbol.
+predicate resolveToObjectExprHookReturnDirectSame(int valueExpr, int objExpr) {
+    exists(int hookSym, int hookFn |
+        hookFnReturnsObjectLiteralDirect(hookFn, objExpr) and
         FunctionSymbol(hookSym, hookFn) and
-        ReturnStmt(hookFn, _, objExpr) and
-        isObjectLiteralExpr(objExpr)
+        valueExprCallsHook(valueExpr, hookSym)
     )
 }
 
 // Shape A — return expression IS the ObjectLiteral, cross-module import.
 predicate resolveToObjectExprHookReturnDirectImported(int valueExpr, int objExpr) {
-    exists(int identExpr, int sym, int varDecl, int callExpr, int call,
-           int hookSym, int hookFn |
-        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
-        ExprMayRef(identExpr, sym) and
-        VarDecl(varDecl, sym, callExpr, _) and
-        ExprIsCall(callExpr, call) and
-        CallCalleeSym(call, hookSym) and
+    exists(int hookSym, int hookFn |
+        hookFnReturnsObjectLiteralDirect(hookFn, objExpr) and
         importedFunctionSymbol(hookSym, hookFn) and
-        ReturnStmt(hookFn, _, objExpr) and
-        isObjectLiteralExpr(objExpr)
+        valueExprCallsHook(valueExpr, hookSym)
     )
 }
 
 // Shape B — return expression refs a sym whose VarDecl initialiser IS the
 // ObjectLiteral (`const actions = { ... }; return actions;`). Same-module.
 predicate resolveToObjectExprHookReturnVarSame(int valueExpr, int objExpr) {
-    exists(int identExpr, int sym, int varDecl, int callExpr, int call,
-           int hookSym, int hookFn,
-           int retExpr, int retSym, int innerVarDecl |
-        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
-        ExprMayRef(identExpr, sym) and
-        VarDecl(varDecl, sym, callExpr, _) and
-        ExprIsCall(callExpr, call) and
-        CallCalleeSym(call, hookSym) and
+    exists(int hookSym, int hookFn |
+        hookFnReturnsObjectLiteralVar(hookFn, objExpr) and
         FunctionSymbol(hookSym, hookFn) and
-        ReturnStmt(hookFn, _, retExpr) and
-        ExprMayRef(retExpr, retSym) and
-        VarDecl(innerVarDecl, retSym, objExpr, _) and
-        isObjectLiteralExpr(objExpr)
+        valueExprCallsHook(valueExpr, hookSym)
     )
 }
 
 // Shape B — same as VarSame but cross-module hook resolution.
 predicate resolveToObjectExprHookReturnVarImported(int valueExpr, int objExpr) {
-    exists(int identExpr, int sym, int varDecl, int callExpr, int call,
-           int hookSym, int hookFn,
-           int retExpr, int retSym, int innerVarDecl |
-        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
-        ExprMayRef(identExpr, sym) and
-        VarDecl(varDecl, sym, callExpr, _) and
-        ExprIsCall(callExpr, call) and
-        CallCalleeSym(call, hookSym) and
+    exists(int hookSym, int hookFn |
+        hookFnReturnsObjectLiteralVar(hookFn, objExpr) and
         importedFunctionSymbol(hookSym, hookFn) and
-        ReturnStmt(hookFn, _, retExpr) and
-        ExprMayRef(retExpr, retSym) and
-        VarDecl(innerVarDecl, retSym, objExpr, _) and
-        isObjectLiteralExpr(objExpr)
+        valueExprCallsHook(valueExpr, hookSym)
     )
 }
 
