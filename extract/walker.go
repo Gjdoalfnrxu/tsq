@@ -343,6 +343,13 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		paramID := fw.nid(param)
 		paramName, typeText, isRest, isOptional := fw.extractParamInfo(param, pKind)
 
+		// Detect destructured-pattern parameters. The walker still emits a
+		// single Parameter row (for arity bookkeeping), but flags the slot so
+		// downstream rules (ParamBinding) can exclude it — the synthesised
+		// "name" for a destructured pattern is the literal pattern source
+		// text and its symbol id is therefore not a real bound name.
+		isDestructured := isDestructuredParamKind(param, pKind)
+
 		var symID uint32
 		if paramName != "" {
 			symID = SymID(fw.filePath, paramName, param.StartLine(), param.StartCol())
@@ -351,7 +358,9 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		isFnType := strings.Contains(typeText, "=>")
 
 		fw.emit("Parameter", fnID, idx, paramName, paramID, symID, typeText)
-		if paramName != "" {
+		// Emit Symbol only for real bound identifiers — destructured patterns
+		// have no single bound name at this slot.
+		if paramName != "" && !isDestructured {
 			fw.emit("Symbol", symID, paramName, paramID, fw.fileID)
 		}
 		if isRest {
@@ -360,6 +369,9 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		if isOptional {
 			fw.emit("ParameterOptional", fnID, idx)
 		}
+		if isDestructured {
+			fw.emit("ParameterDestructured", fnID, idx)
+		}
 		if isFnType {
 			fw.emit("ParamIsFunctionType", fnID, idx)
 		}
@@ -367,6 +379,47 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 	}
 }
 
+// isDestructuredParamKind reports whether the parameter slot's pattern is
+// an ObjectPattern or ArrayPattern (including when wrapped inside a
+// RequiredParameter / OptionalParameter / AssignmentPattern).
+func isDestructuredParamKind(param ASTNode, pKind string) bool {
+	switch pKind {
+	case "ObjectPattern", "ArrayPattern":
+		return true
+	case "RequiredParameter", "OptionalParameter":
+		patNode := childByField(param, "pattern")
+		if patNode == nil {
+			patNode = childByField(param, "name")
+		}
+		if patNode != nil {
+			pk := patNode.Kind()
+			return pk == "ObjectPattern" || pk == "ArrayPattern"
+		}
+	case "AssignmentPattern":
+		if left := childByField(param, "left"); left != nil {
+			lk := left.Kind()
+			return lk == "ObjectPattern" || lk == "ArrayPattern"
+		}
+	}
+	return false
+}
+
+// extractParamInfo derives the bound-name, type text, and modifier flags for
+// a parameter slot.
+//
+// Deliberately unmodelled in Phase A (callers must not assume these are
+// captured anywhere — relevant relations stay empty for these shapes):
+//   - Getter / setter accessor parameters (`get x()` / `set x(v)`): emitted
+//     as Parameter rows when present, but accessor-specific binding semantics
+//     are not modelled — they go through Method/Get/SetAccessor relations.
+//   - The implicit `arguments` object inside non-arrow functions: not
+//     emitted as a parameter symbol; consumers must inspect ExprMayRef.
+//   - Decorator parameters (TypeScript decorator factories): treated as
+//     ordinary call args; the decorator binding chain is not modelled.
+//   - Destructured parameters (ObjectPattern / ArrayPattern): emitted as a
+//     single Parameter row with the pattern source text as the synthesised
+//     name and flagged via ParameterDestructured (above). Per-bound-name
+//     expansion is deferred to Phase C.
 func (fw *FactWalker) extractParamInfo(param ASTNode, pKind string) (name, typeText string, isRest, isOptional bool) {
 	switch pKind {
 	case "RequiredParameter":

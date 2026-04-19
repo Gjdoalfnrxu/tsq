@@ -56,6 +56,18 @@ func init() {
 		{Name: "fn", Type: TypeEntityRef},
 		{Name: "idx", Type: TypeInt32},
 	}})
+	// ParameterDestructured marks parameter slots whose pattern is an
+	// ObjectPattern or ArrayPattern (e.g. `function f({a, b}, [x, y])`).
+	// Phase A does NOT model destructured-parameter binding (the per-bound-name
+	// expansion needs a separate pass — deferred to Phase C). The walker still
+	// emits a single Parameter row for the slot (so arity bookkeeping is
+	// stable), but the synthesised name is the literal pattern source text and
+	// the symbol id is therefore bogus. ParamBinding's rule excludes these
+	// slots via `not ParameterDestructured(fn, idx)` to prevent fake bindings.
+	RegisterRelation(RelationDef{Name: "ParameterDestructured", Version: 1, Columns: []ColumnDef{
+		{Name: "fn", Type: TypeEntityRef},
+		{Name: "idx", Type: TypeInt32},
+	}})
 	RegisterRelation(RelationDef{Name: "ParamIsFunctionType", Version: 1, Columns: []ColumnDef{
 		{Name: "fn", Type: TypeEntityRef},
 		{Name: "idx", Type: TypeInt32},

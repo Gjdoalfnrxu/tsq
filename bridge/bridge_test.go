@@ -22,7 +22,7 @@ func TestBridgeFilesNotEmpty(t *testing.T) {
 // of each .qll file to verify they contain valid-looking QL class declarations.
 func TestBridgeFilesParseBasicStructure(t *testing.T) {
 	classRe := regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?class\s+(\w+)\s+extends\s+`)
-	predicateRe := regexp.MustCompile(`(?m)^\s+(?:override\s+)?(string|int|predicate|ASTNode|File|Call|JsxElement|Function|Parameter|CallArg|ParameterRest|ParameterOptional|ParamIsFunctionType|CallArgSpread|VarDecl|Assign|ExprMayRef|ExprIsCall|FieldRead|FieldWrite|Await|Cast|DestructureField|ArrayDestructure|DestructureRest|JsxAttribute|ImportBinding|ExportBinding|ExtractError|SchemaVersion|Contains)\s+\w+\(`)
+	predicateRe := regexp.MustCompile(`(?m)^\s+(?:override\s+)?(string|int|predicate|ASTNode|File|Call|JsxElement|Function|Parameter|CallArg|ParameterRest|ParameterOptional|ParameterDestructured|ParamIsFunctionType|CallArgSpread|VarDecl|Assign|ExprMayRef|ExprIsCall|FieldRead|FieldWrite|Await|Cast|DestructureField|ArrayDestructure|DestructureRest|JsxAttribute|ImportBinding|ExportBinding|ExtractError|SchemaVersion|Contains)\s+\w+\(`)
 
 	files := LoadBridge()
 	for name, data := range files {

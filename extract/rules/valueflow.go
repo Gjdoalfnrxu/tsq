@@ -17,33 +17,48 @@ import (
 // ParamBinding materialises the join CallTarget ⨝ CallArg ⨝ Parameter so the
 // non-recursive mayResolveTo's param-bind branch consumes a single
 // already-bound base predicate instead of re-deriving the 3-table join per
-// query. CallTarget itself is a system-derived relation (callgraph.go), so
-// ParamBinding cannot be emitted at extraction time.
+// query.
 //
-// Carve-outs (NOT modelled in v1 — silent skip):
-//   - Spread args `f(...rest)`     — would require array-shape model.
-//   - Rest params `function f(...args)` — same.
+// # Plan deviation — rule, not walker post-pass
 //
-// Both are deferred to Phase C. This is enforced in the rule shape: spread
-// argument call sites have a CallArgSpread row; the negation `not
-// CallArgSpread(call, idx)` is included to prevent emitting bogus
-// ParamBinding tuples for spread positions where the syntactic argument
-// expression does not bind 1:1 to a single parameter.
+// The plan §1.2 sketches ParamBinding as a "post-pass after the main walker
+// run" because it needs `CallTarget` to be settled. In tsq's architecture,
+// `CallTarget` is itself a system Datalog rule (extract/rules/callgraph.go),
+// not an extractor output. Implementing ParamBinding as a walker post-pass
+// would either duplicate CallTarget resolution or require running Datalog
+// inside the extractor. Modelling it as a rule here is the same pattern as
+// InterFlow / FlowStar / ParamToReturn — same rows, same shape, same
+// carve-outs as the plan.
+//
+// # Carve-outs (NOT modelled in Phase A — silent skip)
+//
+//   - Spread args `f(...rest)`           — `not CallArgSpread(call, idx)`.
+//   - Rest params `function f(...args)`  — `not ParameterRest(fn, idx)`.
+//   - Destructured params `function f({a,b}, [x,y])` — `not
+//     ParameterDestructured(fn, idx)`. The walker emits a single Parameter
+//     row for the slot with the pattern source text as the synthesised
+//     "name" (so the symbol id is bogus); the negation prevents that bogus
+//     symbol leaking into ParamBinding. Per-bound-name expansion is deferred
+//     to Phase C.
+//
+// CallTargetRTA is intentionally NOT consumed here — RTA-resolved targets
+// are noisier (one call site → many candidate fns) and the budget gate in
+// valueflow_budget_test.go widens to `CallTarget ∪ CallTargetRTA` to verify
+// the multiplicative blow-up source stays within 5x of CallArg.
 //
 // Rule shape:
 //
 //	ParamBinding(fn, idx, paramSym, argExpr) :-
-//	    CallTarget(call, fn),
+//	    ( CallTarget(call, fn) ; CallTargetRTA(call, fn) ),
 //	    CallArg(call, idx, argExpr),
 //	    not CallArgSpread(call, idx),
 //	    Parameter(fn, idx, _, _, paramSym, _),
-//	    not ParameterRest(fn, idx).
+//	    not ParameterRest(fn, idx),
+//	    not ParameterDestructured(fn, idx).
 func ValueFlowRules() []datalog.Rule {
-	return []datalog.Rule{
-		// ParamBinding via direct CallTarget (callgraph.go rule 1).
-		rule("ParamBinding",
-			[]datalog.Term{v("fn"), v("idx"), v("paramSym"), v("argExpr")},
-			pos("CallTarget", v("call"), v("fn")),
+	body := func(targetRel string) []datalog.Literal {
+		return []datalog.Literal{
+			pos(targetRel, v("call"), v("fn")),
 			mustNamedLiteral("CallArg", map[string]datalog.Term{
 				"call":    v("call"),
 				"idx":     v("idx"),
@@ -56,6 +71,16 @@ func ValueFlowRules() []datalog.Rule {
 				"sym": v("paramSym"),
 			}),
 			neg("ParameterRest", v("fn"), v("idx")),
-		),
+			neg("ParameterDestructured", v("fn"), v("idx")),
+		}
+	}
+	head := []datalog.Term{v("fn"), v("idx"), v("paramSym"), v("argExpr")}
+	return []datalog.Rule{
+		// ParamBinding via direct CallTarget (callgraph.go rule 1).
+		rule("ParamBinding", head, body("CallTarget")...),
+		// ParamBinding via RTA-resolved CallTarget (callgraph.go rule 4).
+		// Budget gate (valueflow_budget_test.go) bounds the multiplicative
+		// blow-up.
+		rule("ParamBinding", head, body("CallTargetRTA")...),
 	}
 }

@@ -8,7 +8,7 @@ func TestAllRelationsRegistered(t *testing.T) {
 	expected := []string{
 		"File", "Node", "Contains",
 		"Symbol", "FunctionSymbol",
-		"Function", "Parameter", "ParameterRest", "ParameterOptional", "ParamIsFunctionType",
+		"Function", "Parameter", "ParameterRest", "ParameterOptional", "ParameterDestructured", "ParamIsFunctionType",
 		"Call", "CallArg", "CallArgSpread", "CallCalleeSym", "CallResultSym",
 		"VarDecl", "Assign",
 		"ExprMayRef", "ExprIsCall", "FieldRead", "FieldWrite", "Await", "Cast",
@@ -51,8 +51,8 @@ func TestAllRelationsRegistered(t *testing.T) {
 }
 
 func TestRelationCount(t *testing.T) {
-	if len(Registry) != 98 {
-		t.Fatalf("expected 98 relations in registry, got %d", len(Registry))
+	if len(Registry) != 99 {
+		t.Fatalf("expected 99 relations in registry, got %d", len(Registry))
 	}
 }
 

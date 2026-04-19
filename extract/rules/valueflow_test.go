@@ -15,6 +15,7 @@ func valueFlowBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Rel
 	// the relation to exist in the eval context).
 	base["CallArgSpread"] = eval.NewRelation("CallArgSpread", 2)
 	base["ParameterRest"] = eval.NewRelation("ParameterRest", 2)
+	base["ParameterDestructured"] = eval.NewRelation("ParameterDestructured", 2)
 	for k, v := range overrides {
 		base[k] = v
 	}
@@ -158,10 +159,53 @@ func TestParamBinding_UnresolvedCallSkipped(t *testing.T) {
 	}
 }
 
-// TestValueFlowRulesCount documents the rule count (1 today; will grow in PR3).
+// TestValueFlowRulesCount documents the rule count (2 today: ParamBinding via
+// CallTarget and via CallTargetRTA; will grow in PR3).
 func TestValueFlowRulesCount(t *testing.T) {
 	rules := ValueFlowRules()
-	if len(rules) != 1 {
-		t.Errorf("expected 1 value-flow rule (ParamBinding), got %d", len(rules))
+	if len(rules) != 2 {
+		t.Errorf("expected 2 value-flow rules (ParamBinding x2), got %d", len(rules))
+	}
+}
+
+// TestParamBinding_DestructuredParamSkipped verifies that destructured
+// parameter slots (ObjectPattern / ArrayPattern) emit no ParamBinding rows.
+//
+// Models: `function f({a, b}, [x, y], z) {} ; f(o, arr, 5);`
+// Slot 0 (ObjectPattern) and slot 1 (ArrayPattern) are flagged via
+// ParameterDestructured and must NOT produce bindings; slot 2 (`z`) must.
+func TestParamBinding_DestructuredParamSkipped(t *testing.T) {
+	// fn=1; paramSyms slot0=10 (bogus, "{a, b}"), slot1=11 (bogus, "[x, y]"),
+	// slot2=12 (z). Call: call=300, args 400 (o), 401 (arr), 402 (5).
+	baseRels := valueFlowBaseRels(map[string]*eval.Relation{
+		"Parameter": makeRel("Parameter", 6,
+			iv(1), iv(0), sv("{a, b}"), iv(80), iv(10), sv(""),
+			iv(1), iv(1), sv("[x, y]"), iv(81), iv(11), sv(""),
+			iv(1), iv(2), sv("z"), iv(82), iv(12), sv(""),
+		),
+		"ParameterDestructured": makeRel("ParameterDestructured", 2,
+			iv(1), iv(0),
+			iv(1), iv(1),
+		),
+		"CallCalleeSym":  makeRel("CallCalleeSym", 2, iv(300), iv(500)),
+		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(500), iv(1)),
+		"CallArg": makeRel("CallArg", 3,
+			iv(300), iv(0), iv(400),
+			iv(300), iv(1), iv(401),
+			iv(300), iv(2), iv(402),
+		),
+	})
+	query := &datalog.Query{
+		Select: []datalog.Term{v("fn"), v("idx"), v("paramSym"), v("argExpr")},
+		Body: []datalog.Literal{
+			pos("ParamBinding", v("fn"), v("idx"), v("paramSym"), v("argExpr")),
+		},
+	}
+	rs := planAndEval(t, AllSystemRules(), query, baseRels)
+	if len(rs.Rows) != 1 {
+		t.Fatalf("expected exactly 1 ParamBinding row (only slot z=2), got %d: %v", len(rs.Rows), rs.Rows)
+	}
+	if !resultContains(rs, iv(1), iv(2), iv(12), iv(402)) {
+		t.Errorf("expected ParamBinding(fn=1, idx=2, sym=12, arg=402), got %v", rs.Rows)
 	}
 }

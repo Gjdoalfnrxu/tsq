@@ -49,6 +49,7 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "Parameter", Relation: "Parameter", File: "tsq_functions.qll"},
 			{Name: "ParameterRest", Relation: "ParameterRest", File: "tsq_functions.qll"},
 			{Name: "ParameterOptional", Relation: "ParameterOptional", File: "tsq_functions.qll"},
+			{Name: "ParameterDestructured", Relation: "ParameterDestructured", File: "tsq_functions.qll"},
 			{Name: "ParamIsFunctionType", Relation: "ParamIsFunctionType", File: "tsq_functions.qll"},
 			{Name: "Call", Relation: "Call", File: "tsq_calls.qll"},
 			{Name: "CallArg", Relation: "CallArg", File: "tsq_calls.qll"},
