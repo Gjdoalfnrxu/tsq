@@ -525,6 +525,32 @@ func init() {
 		{Name: "to", Type: TypeEntityRef},
 	}})
 
+	// Value-flow Phase C PR3: inter-procedural value-flow step union.
+	// InterFlowStep(from, to) holds when the runtime value of expression
+	// `from` may flow to expression `to` in a single inter-procedural step
+	// — call-arg → callee parameter, callee return → call site (same- or
+	// cross-module), import → export bridge, or RTA-resolved method
+	// dispatch. PR3 ships path-erased (arity-2); PR5 widens for field
+	// sensitivity. Populated by extract/rules/interflowstep.go as the
+	// union of four `ifs*` per-kind IDB rules. See
+	// docs/design/valueflow-phase-c-plan.md §1.4.
+	RegisterRelation(RelationDef{Name: "InterFlowStep", Version: 2, Columns: []ColumnDef{
+		{Name: "from", Type: TypeEntityRef},
+		{Name: "to", Type: TypeEntityRef},
+	}})
+
+	// Value-flow Phase C PR3: top-level single-step flow union.
+	// FlowStep(from, to) is the union of LocalFlowStep ∪ InterFlowStep
+	// per plan §1.1 — the relation PR4's recursive `MayResolveTo` will
+	// close over. Bridge authors that want a non-recursive 1-hop view of
+	// value flow consume this directly (manual depth-unrolling on top of
+	// FlowStep is the migration path between PR3 landing and PR4 going
+	// live).
+	RegisterRelation(RelationDef{Name: "FlowStep", Version: 2, Columns: []ColumnDef{
+		{Name: "from", Type: TypeEntityRef},
+		{Name: "to", Type: TypeEntityRef},
+	}})
+
 	// C1: Template literal extraction
 	RegisterRelation(RelationDef{Name: "TemplateLiteral", Version: 2, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},

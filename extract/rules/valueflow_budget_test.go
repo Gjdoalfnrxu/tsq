@@ -208,6 +208,94 @@ func extractDB(t *testing.T, projectDir string) *db.DB {
 	return database
 }
 
+// TestInterFlowStepKindsNonZero is the Phase C PR3 regression guard mirror
+// of TestLocalFlowStepKindsNonZero (PR2). Each new ifs* primitive must emit
+// non-zero rows on at least one real fixture, summed across the corpus.
+// Floors set at ~50% of observed actuals per the PR2-established discipline
+// (a uniform floor=1 only catches total absence; ~50% catches partial
+// regressions where a kind silently drops half its output).
+//
+// `ifsCallTargetRTA` floor is 0: the entire bridge corpus does not exercise
+// RTA-dispatched method calls (totals 0 across all 13 fixtures probed
+// during PR3 implementation). The synthetic unit test
+// (`TestIfsCallTargetRTA`) catches body-typo regressions; a real-fixture
+// floor would just be brittle. When a fixture surfaces RTA dispatch in
+// the future, raise the floor to ~50% of observed.
+func TestInterFlowStepKindsNonZero(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	if repoRoot == "" {
+		t.Fatal("repo root not found from CWD; regression guard cannot run")
+	}
+
+	fixtures := []string{
+		"react-component",
+		"react-usestate",
+		"react-usestate-context-alias",
+		"react-usestate-context-alias-r3",
+		"react-usestate-prop-alias",
+		"async-patterns",
+		"destructuring",
+		"imports",
+		"full-ts-project",
+		"valueflow-base",
+		"valueflow-multihop",
+		"valueflow-negative",
+		"valueflow-fnref",
+	}
+
+	// Per-kind floors (~50% of observed totals during PR3 implementation).
+	// Observed: ifsCallArgToParam=10, ifsRetToCall=16, ifsImportExport=37,
+	// ifsCallTargetRTA=0, InterFlowStep=63, FlowStep=520.
+	floors := map[string]int{
+		"ifsCallArgToParam": 5,
+		"ifsRetToCall":      8,
+		"ifsImportExport":   18,
+		"ifsCallTargetRTA":  0, // see comment above
+		"InterFlowStep":     31,
+		"FlowStep":          260,
+	}
+
+	totals := map[string]int{}
+	present := 0
+	for _, name := range fixtures {
+		dir := filepath.Join(repoRoot, "testdata", "projects", name)
+		if _, err := os.Stat(dir); err != nil {
+			t.Logf("fixture not present: %s", dir)
+			continue
+		}
+		present++
+		baseRels := dbToRelations(extractDB(t, dir))
+		var b strings.Builder
+		b.WriteString(name)
+		b.WriteString(": ")
+		for kind := range floors {
+			c, err := evalCount(baseRels, kind, 2)
+			if err != nil {
+				t.Fatalf("eval %s on %s: %v", kind, name, err)
+			}
+			totals[kind] += c
+			b.WriteString(kind)
+			b.WriteString("=")
+			b.WriteString(itoa(c))
+			b.WriteString(" ")
+		}
+		t.Log(b.String())
+	}
+	if present == 0 {
+		t.Fatal("no fixtures present")
+	}
+
+	for kind, floor := range floors {
+		if floor == 0 {
+			continue // RTA — synthetic-test-only guard, see comment.
+		}
+		if totals[kind] < floor {
+			t.Errorf("regression guard: %s emitted %d rows across corpus, want >= %d",
+				kind, totals[kind], floor)
+		}
+	}
+}
+
 // TestCallTargetCrossModuleNonZero is a regression guard for the Phase C PR1
 // CallTargetCrossModule rule. The budget test above only logs per-fixture
 // counts; if a future change broke the rule body or column semantics drifted,

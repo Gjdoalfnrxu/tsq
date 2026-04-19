@@ -115,15 +115,23 @@ var stdlibCoverageAllowlist = map[string]string{
 	"AssignExpr":      "value-flow Phase A grounded base; QL consumer arrives in PR3",
 	"ParamBinding":    "value-flow Phase A grounded base; QL consumer arrives in PR3",
 
-	// Value-flow Phase C PR1: pre-joined cross-module call target.
-	// Populated as a system rule; QL consumer ships in Phase C PR3
-	// (`ifsRetToCall`).
-	"CallTargetCrossModule": "value-flow Phase C grounded base; QL consumer arrives in Phase C PR3",
+	// Value-flow Phase C PR1: pre-joined cross-module call target. PR3
+	// landed the QL class wrapper in `tsq_callgraph.qll`. The system
+	// rule's first user is the `ifsRetToCall` step (Phase C PR3); the
+	// recursive `mayResolveTo` consumer arrives in PR4.
+	"CallTargetCrossModule": "value-flow Phase C; QL class wrapper landed in PR3",
 
 	// Value-flow Phase C PR2: intra-procedural step union. Populated as a
 	// system rule (extract/rules/localflowstep.go); QL consumer ships in
-	// Phase C PR3/PR4 (`flowStep` / `mayResolveTo`).
-	"LocalFlowStep": "value-flow Phase C step layer; QL consumer arrives in Phase C PR3/PR4",
+	// Phase C PR4 (`mayResolveTo`).
+	"LocalFlowStep": "value-flow Phase C step layer; QL consumer arrives in Phase C PR4",
+
+	// Value-flow Phase C PR3: inter-procedural step union and the
+	// top-level `FlowStep` union (LocalFlowStep ∪ InterFlowStep).
+	// Populated as system rules (extract/rules/interflowstep.go); QL
+	// consumer ships in Phase C PR4 (`mayResolveTo`).
+	"InterFlowStep": "value-flow Phase C step layer; QL consumer arrives in Phase C PR4",
+	"FlowStep":      "value-flow Phase C step layer; QL consumer arrives in Phase C PR4",
 
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
