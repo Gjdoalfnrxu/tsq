@@ -69,6 +69,23 @@ func dumpMagicSetDiag(prog *datalog.Program, idb map[string]bool, sizeHints map[
 	}
 	fmt.Fprintf(w, "[magicset-diag] final demand bindings handed to MagicSetTransform: %d entries: %v\n", len(finalBindings), finalBindings)
 
+	for _, rule := range prog.Rules {
+		hits := false
+		if rule.Head.Predicate == "_disj_2" || rule.Head.Predicate == "_disj_1" || rule.Head.Predicate == "functionContainsStar" {
+			hits = true
+		}
+		for _, lit := range rule.Body {
+			if lit.Atom.Predicate == "_disj_2" || lit.Atom.Predicate == "_disj_1" || lit.Atom.Predicate == "functionContainsStar" {
+				hits = true
+				break
+			}
+		}
+		if !hits {
+			continue
+		}
+		fmt.Fprintf(w, "[magicset-diag] rule %s/%d :- %s\n", rule.Head.Predicate, len(rule.Head.Args), dumpRuleBody(rule.Body))
+	}
+
 	// For each synth pred with non-empty demand, dump every call
 	// site and what buildDemandSeedsForPredWithParents would do.
 	for pred, cols := range demand {
