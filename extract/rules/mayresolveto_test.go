@@ -1,10 +1,12 @@
 package rules
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/eval"
+	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 )
 
 // mayResolveToBaseRels supplies empty bases for all relations the
@@ -179,4 +181,161 @@ func TestMayResolveToCycleWithSourceTerminates(t *testing.T) {
 			t.Errorf("cycle produced spurious row (%v, %v): %v", bad[0], bad[1], rs.Rows)
 		}
 	}
+}
+
+// TestMayResolveTo_FlowStepEmpty_ExprValueSourceNonEmpty (PR4 review MINOR)
+// — explicit assertion that with NO FlowStep edges populated, MayResolveTo
+// equals exactly ExprValueSource (base-case-only behaviour). The shared
+// `mayResolveToBaseRels` helper masks this property because it pre-seeds
+// every PR2/PR3 join input; if the recursive rule's body order ever
+// changed in a way that depended on FlowStep being populated for the
+// closure to terminate at base, the existing tests would still pass via
+// the helper. This test names the property explicitly.
+func TestMayResolveTo_FlowStepEmpty_ExprValueSourceNonEmpty(t *testing.T) {
+	// NOTE: still goes through mayResolveToBaseRels so the seminaive
+	// evaluator has every transitive base relation to read from
+	// (otherwise the test fails on a missing-relation panic, not on the
+	// closure semantics it's asserting). The override seeds
+	// ExprValueSource and explicitly does NOT add anything that would
+	// produce FlowStep rows — every PR2/PR3 lfs*/ifs* input is empty
+	// in interFlowStepBaseRels(nil)'s default seeding.
+	baseRels := mayResolveToBaseRels(map[string]*eval.Relation{
+		"ExprValueSource": makeRel("ExprValueSource", 2,
+			iv(700), iv(700),
+			iv(701), iv(701),
+			iv(702), iv(702),
+		),
+	})
+	// Sanity guard: prove FlowStep really is empty in this fixture so a
+	// future change to the helper that started populating it would be
+	// caught here, not silently pass.
+	fsCount, err := evalCount(baseRels, "FlowStep", 2)
+	if err != nil {
+		t.Fatalf("eval FlowStep: %v", err)
+	}
+	if fsCount != 0 {
+		t.Fatalf("test pre-condition violated: FlowStep is non-empty (%d rows); base-case-only assertion no longer meaningful", fsCount)
+	}
+
+	rs := evalMayResolveTo(t, baseRels)
+	if len(rs.Rows) != 3 {
+		t.Fatalf("expected exactly 3 base-case rows, got %d: %v", len(rs.Rows), rs.Rows)
+	}
+	for _, want := range [][]eval.Value{
+		{iv(700), iv(700)},
+		{iv(701), iv(701)},
+		{iv(702), iv(702)},
+	} {
+		if !resultContains(rs, want[0], want[1]) {
+			t.Errorf("missing identity row (%v, %v): %v", want[0], want[1], rs.Rows)
+		}
+	}
+}
+
+// TestMayResolveTo_PlannerStackEndToEnd (PR4 review M4) — verifies the
+// "Phase B planner stack works end-to-end on the real shipped
+// MayResolveTo rule" claim. The synthetic
+// TestEstimateRecursiveIDB_MayResolveToShape_SaturatesUnderHighFanOut in
+// ql/plan uses a fictional `step` predicate and lowercase
+// `mayResolveTo` — proves the math on a mock body, not the real rule.
+//
+// This test wires AllSystemRules() (which includes MayResolveToRules())
+// through plan.IdentifyRecursiveIDBs and the eval-side
+// EstimateRecursiveIDBSizes pass, then asserts:
+//
+//  1. `MayResolveTo` is recognised as a recursive IDB.
+//  2. The estimator writes a non-default size hint (not the default 1000
+//     and not unset).
+//  3. With a bound-arg query, the magic-set rewrite emits a
+//     `magic_MayResolveTo` rule.
+//
+// If (3) fails, that means magic-set is NOT firing on the recursive
+// predicate end-to-end — a real design issue, not a quick fix.
+func TestMayResolveTo_PlannerStackEndToEnd(t *testing.T) {
+	// (1) Recursive-IDB identification --------------------------------
+	allRules := AllSystemRules()
+	prog := &datalog.Program{
+		Rules: allRules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{v("v"), v("s")},
+			Body: []datalog.Literal{
+				pos("MayResolveTo", v("v"), v("s")),
+			},
+		},
+	}
+
+	// Build the basePredicates set from the empty seeded base relations
+	// (same shape the eval pass would build it from).
+	emptyBase := mayResolveToBaseRels(nil)
+	basePreds := map[string]bool{}
+	for name := range emptyBase {
+		basePreds[name] = true
+	}
+	recursives := plan.IdentifyRecursiveIDBs(prog, basePreds)
+	foundMRT := false
+	for _, r := range recursives {
+		if r.Name == "MayResolveTo" {
+			foundMRT = true
+			break
+		}
+	}
+	if !foundMRT {
+		t.Fatalf("MayResolveTo not identified as recursive IDB; got recursives: %v", recursiveNames(recursives))
+	}
+
+	// (2) Size-hint pass -----------------------------------------------
+	sizeHints := map[string]int{}
+	updates := eval.EstimateRecursiveIDBSizes(prog, emptyBase, sizeHints, nil)
+	hint, ok := sizeHints["MayResolveTo"]
+	if !ok {
+		t.Fatalf("EstimateRecursiveIDBSizes did not write a hint for MayResolveTo (updates=%v)", updates)
+	}
+	// nil lookup forces SaturatedSizeHint per the documented default-
+	// stats degradation. That IS a non-default hint (default for unknown
+	// relations elsewhere is 1000); the assertion the reviewer asked for
+	// is "not the default 1000-row guess and not SaturatedSizeHint
+	// because the relation was missing from the IDB list" — i.e. the
+	// estimator actually saw and processed it. SaturatedSizeHint here is
+	// the correct documented behaviour for nil lookup, so accept it
+	// alongside any concrete numeric hint.
+	if hint == 1000 || hint <= 0 {
+		t.Errorf("expected non-default hint for MayResolveTo, got %d", hint)
+	}
+
+	// (3) Magic-set rewrite on bound-arg query --------------------------
+	boundQuery := &datalog.Query{
+		Select: []datalog.Term{v("s")},
+		Body: []datalog.Literal{
+			pos("MayResolveTo", datalog.IntConst{Value: 42}, v("s")),
+		},
+	}
+	boundProg := &datalog.Program{Rules: allRules, Query: boundQuery}
+	queryBindings := map[string][]int{"MayResolveTo": {0}}
+	transformed := plan.MagicSetTransform(boundProg, queryBindings)
+	if transformed == nil {
+		t.Fatal("MagicSetTransform returned nil program")
+	}
+	foundMagicRule := false
+	for _, r := range transformed.Rules {
+		if strings.HasPrefix(r.Head.Predicate, "magic_MayResolveTo") {
+			foundMagicRule = true
+			break
+		}
+	}
+	if !foundMagicRule {
+		// This is the design-issue surface from the M4 brief: if magic-
+		// set isn't firing on the recursive predicate end-to-end, the
+		// "Phase B planner stack works end-to-end" claim is false.
+		// Surface as Errorf with explicit framing so a future reader
+		// understands it's a planner-design finding, not a test bug.
+		t.Errorf("magic-set rewrite did not emit any magic_MayResolveTo rule for bound-arg query; planner stack may not be wiring magic-set onto the recursive predicate end-to-end (PR4 review M4 design surface)")
+	}
+}
+
+func recursiveNames(rs []plan.RecursiveIDB) []string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.Name
+	}
+	return out
 }

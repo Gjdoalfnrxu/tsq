@@ -257,6 +257,8 @@ predicate mayResolveToJsxWrapped(int valueExpr, int sourceExpr) {
  * case, breaking subsumption with `resolveToObjectExprVarD1`. Adding
  * `mayResolveToJsxWrapped` closes that gap before PR3's bridge migration.
  */
+// PHASE-C-PR6 NOTE: prefer mayResolveToRec for new code; this Phase A
+// wrapper is being retired.
 predicate mayResolveTo(int valueExpr, int sourceExpr) {
     mayResolveToCore(valueExpr, sourceExpr)
     or mayResolveToJsxWrapped(valueExpr, sourceExpr)

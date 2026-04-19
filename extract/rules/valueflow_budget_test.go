@@ -377,7 +377,29 @@ func TestMayResolveToNonZero(t *testing.T) {
 	// of 1 would only catch total-absence and is rejected per rule (b).
 	const mayResolveToFloor = 326
 
+	// PR4 review M1 — split base/recursive floors.
+	//
+	// MayResolveTo has a non-recursive base case (`ExprValueSource` identity
+	// rows) plus a recursive step case. Across the corpus the base case
+	// alone produces 392 of the 653 total rows; a regression that completely
+	// deleted the recursive rule would still leave ~392 rows (above the 326
+	// total floor). The total floor is therefore decorative w.r.t. closure
+	// regressions — we need a separate guard on the recursive contribution.
+	//
+	// Observed recursive delta = total(MayResolveTo) - total(ExprValueSource)
+	// = 653 - 392 = 261. Floor at ~50% = 130. Names "recursive rule
+	// contribution" so a future failure is diagnosable.
+	const mayResolveToRecursiveDeltaFloor = 130
+
+	// Per-fixture floor on `valueflow-multihop` — the load-bearing
+	// transitivity fixture. Observed delta on this fixture: 84 - 27 = 57.
+	// Per the M1 reviewer call, set the floor at >= 40 (the sharpest
+	// closure-only guard).
+	const multihopRecursiveDeltaFloor = 40
+
 	total := 0
+	totalExprValueSource := 0
+	multihopDelta := -1
 	present := 0
 	for _, name := range fixtures {
 		dir := filepath.Join(repoRoot, "testdata", "projects", name)
@@ -403,6 +425,24 @@ func TestMayResolveToNonZero(t *testing.T) {
 		t.Logf("%s: MayResolveTo=%d (FlowStep=%d, ExprValueSource=%d)",
 			name, c, fs, evs)
 		total += c
+		totalExprValueSource += evs
+		if name == "valueflow-multihop" {
+			multihopDelta = c - evs
+		}
+
+		// PR4 review M3 — row-ratio guard. Plan §6 PR4 gate caps
+		// MayResolveTo / FlowStep at "≤2× baseline"; PR claims 1.77×
+		// worst case. Use 5.0 as a looser ceiling that absorbs noise
+		// but still catches real blow-ups (a future change pushing
+		// the ratio to 4× would otherwise pass silently). Per-fixture,
+		// failure message names the fixture and observed ratio.
+		if fs > 0 {
+			ratio := float64(c) / float64(fs)
+			if ratio > 5.0 {
+				t.Errorf("row-ratio guard (plan §6 PR4): %s MayResolveTo/FlowStep = %d/%d = %.2f, want <= 5.0",
+					name, c, fs, ratio)
+			}
+		}
 	}
 	if present == 0 {
 		t.Fatal("no fixtures present")
@@ -410,6 +450,15 @@ func TestMayResolveToNonZero(t *testing.T) {
 	if total < mayResolveToFloor {
 		t.Errorf("regression guard: MayResolveTo emitted %d rows across corpus, want >= %d",
 			total, mayResolveToFloor)
+	}
+	recursiveDelta := total - totalExprValueSource
+	if recursiveDelta < mayResolveToRecursiveDeltaFloor {
+		t.Errorf("regression guard: MayResolveTo recursive rule contribution (total - ExprValueSource) = %d - %d = %d, want >= %d",
+			total, totalExprValueSource, recursiveDelta, mayResolveToRecursiveDeltaFloor)
+	}
+	if multihopDelta >= 0 && multihopDelta < multihopRecursiveDeltaFloor {
+		t.Errorf("regression guard: valueflow-multihop recursive rule contribution = %d, want >= %d",
+			multihopDelta, multihopRecursiveDeltaFloor)
 	}
 }
 

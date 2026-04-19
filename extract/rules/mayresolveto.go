@@ -78,8 +78,8 @@ import (
 // Reads as: "v may resolve to s if some upstream expression mid does,
 // and there is a FlowStep edge from mid forward to v." Same closure,
 // edge-direction-corrected for the as-shipped `FlowStep(source, use)`
-// orientation. The plan doc §1.2 will be updated alongside PR5's path
-// version to match — until then this comment is the authoritative
+// orientation. Authoritative direction: edge is `flowStep(mid, v)`;
+// plan §1.2 sketch had it reversed. This comment is the authoritative
 // statement of the predicate's direction contract.
 //
 // # Two-rule shape (no inline disjunction)

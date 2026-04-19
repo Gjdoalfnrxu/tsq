@@ -126,20 +126,24 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ParamBinding", Relation: "ParamBinding", File: "tsq_calls.qll"},
 			// v2 Phase C PR2 (value-flow): intra-procedural step union.
 			// Populated by extract/rules/localflowstep.go; QL consumer
-			// arrives in Phase C PR3/PR4 (`flowStep` / `mayResolveTo`).
-			{Name: "LocalFlowStep", Relation: "LocalFlowStep", File: "tsq_dataflow.qll"},
+			// arrives in Phase C PR6 (bridge migration). Until PR6 ships,
+			// no .qll declares this relation — File field points at the
+			// PR6 consumption site (tsq_valueflow.qll) so the manifest
+			// matches the post-PR6 reality. (PR4 review M2.)
+			{Name: "LocalFlowStep", Relation: "LocalFlowStep", File: "tsq_valueflow.qll"},
 			// v2 Phase C PR3 (value-flow): inter-procedural step union and
 			// the top-level `FlowStep` union (LocalFlowStep ∪ InterFlowStep).
-			// Populated by extract/rules/interflowstep.go. PR4 will close
-			// `FlowStep` into the recursive `mayResolveTo` predicate.
-			{Name: "InterFlowStep", Relation: "InterFlowStep", File: "tsq_dataflow.qll"},
-			{Name: "FlowStep", Relation: "FlowStep", File: "tsq_dataflow.qll"},
+			// Populated by extract/rules/interflowstep.go. QL consumer
+			// arrives in Phase C PR6; File field points at PR6 site as
+			// above. (PR4 review M2.)
+			{Name: "InterFlowStep", Relation: "InterFlowStep", File: "tsq_valueflow.qll"},
+			{Name: "FlowStep", Relation: "FlowStep", File: "tsq_valueflow.qll"},
 			// v2 Phase C PR4 (value-flow): recursive may-resolve-to closure
 			// over FlowStep. Populated by extract/rules/mayresolveto.go;
 			// QL consumer is `mayResolveToRec` in tsq_valueflow.qll.
 			// Bridge migration to swap R1–R4 shape predicates over to this
 			// recursive form is PR6.
-			{Name: "MayResolveTo", Relation: "MayResolveTo", File: "tsq_dataflow.qll"},
+			{Name: "MayResolveTo", Relation: "MayResolveTo", File: "tsq_valueflow.qll"},
 			// v2 Phase F: framework models
 			{Name: "ExpressHandler", Relation: "ExpressHandler", File: "tsq_express.qll"},
 			// v2 Phase D: taint analysis
