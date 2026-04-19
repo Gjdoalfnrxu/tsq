@@ -17,6 +17,7 @@
  */
 
 import tsq::react
+import tsq::valueflow
 import tsq::calls
 import tsq::variables
 import tsq::functions

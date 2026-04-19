@@ -154,45 +154,61 @@ func TestR3_LinkPredicates(t *testing.T) {
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
 
-	common := "import tsq::react\nimport tsq::base\nimport tsq::expressions\nimport tsq::functions\nimport tsq::calls\n"
+	// PR3: tsq::valueflow added because tsq_react.qll's resolveToObjectExpr
+	// now calls into mayResolveToObjectExpr, which depends on mayResolveTo
+	// from tsq_valueflow.qll. Without this import the union silently
+	// returns only the surviving non-valueflow branches.
+	common := "import tsq::react\nimport tsq::valueflow\nimport tsq::base\nimport tsq::expressions\nimport tsq::functions\nimport tsq::calls\n"
 
 	type qcase struct {
 		name      string
 		src       string
-		mustHaveN int // floor (>=)
+		mustHaveN int  // floor (>=) when exact=false; exact equality when exact=true
+		exact     bool // pin to == (downstream consumers); upstream relations stay floor-only
 	}
 	queries := []qcase{
 		// 6 useState setters across 3 positive fixtures (setIA, setIB, setSA, setSB, setCA, setCB)
 		// + 1 in negative (setNN) = 7
-		{"useStateSetterSym", common + "from int s where useStateSetterSym(s) select s", 7},
-		{"isObjectLiteralExpr", common + "from int o where isObjectLiteralExpr(o) select o", 4},
-		{"resolveToObjectExprDirect", common + "from int v, int o where resolveToObjectExprDirect(v, o) select v, o", 4},
-		{"resolveToObjectExprWrapped", common + "from int v, int o where resolveToObjectExprWrapped(v, o) select v, o", 1},
-		{"resolveToObjectExprVarD1", common + "from int v, int o where resolveToObjectExprVarD1(v, o) select v, o", 2},
+		{"useStateSetterSym", common + "from int s where useStateSetterSym(s) select s", 7, false},
+		{"isObjectLiteralExpr", common + "from int o where isObjectLiteralExpr(o) select o", 4, false},
+		// PR3: resolveToObjectExprDirect + resolveToObjectExprVarD1 deleted —
+		// subsumed by mayResolveToObjectExpr (tsq_react.qll) which composes
+		// the §2.1 base + §2.2 var-init + JsxExpression-wrapper-tolerant
+		// branches of mayResolveTo. The link probe exercises the new helper
+		// directly; pinned to exact 13 (4 Direct + 6 VarD1 + 3 JsxWrapper
+		// post-dedup on r3). Pinned because this is the migration's value-flow
+		// surface area — silent growth would mask over-approximation regressions.
+		{"mayResolveToObjectExpr", common + "from int v, int o where mayResolveToObjectExpr(v, o) select v, o", 13, true},
+		{"resolveToObjectExprWrapped", common + "from int v, int o where resolveToObjectExprWrapped(v, o) select v, o", 1, false},
 		// resolveToObjectExpr should fire for at least Indirect (1), Computed (1).
-		{"resolveToObjectExpr", common + "from int v, int o where resolveToObjectExpr(v, o) select v, o", 2},
+		{"resolveToObjectExpr", common + "from int v, int o where resolveToObjectExpr(v, o) select v, o", 2, false},
 		// objectLiteralFieldThroughSpread: Indirect(2) + Spread(2 own + 1 spread) + Computed(2) + Negative(0) = 7
-		{"objectLiteralFieldOwn", common + "from int o, string f, int v where objectLiteralFieldOwn(o, f, v) select o, f, v", 5},
-		{"objectLiteralFieldSpreadD1", common + "from int o, string f, int v where objectLiteralFieldSpreadD1(o, f, v) select o, f, v", 1},
-		{"objectLiteralFieldThroughSpread", common + "from int o, string f, int v where objectLiteralFieldThroughSpread(o, f, v) select o, f, v", 6},
+		{"objectLiteralFieldOwn", common + "from int o, string f, int v where objectLiteralFieldOwn(o, f, v) select o, f, v", 5, false},
+		{"objectLiteralFieldSpreadD1", common + "from int o, string f, int v where objectLiteralFieldSpreadD1(o, f, v) select o, f, v", 1, false},
+		{"objectLiteralFieldThroughSpread", common + "from int o, string f, int v where objectLiteralFieldThroughSpread(o, f, v) select o, f, v", 6, false},
 		// contextProviderField: 6 setter fields visible across the 3 positive providers.
-		{"contextProviderFieldR2", common + "from int s, string f, int v where contextProviderFieldR2(s, f, v) select s, f, v", 0},
-		{"contextProviderFieldR3DirectOwn", common + "from int s, string f, int v where contextProviderFieldR3DirectOwn(s, f, v) select s, f, v", 1},
-		{"contextProviderFieldR3DirectSpreadD1", common + "from int s, string f, int v where contextProviderFieldR3DirectSpreadD1(s, f, v) select s, f, v", 1},
-		{"contextProviderFieldR3DirectSpread", common + "from int s, string f, int v where contextProviderFieldR3DirectSpread(s, f, v) select s, f, v", 2},
-		{"contextProviderFieldR3VarIndirect", common + "from int s, string f, int v where contextProviderFieldR3VarIndirect(s, f, v) select s, f, v", 4},
-		{"contextProviderField", common + "from int s, string f, int v where contextProviderField(s, f, v) select s, f, v", 6},
+		{"contextProviderFieldR2", common + "from int s, string f, int v where contextProviderFieldR2(s, f, v) select s, f, v", 0, false},
+		{"contextProviderFieldR3DirectOwn", common + "from int s, string f, int v where contextProviderFieldR3DirectOwn(s, f, v) select s, f, v", 1, false},
+		{"contextProviderFieldR3DirectSpreadD1", common + "from int s, string f, int v where contextProviderFieldR3DirectSpreadD1(s, f, v) select s, f, v", 1, false},
+		{"contextProviderFieldR3DirectSpread", common + "from int s, string f, int v where contextProviderFieldR3DirectSpread(s, f, v) select s, f, v", 2, false},
+		{"contextProviderFieldR3VarIndirect", common + "from int s, string f, int v where contextProviderFieldR3VarIndirect(s, f, v) select s, f, v", 4, false},
+		// PR3 amendment — downstream consumer relation, pinned to exact equality.
+		// Silent growth here would mask precision regressions in the upstream
+		// resolve* helpers feeding it. Update only when fixture changes intentionally.
+		{"contextProviderField", common + "from int s, string f, int v where contextProviderField(s, f, v) select s, f, v", 6, true},
 		// useStateSetterContextAliasCall: at least one outer + inner per positive = 6.
-		{"contextSym", common + "from int s where contextSym(s) select s", 4},
-		{"contextDestructureBinding", common + "from int s, string f, int p where contextDestructureBinding(s, f, p) select s, f, p", 6},
-		{"contextSetterAliasStepR2", common + "from int v, int p where contextSetterAliasStepR2(v, p) select v, p", 0},
-		{"contextSetterAliasStepR3DirectSpread", common + "from int v, int p where contextSetterAliasStepR3DirectSpread(v, p) select v, p", 1},
-		{"contextSetterAliasStepR3VarIndirect", common + "from int v, int p where contextSetterAliasStepR3VarIndirect(v, p) select v, p", 4},
-		{"contextSymLink", common + "from int p, int c where contextSymLink(p, c) select p, c", 4},
-		{"contextSetterAliasStep", common + "from int v, int p where contextSetterAliasStep(v, p) select v, p", 6},
-		{"useStateSetterAliasV2", common + "from int s where useStateSetterAliasV2(s) select s", 13},
-		{"isContextAliasedSetterSym", common + "from int s where isContextAliasedSetterSym(s) select s", 6},
-		{"useStateSetterContextAliasCall", common + "from int c where useStateSetterContextAliasCall(c) select c", 6},
+		{"contextSym", common + "from int s where contextSym(s) select s", 4, false},
+		{"contextDestructureBinding", common + "from int s, string f, int p where contextDestructureBinding(s, f, p) select s, f, p", 6, false},
+		{"contextSetterAliasStepR2", common + "from int v, int p where contextSetterAliasStepR2(v, p) select v, p", 0, false},
+		{"contextSetterAliasStepR3DirectSpread", common + "from int v, int p where contextSetterAliasStepR3DirectSpread(v, p) select v, p", 1, false},
+		{"contextSetterAliasStepR3VarIndirect", common + "from int v, int p where contextSetterAliasStepR3VarIndirect(v, p) select v, p", 4, false},
+		{"contextSymLink", common + "from int p, int c where contextSymLink(p, c) select p, c", 4, false},
+		{"contextSetterAliasStep", common + "from int v, int p where contextSetterAliasStep(v, p) select v, p", 6, false},
+		// PR3 amendment — downstream consumer pinned to exact equality (see contextProviderField note).
+		{"useStateSetterAliasV2", common + "from int s where useStateSetterAliasV2(s) select s", 13, true},
+		{"isContextAliasedSetterSym", common + "from int s where isContextAliasedSetterSym(s) select s", 6, false},
+		// PR3 amendment — downstream consumer pinned to exact equality (see contextProviderField note).
+		{"useStateSetterContextAliasCall", common + "from int c where useStateSetterContextAliasCall(c) select c", 6, true},
 	}
 	hints := make(map[string]int, len(schema.Registry))
 	for _, def := range schema.Registry {
@@ -237,9 +253,16 @@ func TestR3_LinkPredicates(t *testing.T) {
 			t.Errorf("[%s] eval err: %v", q.name, err)
 			continue
 		}
-		t.Logf("link %-40s rows=%d (>=%d expected)", q.name, len(rs.Rows), q.mustHaveN)
-		if len(rs.Rows) < q.mustHaveN {
-			t.Errorf("[%s] expected >=%d rows, got %d", q.name, q.mustHaveN, len(rs.Rows))
+		if q.exact {
+			t.Logf("link %-40s rows=%d (==%d expected)", q.name, len(rs.Rows), q.mustHaveN)
+			if len(rs.Rows) != q.mustHaveN {
+				t.Errorf("[%s] expected exactly %d rows, got %d (downstream consumer — silent drift not permitted)", q.name, q.mustHaveN, len(rs.Rows))
+			}
+		} else {
+			t.Logf("link %-40s rows=%d (>=%d expected)", q.name, len(rs.Rows), q.mustHaveN)
+			if len(rs.Rows) < q.mustHaveN {
+				t.Errorf("[%s] expected >=%d rows, got %d", q.name, q.mustHaveN, len(rs.Rows))
+			}
 		}
 	}
 }

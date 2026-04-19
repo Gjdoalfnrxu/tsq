@@ -504,13 +504,36 @@ predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
  *    ObjectLiteral. Covers `const obj = base; const base = {a};` patterns.
  */
 /**
- * Holds when `valueExpr` itself is the ObjectLiteral expression `objExpr`.
- * Split out as a named branch so the top-level `resolveToObjectExpr`
- * disjunction is an `or`-of-calls, sidestepping disjunction-poisoning bug
- * #166 that round-2 hit on `hookIndirection` and the through-context predicate.
+ * `mayResolveToObjectExpr(valueExpr, objExpr)` — the value-flow-driven
+ * "valueExpr resolves to an object literal expression" predicate.
+ *
+ * Phase A PR3 collapses two former hand-rolled branches onto this:
+ *   - `resolveToObjectExprDirect` (`valueExpr = objExpr`) is subsumed by
+ *     the §2.1 base branch of `mayResolveTo`: every object-literal node
+ *     emits `ExprValueSource(o, o)`, so `mayResolveToBase(o, o)` holds and
+ *     the `isObjectLiteralExpr(o)` filter selects only literals.
+ *   - `resolveToObjectExprVarD1` (identifier through a single VarDecl
+ *     hop, JsxExpression-wrapper-tolerant) is subsumed by the §2.2
+ *     var-init branch composed with PR3's `mayResolveToJsxWrapped`. The
+ *     wrapper variant unwraps a JsxExpression layer and re-runs the
+ *     six-branch core, so `<Provider value={X} />` where `X` is a
+ *     VarDecl-bound object literal flows through.
+ *
+ * The `isObjectLiteralExpr(objExpr)` filter narrows `mayResolveTo`'s
+ * value-source space (which also includes arrows, primitives, JSX
+ * elements, etc.) to object literals — matching the `resolveToObjectExpr*`
+ * family's contract that the second column is always an ObjectLiteral.
+ *
+ * Subsumption note (PR body §1): `mayResolveTo` also includes the §2.5
+ * field-read and §2.6 object-field branches, which can in principle
+ * resolve `<Provider value={o.f}>` to the field's value when `o.f` is
+ * itself an object literal. The R3/R4 fixtures don't exercise that shape,
+ * so the parity gate empirically holds. If a real codebase surfaces such
+ * a case, it's a precision gain over the deleted branches, not a
+ * regression.
  */
-predicate resolveToObjectExprDirect(int valueExpr, int objExpr) {
-    valueExpr = objExpr and
+predicate mayResolveToObjectExpr(int valueExpr, int objExpr) {
+    mayResolveTo(valueExpr, objExpr) and
     isObjectLiteralExpr(objExpr)
 }
 
@@ -519,25 +542,17 @@ predicate resolveToObjectExprDirect(int valueExpr, int objExpr) {
  * contains the ObjectLiteral expression `objExpr` — the canonical
  * `value={{ ... }}` shape where the JsxAttribute valueExpr column points
  * at the wrapper, not the inner Object.
+ *
+ * Plan-deferred (Phase C): kept verbatim because plan §3.1 only targets
+ * Direct + VarD1 in PR3. The wrapped-literal case is empirically covered
+ * by `mayResolveToObjectExpr` (mayResolveToJsxWrapped → mayResolveToBase
+ * fires when the inner is a literal), but until the parity gate proves
+ * subsumption on Mastodon-scale corpora we keep this branch explicit.
  */
 predicate resolveToObjectExprWrapped(int valueExpr, int objExpr) {
     Contains(valueExpr, objExpr) and
     isObjectLiteralExpr(objExpr) and
     valueExpr != objExpr
-}
-
-/**
- * Depth-1 variable indirection: `const X = { ... }; <Provider value={X} />`.
- * `valueExpr` may be the JsxExpression wrapper or the bare Identifier — we
- * tolerate both via the (eq or Contains) idiom.
- */
-predicate resolveToObjectExprVarD1(int valueExpr, int objExpr) {
-    exists(int identExpr, int sym, int varDecl |
-        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
-        ExprMayRef(identExpr, sym) and
-        VarDecl(varDecl, sym, objExpr, _) and
-        isObjectLiteralExpr(objExpr)
-    )
 }
 
 /**
@@ -644,11 +659,14 @@ predicate resolveToObjectExprHookReturn(int valueExpr, int objExpr) {
 }
 
 predicate resolveToObjectExpr(int valueExpr, int objExpr) {
-    resolveToObjectExprDirect(valueExpr, objExpr)
+    // PR3: Direct + VarD1 collapsed onto the value-flow layer via
+    // `mayResolveToObjectExpr`. The mayResolveTo union (PR3 amended)
+    // includes the JsxExpression-wrapper-tolerant variant, so VarD1's
+    // `(identExpr = valueExpr or Contains(...))` idiom is no longer
+    // needed at this level.
+    mayResolveToObjectExpr(valueExpr, objExpr)
     or
     resolveToObjectExprWrapped(valueExpr, objExpr)
-    or
-    resolveToObjectExprVarD1(valueExpr, objExpr)
     or
     resolveToObjectExprVarD2(valueExpr, objExpr)
     or
