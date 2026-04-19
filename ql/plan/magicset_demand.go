@@ -178,7 +178,7 @@ func predHasQueryBinding(prog *datalog.Program, pred string, cols []int) bool {
 		return false
 	}
 	queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
-	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{})
+	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{}, arity1BaseGroundedIDBs(prog))
 	for _, lit := range prog.Query.Body {
 		if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 			continue

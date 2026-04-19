@@ -181,10 +181,10 @@ func TestInferRuleBodyDemandBindings_Arity1ExtentAboveThresholdBreaksDemand(t *t
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.expectedPostFix {
-				t.Skip("XFAIL today — bug documented; requires arity-1 grounding-threshold fix to pass. " +
-					"Note: " + tc.expectFiringNote)
-			}
+			// XFAIL→PASS conversion: post-fix (PR #158), the previously
+			// skipped expectedPostFix cases must now pass. Removing the
+			// t.Skip is the load-bearing regression guard.
+			_ = tc.expectedPostFix
 			prog, hints := progArity1ExtentDemandShape(tc.extentSize)
 			idb := IDBPredicates(prog)
 
