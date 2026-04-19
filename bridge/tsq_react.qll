@@ -2,8 +2,23 @@
  * Bridge library for React framework models (v2 Phase F).
  *
  * Provides QL classes for React component XSS detection via
- * `dangerouslySetInnerHTML` and predicates for detecting useState
+ * `dangerouslySetInnerHTML` and a class form for detecting useState
  * setter call patterns (the "updater function" smells).
+ *
+ * NOTE (2026-04-18): rewritten from int-parameter predicate form to
+ * class form. The previous form caused the desugarer to synthesise
+ * disjunction predicates (`_disj_2`) that the planner could not size,
+ * blowing the 5M binding cap on Mastodon at join step 1. The class form
+ * makes `UseStateSetterCall` an arity-1 extent that participates in the
+ * P2a class-extent materialisation pre-pass — once materialised, every
+ * downstream join over useState setter calls is anchored against a tiny
+ * extent (~7 tuples on the Counter fixture, scaling with real call
+ * sites in production), exactly mirroring CodeQL's class-extent join
+ * pattern. The arity-shadow bug that previously blocked this rewrite
+ * was fixed in P2a (`e11dbad`): class extent heads are now keyed by
+ * (name, arity) rather than name alone, so `Call/1` (the `Call`
+ * supertype's class extent) and `Call/3` (the base schema relation)
+ * occupy independent slots.
  */
 
 /**
@@ -16,14 +31,20 @@
  * `FunctionContains` row points at the `() => setY()` arrow, not at the
  * outer `prev => ...` arrow.
  *
- * This is hand-unrolled to a fixed depth of three function nestings
- * rather than written as a true recursive predicate, because at the time
- * of writing the v1 evaluator's recursive-predicate path through
- * `Function(mid, ...)` does not propagate as expected for this exact
- * shape. Three levels covers all known real-world useState updater
- * patterns. If a fourth nesting level becomes load-bearing, lift this to
- * a real recursive predicate and revisit the engine behaviour — see the
- * follow-up note in the PR description.
+ * Hand-unrolled to depth 3 rather than written as true recursion. A
+ * recursive form was tried first and works correctly on small
+ * fixtures, but on the Mastodon corpus the recursive
+ * `functionContainsStar` IDB grows too large to size correctly
+ * pre-evaluation: the planner defaults its hint to 1000 (recursive IDBs
+ * are not materialised by the trivial-IDB pre-pass) and then picks a
+ * join order that blows the binding cap downstream. The unrolled form
+ * is a non-recursive IDB and gets a real cardinality estimate from the
+ * trivial-IDB pre-pass + sampling estimator (P2b), which keeps the
+ * planner honest. Three levels covers all known real-world useState
+ * updater patterns. If a fourth nesting level becomes load-bearing,
+ * lift this to a real recursive predicate AFTER fixing the recursive-IDB
+ * sizing path so the planner gets a real estimate (planner-roadmap
+ * follow-on).
  */
 predicate functionContainsStar(int fn, int node) {
     FunctionContains(fn, node)
@@ -60,19 +81,72 @@ predicate isUseStateSetterSym(int sym) {
 }
 
 /**
- * Holds if call `c` is a call to a `useState` setter (the second element
- * of a destructuring binding from a call to react's `useState`).
+ * A useState setter call: a call whose callee resolves to a symbol bound
+ * by destructuring the second element of a `useState(...)` initialiser.
+ *
+ *   const [count, setCount] = useState(0);
+ *   setCount(...);   // <-- this is a UseStateSetterCall
+ *
+ * Class extent eligibility: this class extends `@call` (the base entity
+ * type) and the characteristic predicate body references only base
+ * schema relations — `CallCalleeSym`, `ArrayDestructure`, `Contains`,
+ * `VarDecl`, `ImportBinding`. That makes the rule body match
+ * `plan.IsClassExtentBody` and the rule is materialised by P2a's
+ * `MaterialiseClassExtents` pre-pass before the planner runs. After
+ * materialisation, the extent is a small base-like relation that
+ * downstream joins (e.g. `setStateUpdaterCallsFn`) anchor against
+ * directly, instead of the planner having to derive cardinality through
+ * the synthesised disjunction `_disj_2` that the predicate form
+ * produced.
+ *
+ * Why `extends @call` and not `extends Call`: both work post-P2a, but
+ * `@call` keeps the entity-type grounding explicit (one base relation
+ * reference in the body) and avoids depending on `Call`'s class extent
+ * being materialised first. The arity-shadow fix (P2a) ensures the
+ * arity-1 head `UseStateSetterCall(this)` does not collide with any
+ * arity-3 schema relation.
  */
-predicate isUseStateSetterCall(int c) {
-    exists(int sym | CallCalleeSym(c, sym) and isUseStateSetterSym(sym))
+class UseStateSetterCall extends @call {
+    UseStateSetterCall() {
+        exists(int sym, int parent, int varDecl, int initExpr, int useStateSym |
+            CallCalleeSym(this, sym) and
+            ArrayDestructure(parent, 1, sym) and
+            Contains(varDecl, parent) and
+            VarDecl(varDecl, _, initExpr, _) and
+            CallCalleeSym(initExpr, useStateSym) and
+            ImportBinding(useStateSym, "react", "useState")
+        )
+    }
+
+    /** Gets the callee symbol of this useState setter call. */
+    int getSetterSym() {
+        CallCalleeSym(this, result)
+    }
+
+    /** Gets the start line of the callee identifier. */
+    int getLine() {
+        exists(int callee |
+            Call(this, callee, _) and
+            Node(callee, _, _, result, _, _, _)
+        )
+    }
+
+    /** Gets the first argument node (the updater function literal, when present). */
+    int getUpdaterArg() {
+        CallArg(this, 0, result)
+    }
+
+    /** Gets a textual representation. */
+    string toString() { result = "useState setter call" }
 }
 
 /**
  * Holds if call `c` is a useState setter call and `line` is the start
- * line of its callee identifier.
+ * line of its callee identifier. Retained for backward compatibility
+ * with existing query callers; new queries should use the
+ * `UseStateSetterCall` class directly.
  */
-predicate useStateSetterCallLine(int c, int line) {
-    isUseStateSetterCall(c) and
+predicate useStateSetterCallLine(UseStateSetterCall c, int line) {
     exists(int callee |
         Call(c, callee, _) and
         Node(callee, _, _, line, _, _, _)
@@ -89,20 +163,28 @@ predicate useStateSetterCallLine(int c, int line) {
  *   setX(prev => { mutate(); return prev; })
  *   setX(prev => arr.forEach(() => helper(prev)))   // nested case
  *
- * The transitive `FunctionContains` is required because the extractor
- * emits the base `FunctionContains` relation only against the *innermost*
- * enclosing function. Without the transitive variant, the nested-arrow
- * positive case above would be silently missed.
+ * The transitive `functionContainsStar` is required because the
+ * extractor emits the base `FunctionContains` relation only against the
+ * *innermost* enclosing function. Without the transitive variant, the
+ * nested-arrow positive case above would be silently missed.
+ *
+ * Implementation note: the explicit `c instanceof UseStateSetterCall`
+ * guard is now redundant — PR #146 taught `desugarTopLevelPredicate`
+ * to inject class-extent type literals for predicate parameters, so
+ * the planner anchors the join against the materialised
+ * `UseStateSetterCall` extent without it. The guard is kept defensively
+ * because it documents intent at the call site and is a no-op in plan
+ * shape (same literal as the auto-injected one — deduplicated by the
+ * planner). Output equivalence to the flat form is verified by
+ * bench run_008 (bit-identical CSVs across both corpora).
  */
-predicate setStateUpdaterCallsFn(int c, int line) {
-    isUseStateSetterCall(c) and
-    exists(int argFn, int innerCall |
+predicate setStateUpdaterCallsFn(UseStateSetterCall c, int line) {
+    c instanceof UseStateSetterCall and
+    exists(int argFn, int innerCall, int callee |
         CallArg(c, 0, argFn) and
         Function(argFn, _, _, _, _, _) and
         functionContainsStar(argFn, innerCall) and
-        Call(innerCall, _, _)
-    ) and
-    exists(int callee |
+        Call(innerCall, _, _) and
         Call(c, callee, _) and
         Node(callee, _, _, line, _, _, _)
     )
@@ -116,20 +198,18 @@ predicate setStateUpdaterCallsFn(int c, int line) {
  *   setX(prev => { setY(...); return prev; })
  *   setX(prev => arr.forEach(() => setY(...)))   // nested case
  */
-predicate setStateUpdaterCallsOtherSetState(int c, int line) {
-    isUseStateSetterCall(c) and
-    exists(int argFn, int innerCall, int outerSym, int innerSym |
+predicate setStateUpdaterCallsOtherSetState(UseStateSetterCall c, int line) {
+    c instanceof UseStateSetterCall and
+    exists(UseStateSetterCall inner, int argFn, int callee, int outerSym, int innerSym |
+        inner instanceof UseStateSetterCall and
         CallArg(c, 0, argFn) and
         Function(argFn, _, _, _, _, _) and
-        functionContainsStar(argFn, innerCall) and
-        CallCalleeSym(c, outerSym) and
-        CallCalleeSym(innerCall, innerSym) and
-        isUseStateSetterSym(innerSym) and
-        innerSym != outerSym
-    ) and
-    exists(int callee |
+        functionContainsStar(argFn, inner) and
         Call(c, callee, _) and
-        Node(callee, _, _, line, _, _, _)
+        Node(callee, _, _, line, _, _, _) and
+        CallCalleeSym(c, outerSym) and
+        CallCalleeSym(inner, innerSym) and
+        outerSym != innerSym
     )
 }
 
@@ -147,11 +227,3 @@ class DangerouslySetInnerHTML extends TaintSink {
     /** Gets a textual representation. */
     override string toString() { result = "DangerouslySetInnerHTML" }
 }
-
-// NOTE: A class form `class UseStateSetterCall extends Call { ... }` was
-// considered but removed because it triggers the v1 engine's
-// arity-shadowing bug — materialising `Call/1` head facts into the same
-// relation as the base `Call/3` schema corrupts joins on `Call`.
-// Use the int-parameter predicates above (`isUseStateSetterCall`,
-// `useStateSetterCallLine`, `setStateUpdaterCallsFn`,
-// `setStateUpdaterCallsOtherSetState`) instead.

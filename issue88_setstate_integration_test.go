@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,15 +107,22 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 	if len(planErrs) > 0 {
 		t.Fatalf("plan: %v", planErrs)
 	}
-	if hints["isUseStateSetterCall"] == 0 {
-		t.Fatalf("pre-pass failed to size isUseStateSetterCall (the seed predicate); hints=%v", hints)
+	if hints["UseStateSetterCall"] == 0 {
+		t.Fatalf("pre-pass failed to size UseStateSetterCall (the class-extent seed); hints=%v", hints)
 	}
 
-	// Assert: the seed predicate is now FIRST in the join order. This is
-	// the load-bearing planner outcome — if it stops being true, the rule
-	// will Cartesian-blow regardless of whether the test happens to fit
-	// under the binding cap on this small fixture.
-	assertSeedFirst(t, execPlan, "setStateUpdaterCallsFn", "isUseStateSetterCall")
+	// Assert: the join is anchored against the small class-extent-derived
+	// seed. After the class-form rewrite (2026-04-18), the planner picks
+	// `UseStateSetterCall_getLine` (size 7, transitively anchored against
+	// the materialised `UseStateSetterCall` extent) as the first literal
+	// instead of the 12-tuple `Function`/`Call` base relations. The
+	// load-bearing property is that the SEED is small (≤ |UseStateSetterCall|)
+	// — which `UseStateSetterCall_getLine` satisfies because its own body
+	// includes `UseStateSetterCall(this)` and so it has the same
+	// cardinality. If the planner stops choosing a seed of this shape, the
+	// rule will Cartesian-blow regardless of whether the test happens to
+	// fit under the binding cap on this small fixture.
+	assertSeedAnchoredOnClassExtent(t, execPlan, "setStateUpdaterCallsFn", "UseStateSetterCall")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -142,10 +150,15 @@ func TestIssue88_SetStateQueryDoesNotOOM(t *testing.T) {
 	t.Logf("setStateUpdaterCallsFn matched %d rows on react-usestate fixture (binding cap %d)", len(rs.Rows), tightCap)
 }
 
-// assertSeedFirst checks that the first JoinStep of the named rule's join
-// order is on `wantFirstPredicate`. Used as a behavioural assertion that the
-// planner is making the seed-selection decision the issue #88 fix targets.
-func assertSeedFirst(t *testing.T, ep *plan.ExecutionPlan, ruleHead, wantFirstPredicate string) {
+// assertSeedAnchoredOnClassExtent checks that the named rule's first join
+// literal is either the class extent itself OR a predicate whose own body
+// is anchored on the class extent (i.e. the predicate name has the
+// extent-name as a prefix, by the desugarer's mangling convention
+// `ClassName_methodName`). This is the post-P2a class-form behavioural
+// assertion: the planner picks a small seed sourced from the
+// pre-materialised class extent, instead of starting at a large base
+// relation like `Function` or `Call`.
+func assertSeedAnchoredOnClassExtent(t *testing.T, ep *plan.ExecutionPlan, ruleHead, classExtent string) {
 	t.Helper()
 	for _, s := range ep.Strata {
 		for _, r := range s.Rules {
@@ -156,16 +169,15 @@ func assertSeedFirst(t *testing.T, ep *plan.ExecutionPlan, ruleHead, wantFirstPr
 				t.Fatalf("rule %s has empty JoinOrder", ruleHead)
 			}
 			got := r.JoinOrder[0].Literal.Atom.Predicate
-			if got != wantFirstPredicate {
-				// Print full order for diagnostics.
-				var order []string
-				for _, st := range r.JoinOrder {
-					order = append(order, st.Literal.Atom.Predicate)
-				}
-				t.Fatalf("rule %s: first literal want %s, got %s. Full order: %v",
-					ruleHead, wantFirstPredicate, got, order)
+			if got == classExtent || strings.HasPrefix(got, classExtent+"_") {
+				return
 			}
-			return
+			var order []string
+			for _, st := range r.JoinOrder {
+				order = append(order, st.Literal.Atom.Predicate)
+			}
+			t.Fatalf("rule %s: first literal want %s or %s_<method>, got %s. Full order: %v",
+				ruleHead, classExtent, classExtent, got, order)
 		}
 	}
 	t.Fatalf("rule %s not found in execution plan", ruleHead)
