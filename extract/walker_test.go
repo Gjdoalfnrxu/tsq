@@ -654,7 +654,8 @@ func TestExprValueSource_NotForCalls(t *testing.T) {
 		switch k {
 		case "Identifier", "CallExpression", "MemberExpression",
 			"BinaryExpression", "AwaitExpression", "AsExpression",
-			"NonNullExpression", "ParenthesizedExpression":
+			"NonNullExpression", "ParenthesizedExpression",
+			"NewExpression", "YieldExpression":
 			t.Errorf("ExprValueSource row for %s (id=%d) — should NOT be a value-source", k, id)
 		}
 	}
@@ -748,5 +749,44 @@ func TestAssignExpr_MultipleAssigns(t *testing.T) {
 	r := rel(t, database, "AssignExpr")
 	if r.Tuples() != 3 {
 		t.Errorf("AssignExpr: expected 3 tuples for 3 assignments, got %d", r.Tuples())
+	}
+}
+
+// TestAssignExpr_CompoundAssignment documents the behaviour for compound
+// assignments (`x += 1`, `x -= 1`, etc). These are NOT modelled as
+// AssignExpr in Phase A — the rhs of `x += 1` is `1`, not the new value of
+// `x`, so emitting AssignExpr(x, 1) would be misleading for any
+// `mayResolveTo` consumer. Any compound-assign support belongs in Phase C
+// (likely as its own relation, not as AssignExpr). This test pins the
+// current behaviour so a regression is loud.
+func TestAssignExpr_CompoundAssignment(t *testing.T) {
+	src := `let x = 0; x += 1; x -= 2; x *= 3;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	if r.Tuples() != 0 {
+		t.Errorf("AssignExpr: expected 0 tuples for compound assignments (x += 1 etc), got %d", r.Tuples())
+	}
+}
+
+// TestAssignExpr_ChainedAssignment verifies chained assignment `a = b = 1`
+// emits one row per intermediate binding. Tree-sitter parses this as
+// `a = (b = 1)`, so the expected rows are AssignExpr(a, <inner>) and
+// AssignExpr(b, 1). At minimum: 2 rows, both with non-zero lhsSym.
+func TestAssignExpr_ChainedAssignment(t *testing.T) {
+	src := `let a, b; a = b = 1;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	if r.Tuples() != 2 {
+		t.Fatalf("AssignExpr: expected 2 tuples for chained assignment a = b = 1, got %d", r.Tuples())
+	}
+	for i := 0; i < r.Tuples(); i++ {
+		lhsSym := getInt(t, r, i, 0)
+		rhs := getInt(t, r, i, 1)
+		if lhsSym == 0 {
+			t.Errorf("AssignExpr row %d: lhsSym should be non-zero", i)
+		}
+		if rhs == 0 {
+			t.Errorf("AssignExpr row %d: rhsExpr should be non-zero", i)
+		}
 	}
 }
