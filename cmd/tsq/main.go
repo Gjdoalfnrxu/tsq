@@ -31,6 +31,7 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/parse"
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
 	"github.com/Gjdoalfnrxu/tsq/ql/resolve"
+	"github.com/Gjdoalfnrxu/tsq/ql/stats"
 )
 
 const version = "0.1.0"
@@ -54,7 +55,7 @@ var nonTaintablePrimitives = map[string]bool{
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "usage: tsq <command> [flags]")
-		fmt.Fprintln(stderr, "commands: extract, query, check, version")
+		fmt.Fprintln(stderr, "commands: extract, query, check, stats, version")
 		return 2
 	}
 
@@ -84,7 +85,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if subcmdIdx < 0 {
 		fmt.Fprintln(stderr, "usage: tsq <command> [flags]")
-		fmt.Fprintln(stderr, "commands: extract, query, check, version")
+		fmt.Fprintln(stderr, "commands: extract, query, check, stats, version")
 		return 2
 	}
 
@@ -121,9 +122,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdQuery(ctx, subargs, stdout, stderr)
 	case "check":
 		return cmdCheck(subargs, stdout, stderr)
+	case "stats":
+		return cmdStats(ctx, subargs, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "error: unknown command %q\n", subcmd)
-		fmt.Fprintln(stderr, "commands: extract, query, check, version")
+		fmt.Fprintln(stderr, "commands: extract, query, check, stats, version")
 		return 2
 	}
 }
@@ -136,6 +139,7 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	backendFlag := fs.String("backend", "treesitter", "extraction backend: treesitter or vendored")
 	tsgoFlag := fs.String("tsgo", "", "tsgo binary path (empty=auto-detect, \"off\"=disabled)")
 	tsconfigFlag := fs.String("tsconfig", "", "path to tsconfig.json for tsgo project context (empty=auto-discover by walking up from --dir)")
+	noStats := fs.Bool("no-stats", false, "skip writing the stats sidecar (Phase B PR1; default-stats mode in the planner)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -226,7 +230,37 @@ func cmdExtract(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	success = true
 
 	fmt.Fprintf(stderr, "wrote %s\n", *outputFile)
+
+	// Phase B PR1: stats sidecar.
+	if !*noStats {
+		if err := writeStatsSidecar(database, *outputFile, stderr); err != nil {
+			// Non-fatal: extraction itself succeeded; sidecar is advisory
+			// (planner falls back to default-stats mode when missing).
+			fmt.Fprintf(stderr, "warning: stats sidecar: %v\n", err)
+		}
+	}
 	return 0
+}
+
+// writeStatsSidecar computes the EDB statistics sidecar and writes it
+// next to the freshly extracted DB. See ql/stats and
+// docs/design/stats-sidecar-format.md.
+func writeStatsSidecar(database *db.DB, edbPath string, stderr io.Writer) error {
+	hash, err := stats.HashFile(edbPath)
+	if err != nil {
+		return fmt.Errorf("hash EDB: %w", err)
+	}
+	s, err := stats.Compute(database, hash)
+	if err != nil {
+		return fmt.Errorf("compute: %w", err)
+	}
+	if err := stats.Save(edbPath, s); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
+	if info, err := os.Stat(stats.SidecarPath(edbPath)); err == nil {
+		fmt.Fprintf(stderr, "wrote %s (%d bytes)\n", stats.SidecarPath(edbPath), info.Size())
+	}
+	return nil
 }
 
 // resolveTsgo determines the tsgo binary path from the flag value.
