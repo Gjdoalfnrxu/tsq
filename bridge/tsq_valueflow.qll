@@ -141,25 +141,111 @@ predicate mayResolveToObjectField(int valueExpr, int sourceExpr) {
 }
 
 /**
- * Top-level union — `or`-of-calls.
+ * Six-branch core union (no JSX-wrapper handling).
  *
- * Each disjunct is a call to a separate named IDB head. This shape
- * sidesteps disjunction-poisoning bug #166 by construction: the planner's
- * disjunction rewrite never sees a multi-branch literal-disjunction inside
- * a single rule body, so the binding-loss case never fires. If a
- * regression appears here in the future (per-branch row count > 0 but
- * union row count = 0), that is the classic #166 signature — escalate to
- * the planner team rather than rewriting the value-flow rules. The
- * regression guard is `TestValueflow_UnionMatchesSumOfBranches` in
- * `valueflow_integration_test.go`.
+ * `or`-of-calls of the six §2.1–§2.6 branches. Lifted to a named predicate
+ * so `mayResolveToJsxWrapped` can dispatch into the core via a single call
+ * (instead of repeating the six branches under a wrapper-unwrapped
+ * `innerExpr` binding). This is the named-call discipline #166 wants —
+ * `mayResolveToJsxWrapped`'s body is a single call into another named
+ * head, never a literal disjunction.
+ *
+ * `mayResolveToCore` is value-expr-rooted: each branch joins
+ * `ExprMayRef(valueExpr, sym)` (or equivalent) directly on `valueExpr`. It
+ * does NOT tolerate JsxExpression wrappers — for `<Provider value={X} />`
+ * the JsxAttribute valueExpr is the JsxExpression `{X}` node, not `X`, so
+ * `ExprMayRef(jsxExpr, sym)` is empty. The wrapper-tolerant counterpart
+ * lives in `mayResolveToJsxWrapped` below; both feed the public
+ * `mayResolveTo` union.
  */
-predicate mayResolveTo(int valueExpr, int sourceExpr) {
+predicate mayResolveToCore(int valueExpr, int sourceExpr) {
     mayResolveToBase(valueExpr, sourceExpr)
     or mayResolveToVarInit(valueExpr, sourceExpr)
     or mayResolveToAssign(valueExpr, sourceExpr)
     or mayResolveToParamBind(valueExpr, sourceExpr)
     or mayResolveToFieldRead(valueExpr, sourceExpr)
     or mayResolveToObjectField(valueExpr, sourceExpr)
+}
+
+/**
+ * Helper — direct JsxExpression unwrap.
+ *
+ * `jsxExpr` is a `JsxExpression` AST node and `innerExpr` is its DIRECT
+ * child (per `Contains/2`, which stores immediate parent→child links — the
+ * extractor populates one `Contains(parent, child)` row per direct
+ * descent, not transitive closure).
+ *
+ * Constraining the unwrap to a single JsxExpression layer (vs. transitive
+ * `Contains`) preserves the bridge's existing `resolveToObjectExprVarD1`
+ * semantics: that predicate uses `(identExpr = valueExpr or
+ * Contains(valueExpr, identExpr))` where `Contains` is direct, and the
+ * canonical `<Provider value={X} />` shape has `X` as the JsxExpression's
+ * direct child. Walking arbitrary parent levels would over-approximate
+ * (e.g. unwrap `<Provider value={f({...})} />` and resolve through the
+ * inner spread — bridge precision intentionally stops there).
+ *
+ * `Node(jsxExpr, _, "JsxExpression", _, _, _, _)` matches both walker
+ * backends: walker.go emits the kind verbatim from tree-sitter
+ * `jsx_expression` (mapped in `extract/backend_treesitter.go`); walker_v2
+ * delegates JSX descent to the inner FactWalker so the same `Node` row
+ * appears in v2 extraction.
+ */
+predicate jsxExpressionUnwrap(int jsxExpr, int innerExpr) {
+    Node(jsxExpr, _, "JsxExpression", _, _, _, _) and
+    Contains(jsxExpr, innerExpr)
+}
+
+/**
+ * JSX-wrapper-tolerant branch — re-run the core union on the unwrapped
+ * inner expression.
+ *
+ * Body is a single named call into `mayResolveToCore`, preserving the
+ * `or`-of-calls discipline that sidesteps #166: at each top-level
+ * disjunction the planner sees only literal calls to named heads, never a
+ * multi-branch literal disjunction inside one rule body.
+ *
+ * Non-recursive: `mayResolveToCore` does NOT call back into
+ * `mayResolveTo` or `mayResolveToJsxWrapped`. The call graph is
+ *   mayResolveTo  →  { mayResolveToCore, mayResolveToJsxWrapped }
+ *   mayResolveToJsxWrapped  →  mayResolveToCore
+ *   mayResolveToCore  →  the six §2.1–§2.6 branches
+ *   six branches  →  EDB only
+ * — no back-edge. The trivial-IDB pre-pass sizes this depth-3 stack the
+ * same way it sizes the original union.
+ */
+predicate mayResolveToJsxWrapped(int valueExpr, int sourceExpr) {
+    exists(int innerExpr |
+        jsxExpressionUnwrap(valueExpr, innerExpr) and
+        mayResolveToCore(innerExpr, sourceExpr)
+    )
+}
+
+/**
+ * Top-level union — `or`-of-calls.
+ *
+ * Two disjuncts: the six-branch core (`mayResolveToCore`) plus the
+ * wrapper-tolerant variant (`mayResolveToJsxWrapped`). Each disjunct is a
+ * call to a separate named IDB head. This shape sidesteps
+ * disjunction-poisoning bug #166 by construction: the planner's
+ * disjunction rewrite never sees a multi-branch literal-disjunction inside
+ * a single rule body, so the binding-loss case never fires.
+ *
+ * If a regression appears here in the future (per-branch row count > 0 but
+ * union row count = 0), that is the classic #166 signature — escalate to
+ * the planner team rather than rewriting the value-flow rules. The
+ * regression guard is `TestValueflow_UnionMatchesSumOfBranches` in
+ * `valueflow_integration_test.go`.
+ *
+ * The wrapper extension (PR3 amendment, plan §3.1 amendment): the bridge's
+ * `resolveToObjectExpr*` family is JsxExpression-wrapper-tolerant via
+ * `Contains(valueAttrExpr, innerExpr)`. The original six-branch union was
+ * value-expr-rooted only and silently dropped every `<Provider value={X} />`
+ * case, breaking subsumption with `resolveToObjectExprVarD1`. Adding
+ * `mayResolveToJsxWrapped` closes that gap before PR3's bridge migration.
+ */
+predicate mayResolveTo(int valueExpr, int sourceExpr) {
+    mayResolveToCore(valueExpr, sourceExpr)
+    or mayResolveToJsxWrapped(valueExpr, sourceExpr)
 }
 
 /**

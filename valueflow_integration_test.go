@@ -118,6 +118,12 @@ func TestValueflow_AllBranchesFireOnBase(t *testing.T) {
 		{"param_bind", "testdata/queries/v2/valueflow/branch_param_bind.ql"},
 		{"field_read", "testdata/queries/v2/valueflow/branch_field_read.ql"},
 		{"object_field", "testdata/queries/v2/valueflow/branch_object_field.ql"},
+		// PR3 amendment — JSX-wrapper-tolerant branch. Fires on the
+		// `<Provider value={X} />` shape where the JsxExpression `{X}`
+		// is what JsxAttribute.valueExpr points at, NOT the inner
+		// identifier. Without this branch the bridge migration would
+		// silently drop every `value={X}` case.
+		{"jsx_wrapped", "testdata/queries/v2/valueflow/branch_jsx_wrapped.ql"},
 	}
 
 	for _, b := range branches {
@@ -160,6 +166,11 @@ func TestValueflow_UnionMatchesSumOfBranches(t *testing.T) {
 		"testdata/queries/v2/valueflow/branch_param_bind.ql",
 		"testdata/queries/v2/valueflow/branch_field_read.ql",
 		"testdata/queries/v2/valueflow/branch_object_field.ql",
+		// PR3 amendment — JSX-wrapper-tolerant 7th branch. Must be
+		// included in the union-vs-sum invariant or the wrapper rows
+		// (which appear in `mayResolveTo` but not in the original 6
+		// branches) trip the union > sum bound check.
+		"testdata/queries/v2/valueflow/branch_jsx_wrapped.ql",
 	}
 
 	branchPairs := make(map[string]bool)
@@ -431,6 +442,37 @@ func TestValueflow_ResolvesToFunctionDirect(t *testing.T) {
 		}
 	}
 	t.Logf("resolvesToFunctionDirect: %d row(s) on valueflow-fnref", len(rs.Rows))
+}
+
+// TestValueflow_JsxWrappedBranch asserts the JSX-wrapper-tolerant branch
+// fires on the canonical `<Provider value={X} />` shape and resolves to
+// the inner identifier's VarDecl init via mayResolveToCore.
+//
+// This is the regression guard for the subsumption gap surfaced when PR3
+// first attempted to substitute mayResolveToVarInit for
+// resolveToObjectExprVarD1: that earlier shape silently dropped every
+// wrapped case because the JsxAttribute valueExpr column points at the
+// JsxExpression `{X}`, not at `X`. The wrapper branch closes that gap.
+//
+// The fixture jsx_wrapped.tsx has exactly one Provider with `value={theme}`
+// where `theme` is a VarDecl initialised to an object literal. That
+// pattern must produce at least one mayResolveToJsxWrapped row whose
+// sourceExpr is the object literal.
+func TestValueflow_JsxWrappedBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping extraction-heavy integration test in short mode")
+	}
+	rs := runValueflowQuery(t,
+		"testdata/queries/v2/valueflow/branch_jsx_wrapped.ql",
+		"testdata/projects/valueflow-base")
+	if len(rs.Rows) == 0 {
+		t.Fatal("mayResolveToJsxWrapped returned 0 rows on valueflow-base; " +
+			"either the JsxExpression Node row is missing (extractor regression) " +
+			"or jsxExpressionUnwrap's Contains/Kind check is broken. " +
+			"Without this branch the bridge migration silently drops every " +
+			"`<Provider value={X} />` case.")
+	}
+	t.Logf("mayResolveToJsxWrapped: %d row(s) on valueflow-base jsx_wrapped fixture", len(rs.Rows))
 }
 
 // TestValueflow_IntegrationOnReactFixture is the smoke test that
