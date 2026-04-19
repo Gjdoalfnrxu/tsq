@@ -419,6 +419,153 @@ func TestWithMagicSetAuto_RenameTrampolineEndToEnd(t *testing.T) {
 	}
 }
 
+// TestInferRuleBodyDemandBindings_ArityShadowedBaseInPrecedingBody is
+// the regression for the bug where a synth-disj `_disj_N` predicate
+// that should have been magic-set rewritten silently dropped on the
+// floor because the desugarer's arity-1 class-extent helpers (e.g.
+// `CallArg(this) :- CallArg(this,_,_).`, auto-emitted under PR #146 for
+// any `@callarg`-typed parameter) name-shadow the underlying arity-N
+// base relation.
+//
+// Concretely: when buildDemandSeedsForPred constructs a magic-set seed
+// body from a caller's preceding literals, it dropped any literal whose
+// predicate name appeared as an IDB head — even when the caller's
+// occurrence was at a different (base) arity. With the desugarer
+// shipping `Function(this) :- Function(this,_,_,_,_,_).` and the
+// caller body having `Function(argFn,_,_,_,_,_)` (arity 6, the base
+// relation), the arity-6 base atom got dropped because `Function/1`
+// was an IDB head. That removed the only literal grounding `argFn`,
+// `isSafe` rejected the seed, and the synth-disj rewrite never fired —
+// pushing the cap-hit one join step deeper. (Step-2 cap-hit on the
+// `setStateUpdaterCallsOtherSetState` query in production; the same
+// shape that PR #149 thought it had closed for step-1.)
+//
+// This test models the same shape: an arity-1 IDB shadow over the same
+// name as an arity-2 base relation that's load-bearing for grounding
+// the demanded var. With the (name, arity)-keyed shadow check, the
+// arity-2 base is preserved, the seed body grounds the demanded var,
+// and the magic-set rewrite fires.
+func TestInferRuleBodyDemandBindings_ArityShadowedBaseInPrecedingBody(t *testing.T) {
+	// Program:
+	//   Function(this) :- Function(this, _, _).         // arity-1 IDB shadow (desugarer-emitted)
+	//   Caller(c, y) :- ClassExt(c), Function(c, _, _), trampoline(c, y).
+	//   trampoline(c, y) :- _disj_2(c, y).               // pure rename
+	//   _disj_2(c, y) :- A(c, y).                        // base join branch
+	//   _disj_2(c, y) :- B(c, m), C(m, y).               // multi-atom branch
+	//
+	// Demand should reach _disj_2:[0] via the trampoline. Pre-fix, the
+	// preceding `Function(c, _, _)` (arity 3) in Caller's body got
+	// dropped from the magic_trampoline seed body because Function/1
+	// was an IDB head, leaving no grounding for `c`.
+	rules := []datalog.Rule{
+		// Arity-1 class-extent shadow — mirrors the desugarer's
+		// auto-emitted `Foo(this) :- Foo(this,...)` rule for typed
+		// parameters under PR #146.
+		{
+			Head: datalog.Atom{Predicate: "Function", Args: []datalog.Term{datalog.Var{Name: "this"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Function", Args: []datalog.Term{datalog.Var{Name: "this"}, datalog.Var{Name: "_"}, datalog.Var{Name: "_"}}}},
+			},
+		},
+		// Caller. Arity-3 Function literal is the load-bearing
+		// grounding atom. ClassExt is small but does NOT bind y; only
+		// Function (the base) does, when probed at the magic-set seed
+		// site.
+		{
+			Head: datalog.Atom{Predicate: "Caller", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "ClassExt", Args: []datalog.Term{datalog.Var{Name: "c"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Function", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "_"}, datalog.Var{Name: "_"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "A", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "B", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "C", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+	}
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Caller", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+	}
+	hints := map[string]int{
+		"ClassExt": 7,      // small extent
+		"Function": 100000, // base — large; the arity-1 head is unhinted
+		"A":        100000,
+		"B":        100000,
+		"C":        100000,
+	}
+	idb := IDBPredicates(prog)
+	if !idb["Function"] {
+		t.Fatal("test setup invariant: Function/1 must be in IDB head set")
+	}
+
+	bindings, seeds := InferRuleBodyDemandBindings(prog, idb, hints)
+	cols, ok := bindings["_disj_2"]
+	if !ok {
+		t.Fatalf("expected _disj_2 in demand bindings (the arity-1 Function shadow should NOT silence it); got bindings=%v seeds=%d",
+			bindings, len(seeds))
+	}
+	if len(cols) != 1 || cols[0] != 0 {
+		t.Fatalf("expected _disj_2 bound at col 0, got %v", cols)
+	}
+	if len(seeds) == 0 {
+		t.Fatal("expected at least one demand-seed for the magic predicate, got 0")
+	}
+	// At least one emitted seed must reference the arity-3 base
+	// Function literal in its body — that's the literal that was being
+	// dropped by the bug. Without it, `c` (or the demanded var) is
+	// ungrounded and isSafe rejects the seed.
+	foundArity3Function := false
+	for _, sr := range seeds {
+		for _, lit := range sr.Body {
+			if lit.Cmp != nil || !lit.Positive {
+				continue
+			}
+			if lit.Atom.Predicate == "Function" && len(lit.Atom.Args) == 3 {
+				foundArity3Function = true
+				break
+			}
+		}
+		if foundArity3Function {
+			break
+		}
+	}
+	if !foundArity3Function {
+		t.Fatalf("expected at least one seed to retain the arity-3 base Function literal in its body (proves arity-keyed shadow check); got seeds=%d, bodies=%v", len(seeds), seedBodySummaries(seeds))
+	}
+}
+
+func seedBodySummaries(seeds []datalog.Rule) []string {
+	out := make([]string, 0, len(seeds))
+	for _, sr := range seeds {
+		bodyPreds := make([]string, 0, len(sr.Body))
+		for _, lit := range sr.Body {
+			if lit.Cmp != nil {
+				bodyPreds = append(bodyPreds, "cmp")
+				continue
+			}
+			bodyPreds = append(bodyPreds, lit.Atom.Predicate)
+		}
+		out = append(out, sr.Head.Predicate+" :- "+strings.Join(bodyPreds, ", "))
+	}
+	return out
+}
+
 func dumpJoinOrder(steps []JoinStep) string {
 	parts := make([]string, 0, len(steps))
 	for _, s := range steps {

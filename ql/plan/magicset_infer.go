@@ -121,6 +121,9 @@ func InferQueryBindings(prog *datalog.Program, idbPreds map[string]bool) QueryBi
 			continue
 		}
 		pred := lit.Atom.Predicate
+		// TODO(#157): same (name, arity) shadow class as fixed in magicset_demand.go;
+		// harmless today (no rule head consumes the misclassified literal) but should
+		// be tightened when #157 is swept.
 		if !idbPreds[pred] {
 			// Not an IDB pred — it can ground variables for subsequent literals,
 			// but only those vars that co-occur with a constant in this base

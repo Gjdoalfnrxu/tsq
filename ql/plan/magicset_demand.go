@@ -243,6 +243,10 @@ func buildDemandSeedsForPred(
 ) []datalog.Rule {
 	var seeds []datalog.Rule
 	magicPred := magicName(pred)
+	// Hoisted out of the per-literal hot loop below: the (name, arity) IDB
+	// head index is a function of `prog` only and was previously rebuilt
+	// for every preceding-literal scan. Compute once per call.
+	idbByArity := idbHeadByArity(prog)
 
 	for _, rule := range prog.Rules {
 		// Skip self-recursion on pred — a rule whose head IS pred
@@ -300,7 +304,18 @@ func buildDemandSeedsForPred(
 			// IDB atom would risk re-introducing the very cardinality
 			// blowup we're trying to bound, so we drop those.
 			var seedBody []datalog.Literal
-			idb := IDBPredicates(prog)
+			// Build an IDB head index keyed by (name, arity). Name-only
+			// keying conflates the desugarer's auto-emitted arity-1
+			// class-extent helpers (e.g. `CallArg(this) :- CallArg(this,_,_).`,
+			// emitted for any `@callarg`-typed parameter under PR #146) with
+			// the underlying arity-N base relation of the same name. Without
+			// arity disambiguation, a preceding `CallArg(c, 0, argFn)` (the
+			// arity-3 base atom) gets dropped here as "an unhinted IDB,"
+			// silently zeroing out the only literal that would have grounded
+			// `argFn` in the magic-set seed body. Result: isSafe rejects the
+			// seed (head var not body-bound), no seed is emitted, the synth-
+			// disj rewrite drops on the floor, and `_disj_2` blows the
+			// binding cap on its 5-atom join.
 			for j := 0; j < i; j++ {
 				prev := rule.Body[j]
 				if prev.Agg != nil {
@@ -318,11 +333,13 @@ func buildDemandSeedsForPred(
 					continue
 				}
 				// Positive atom: include if it's a base relation
-				// (not an IDB head), OR if it's an IDB head whose
-				// hint marks it as small-extent (safe to evaluate as
-				// part of the seed).
+				// (no IDB rule head matches BOTH name AND arity), OR
+				// if it IS an IDB head at the matching arity but the
+				// hint marks it small-extent (safe to evaluate inside
+				// the seed). Arity-keyed: see comment above.
 				bodyPred := prev.Atom.Predicate
-				if idb[bodyPred] && !isSmallExtent(bodyPred, sizeHints) {
+				bodyArity := len(prev.Atom.Args)
+				if idbByArity[predArity{bodyPred, bodyArity}] && !isSmallExtent(bodyPred, sizeHints) {
 					// Risk re-introducing the blowup; drop.
 					continue
 				}
@@ -558,6 +575,38 @@ func MergeBindings(a, b map[string][]int) map[string][]int {
 		} else {
 			out[k] = append([]int(nil), v...)
 		}
+	}
+	return out
+}
+
+// predArity is a (predicate-name, arity) key used to disambiguate IDB
+// heads from base relations of the same name. The desugarer can emit
+// auto-generated arity-1 class-extent helper rules (e.g.
+// `CallArg(this) :- CallArg(this,_,_).` from PR #146's class-typed
+// parameter injection) over the same name as an existing arity-N base
+// relation. Name-only IDB lookups silently shadow the base relation,
+// causing legitimate base atoms to be rejected as "unhinted IDBs" in
+// seed-body construction. Keying by (name, arity) is sound because
+// the desugarer never collides arities for genuinely-the-same predicate.
+type predArity struct {
+	name  string
+	arity int
+}
+
+// idbHeadByArity returns the set of (name, arity) tuples that appear
+// as rule heads in prog. Used by buildDemandSeedsForPred to filter
+// preceding body literals at the correct arity, so an arity-3 base atom
+// does not get dropped because an arity-1 IDB exists with the same
+// predicate name. Mirrors the (name, arity) keying that
+// InferBackwardDemand applies to its mixedArity guard, applied here at
+// the seed-body construction site.
+func idbHeadByArity(prog *datalog.Program) map[predArity]bool {
+	out := map[predArity]bool{}
+	if prog == nil {
+		return out
+	}
+	for _, r := range prog.Rules {
+		out[predArity{r.Head.Predicate, len(r.Head.Args)}] = true
 	}
 	return out
 }
