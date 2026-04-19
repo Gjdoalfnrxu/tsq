@@ -264,6 +264,39 @@ func buildDemandSeedsForPred(
 	// for every preceding-literal scan. Compute once per call.
 	idbByArity := idbHeadByArity(prog)
 
+	// disj2-round5: arity-keyed call-site match. The desugarer's
+	// auto-emitted arity-1 class-extent helpers (PR #146) — e.g.
+	// `VarDecl(this) :- VarDecl(this, _, _, _).` — register a NEW
+	// IDB head named "VarDecl" at arity 1. The underlying base
+	// relation `VarDecl/4` keeps the same name. When backward demand
+	// is inferred for the arity-1 IDB head (`demand[VarDecl] = [0]`
+	// from arity-1 grounding callers), this loop must NOT match the
+	// arity-4 base usages of the same name as call sites — those are
+	// not calls to the IDB.
+	//
+	// Concrete failure mode (Mastodon `setStateUpdaterCallsOtherSetStateThroughContext`):
+	// without arity disambiguation, a body literal like
+	// `VarDecl(_, sym, srcExpr, _)` (arity 4, position 0 wildcard) was
+	// matched as a "call" to `VarDecl/1` and produced the seed
+	// `magic_VarDecl(_) :- ...` with a wildcard head var. `isSafe` lets
+	// the wildcard through but `validate.ValidateRule` rejects it
+	// ("head variable \"_\" does not appear in any positive body literal"),
+	// causing `WithMagicSetAutoOpts` to fall back to plain Plan. With
+	// no magic-set rewrite, every IDB in the program runs to completion
+	// against the full base — including unrelated siblings like
+	// `setStateUpdaterCallsFn` — and one of them caps out.
+	//
+	// Same family as PR #156's preceding-literal IDB-shadow fix; that
+	// PR keyed the body-IDB lookup by (name, arity), but the call-site
+	// match itself remained name-only. This restricts the call-site
+	// match to literals whose arity equals the IDB head arity.
+	predArities := map[int]bool{}
+	for _, r := range prog.Rules {
+		if r.Head.Predicate == pred {
+			predArities[len(r.Head.Args)] = true
+		}
+	}
+
 	for _, rule := range prog.Rules {
 		// Skip self-recursion on pred — a rule whose head IS pred
 		// can't seed itself in a useful way (it would create a magic
@@ -277,6 +310,13 @@ func buildDemandSeedsForPred(
 				continue
 			}
 			if lit.Atom.Predicate != pred {
+				continue
+			}
+			// Arity-keyed call-site match (round-5). If the program
+			// has any IDB head for `pred`, only literals at one of
+			// those arities are call sites; literals at other arities
+			// are base-relation usages of a colliding name.
+			if len(predArities) > 0 && !predArities[len(lit.Atom.Args)] {
 				continue
 			}
 			if len(lit.Atom.Args) < maxColIndex(cols)+1 {
@@ -303,6 +343,25 @@ func buildDemandSeedsForPred(
 				}
 			}
 			if malformed {
+				continue
+			}
+			// disj2-round5 belt-and-braces: skip the call site if any
+			// demanded position is a wildcard at the call. `isSafe`'s
+			// `_`-exemption (magicset.go:isSafe) lets a wildcard head
+			// arg through, but `validate.ValidateRule` (validate.go)
+			// rejects it as an unbound head var. The transformed
+			// program then fails to plan and `WithMagicSetAutoOpts`
+			// silently falls back to plain Plan with a warning. Drop
+			// the seed up front rather than emit one we know will be
+			// rejected downstream.
+			wildcardAtDemandedPos := false
+			for _, arg := range seedHeadArgs {
+				if v, ok := arg.(datalog.Var); ok && v.Name == "_" {
+					wildcardAtDemandedPos = true
+					break
+				}
+			}
+			if wildcardAtDemandedPos {
 				continue
 			}
 
