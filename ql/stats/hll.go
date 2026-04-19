@@ -36,8 +36,12 @@ type HLL struct {
 // NewHLL returns an empty HLL sketch.
 func NewHLL() *HLL { return &HLL{} }
 
-// AddHashed updates the sketch with a precomputed 64-bit hash. Use
-// AddBytes / AddUint64 for the common cases.
+// AddHashed updates the sketch with a precomputed-and-finalised 64-bit
+// hash. The caller is responsible for using a hash with good
+// avalanche characteristics (e.g. splitmix64 / mix64); HLL's accuracy
+// degrades sharply if the input bits are clustered. Prefer AddBytes
+// or AddUint64, which finalise internally — only use AddHashed when
+// integrating with an upstream hash that already meets the bar.
 func (h *HLL) AddHashed(hash uint64) {
 	idx := hash >> hllPrefixBits // top precision bits
 	w := (hash << hllPrecision) | (1 << (hllPrecision - 1))

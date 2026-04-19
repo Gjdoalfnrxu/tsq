@@ -79,12 +79,27 @@ type Bucket struct {
 // JoinStats is the precomputed selectivity of a declared FK-like pair.
 // Plan §1.1: emitted only for relation/column pairs annotated as
 // JoinPaired in the schema.
+//
+// Selectivity is asymmetric and recorded as two floats:
+//
+//   - LRSelectivity: probability that a random left-side row matches
+//     at least one right-side row on the declared columns. Used for
+//     planning a join where the left is the build/outer side.
+//   - RLSelectivity: the symmetric quantity for right→left.
+//
+// A symmetric scalar (the previous shape) was wrong for any planner
+// asking "how many right rows survive a probe from this left row?" —
+// the answer differs by orders of magnitude on skewed FK pairs (e.g.
+// Contains: a child has exactly one parent; a parent has many
+// children). Bumping the shape now while no consumer reads JoinStats
+// avoids a format-version migration in PR2b.
 type JoinStats struct {
 	LeftRel         string
 	LeftCol         int
 	RightRel        string
 	RightCol        int
-	Selectivity     float64
+	LRSelectivity   float64
+	RLSelectivity   float64
 	DistinctMatches int64
 }
 

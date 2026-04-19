@@ -45,6 +45,58 @@ func TestSpaceSaving_TopKClamped(t *testing.T) {
 	}
 }
 
+// Regression for BLOCKER 2 (PR #175 review): adversarial input order.
+// The standard "heavies first, tail second" test passes regardless of
+// whether SpaceSaving tracks per-entry error. Reverse the order — pour
+// the long tail in until capacity is exhausted, then add the heavies
+// — and the heavies' raw counts are tiny (they took an evicted slot
+// after the tail filled the table). Without per-entry error tracking,
+// the readout cannot distinguish the heavies from the spurious tail
+// values still occupying slots.
+//
+// With error tracking, each heavy's `count - err` is the lower bound
+// on its true frequency, and the heavies surface even with small raw
+// counts because the tail residents have `count - err` near zero.
+func TestSpaceSaving_AdversarialOrder_HeaviesSurfaceLast(t *testing.T) {
+	ss := NewSpaceSaving()
+
+	// Tail first: 4 × ssCapacity distinct singleton values. Capacity
+	// fills up and then thrashes: every new tail value evicts an
+	// older tail value, leaving the table populated entirely by tail
+	// residents at end of phase 1.
+	const tailValues = 4 * ssCapacity
+	for v := uint64(1000); v < uint64(1000+tailValues); v++ {
+		ss.Add(v)
+	}
+
+	// Heavies last: ids 1..5, each 50 hits. Because they start by
+	// evicting a tail entry, their initial count inherits the
+	// minimum (which is small but > 0 after thrashing).
+	for i := 0; i < 50; i++ {
+		for v := uint64(1); v <= 5; v++ {
+			ss.Add(v)
+		}
+	}
+
+	top := ss.TopK(10)
+	if len(top) < 5 {
+		t.Fatalf("expected ≥5 entries above the lower-bound threshold, got %d: %+v", len(top), top)
+	}
+	heavyHit := map[uint64]bool{}
+	for _, e := range top[:5] {
+		heavyHit[e.Value] = true
+	}
+	missing := []uint64{}
+	for v := uint64(1); v <= 5; v++ {
+		if !heavyHit[v] {
+			missing = append(missing, v)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("heavy hitters %v missing from top-5 under adversarial order: %+v", missing, top[:5])
+	}
+}
+
 // Empty tracker yields nil.
 func TestSpaceSaving_Empty(t *testing.T) {
 	ss := NewSpaceSaving()

@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,6 +119,105 @@ func TestCompute_EmptyDB(t *testing.T) {
 		if r.RowCount != 0 {
 			t.Errorf("rel %s row=%d, want 0", n, r.RowCount)
 		}
+	}
+}
+
+// Regression for BLOCKER 1 (PR #175 review): non-nullable columns must
+// keep NullFrac at 0 even when zero-valued cells are present. Real EDB
+// data uses 0 as a legitimate id (e.g. the first interned file slot),
+// and the planner must not treat those rows as null on outer-join /
+// IS NULL estimates. None of the registered schema columns are
+// declared Nullable, so seeding zeros into Node.startLine (an
+// int32 column) must produce NullFrac == 0.
+func TestCompute_NonNullableZeroIsNotNull(t *testing.T) {
+	database := db.NewDB()
+
+	files := database.Relation("File")
+	if err := files.AddTuple(database, int32(1), "/x.ts", "h"); err != nil {
+		t.Fatal(err)
+	}
+
+	nodes := database.Relation("Node")
+	// 10 rows where Node.startLine (col 3) is 0 — a legitimate
+	// "first line" position, not a null sentinel.
+	for i := int32(1); i <= 10; i++ {
+		if err := nodes.AddTuple(database, i, int32(1), "Identifier",
+			int32(0), int32(0), int32(0), int32(0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	edb := filepath.Join(dir, "f.db")
+	f, _ := os.Create(edb)
+	if err := database.Encode(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	hash, _ := HashFile(edb)
+	s, err := Compute(database, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := s.Lookup("Node")
+	if node == nil {
+		t.Fatal("Node stats missing")
+	}
+	for i, c := range node.Cols {
+		if c.NullFrac != 0 {
+			t.Errorf("Node.col%d NullFrac = %g, want 0 (column is not declared Nullable)", i, c.NullFrac)
+		}
+	}
+}
+
+// FIX-INLINE 4 smoke test: computeJoin produces a finite selectivity
+// in [0, 1] for both directions and a non-negative DistinctMatches on
+// a synthetic FK pair. The standing JoinPaired list is empty in v1,
+// so we inject a single declaration for the duration of this test.
+func TestComputeJoin_SmokeBothDirections(t *testing.T) {
+	saved := JoinPaired
+	defer func() { JoinPaired = saved }()
+	JoinPaired = []JoinPair{
+		{LeftRel: "Node", LeftCol: 1, RightRel: "File", RightCol: 0},
+	}
+
+	database := db.NewDB()
+	files := database.Relation("File")
+	for i := int32(1); i <= 4; i++ {
+		_ = files.AddTuple(database, i, "/p", "h")
+	}
+	nodes := database.Relation("Node")
+	for i := int32(1); i <= 50; i++ {
+		// Node.file (col 1) cycles 1..4 — 100% of left rows match.
+		fileID := int32((i-1)%4) + 1
+		_ = nodes.AddTuple(database, i, fileID, "K",
+			int32(0), int32(0), int32(0), int32(0))
+	}
+
+	dir := t.TempDir()
+	edb := filepath.Join(dir, "j.db")
+	f, _ := os.Create(edb)
+	_ = database.Encode(f)
+	f.Close()
+	hash, _ := HashFile(edb)
+	s, err := Compute(database, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Joins) != 1 {
+		t.Fatalf("expected 1 JoinStats, got %d", len(s.Joins))
+	}
+	js := s.Joins[0]
+	if js.LRSelectivity < 0 || js.LRSelectivity > 1 ||
+		math.IsNaN(js.LRSelectivity) || math.IsInf(js.LRSelectivity, 0) {
+		t.Errorf("LRSelectivity = %g, want finite in [0,1]", js.LRSelectivity)
+	}
+	if js.RLSelectivity < 0 || js.RLSelectivity > 1 ||
+		math.IsNaN(js.RLSelectivity) || math.IsInf(js.RLSelectivity, 0) {
+		t.Errorf("RLSelectivity = %g, want finite in [0,1]", js.RLSelectivity)
+	}
+	if js.DistinctMatches < 0 {
+		t.Errorf("DistinctMatches = %d, want ≥0", js.DistinctMatches)
 	}
 }
 

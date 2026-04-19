@@ -13,9 +13,21 @@ const (
 )
 
 // ColumnDef describes one column of a relation.
+//
+// Nullable declares whether the column is permitted to hold a "missing"
+// sentinel value at the storage layer. Today the only sentinel we have
+// for integer/entity-ref columns is 0, and for string columns it is the
+// empty-string intern (id 0). Nullability is OFF by default: real EDB
+// data uses 0 as a valid id (e.g. file id 0 is legal), so opting a
+// column into null tracking is an explicit per-column declaration in
+// relations.go. Stats compute consults this field to decide whether to
+// increment NullFrac for zero-valued cells; for non-nullable columns
+// NullFrac stays 0 and the planner's IS NULL / outer-join cardinality
+// estimates won't be poisoned by the conservative reading.
 type ColumnDef struct {
-	Name string
-	Type ColumnType
+	Name     string
+	Type     ColumnType
+	Nullable bool
 }
 
 // RelationDef describes a fact relation in the schema.

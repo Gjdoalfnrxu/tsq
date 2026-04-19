@@ -126,6 +126,14 @@ func Decode(buf []byte) (*Schema, error) {
 }
 
 // --- write helpers --------------------------------------------------------
+//
+// All write helpers target *bytes.Buffer and discard the (n, err)
+// return tuple. bytes.Buffer.Write never returns a non-nil error — see
+// the standard library docs ("the return value n is the length of p;
+// err is always nil"). The buffer grows as needed; the only failure
+// mode is OOM, which panics. If/when the Encoder is generalised to
+// accept any io.Writer (currently it materialises into a buffer for
+// CRC), these helpers must be revised to propagate errors.
 
 func writeU32(w *bytes.Buffer, v uint32) {
 	var b [4]byte
@@ -185,7 +193,8 @@ func writeJoin(w *bytes.Buffer, j *JoinStats) {
 	writeU32(w, uint32(j.LeftCol))
 	writeStr(w, j.RightRel)
 	writeU32(w, uint32(j.RightCol))
-	writeF64(w, j.Selectivity)
+	writeF64(w, j.LRSelectivity)
+	writeF64(w, j.RLSelectivity)
 	writeI64(w, j.DistinctMatches)
 }
 
@@ -238,8 +247,19 @@ func (r *reader) bytesInto(out []byte) {
 	r.pos += len(out)
 }
 
+// maxStrLen caps the length of a single decoded string field at 64 MB.
+// Sidecar string fields hold relation names and similar identifiers —
+// realistic sizes are well under 1 KB. This ceiling exists to fail
+// loudly on a corrupt length prefix instead of attempting a multi-GB
+// allocation.
+const maxStrLen = 64 << 20
+
 func (r *reader) str() string {
 	n := r.u32()
+	if n > maxStrLen {
+		r.err = fmt.Errorf("stats: string length %d exceeds cap %d at pos=%d", n, maxStrLen, r.pos)
+		return ""
+	}
 	if !r.need(int(n)) {
 		return ""
 	}
@@ -303,7 +323,8 @@ func readJoin(r *reader) (JoinStats, error) {
 	j.LeftCol = int(r.u32())
 	j.RightRel = r.str()
 	j.RightCol = int(r.u32())
-	j.Selectivity = r.f64()
+	j.LRSelectivity = r.f64()
+	j.RLSelectivity = r.f64()
 	j.DistinctMatches = r.i64()
 	return j, r.err
 }

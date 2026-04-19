@@ -13,26 +13,25 @@ import (
 // `<x>.db` and `<x>.db.stats` sit visibly together in `ls`.
 func SidecarPath(edbPath string) string { return edbPath + ".stats" }
 
-// LockPath returns the advisory-lock file path used during Save.
-func LockPath(edbPath string) string { return edbPath + ".stats.lock" }
-
 // Save atomically writes s to SidecarPath(edbPath). Implementation:
-// write to a temp file in the same directory, fsync, rename. The
-// .lock file is created at start and removed at end as advisory
-// notice to concurrent readers (a non-blocking signal — Load just
-// warns if it sees a stale lock).
+// write to a temp file in the same directory, fsync, rename.
+//
+// Concurrency: undefined for concurrent Save calls against the same
+// edbPath. POSIX rename(2) is atomic at the destination, so the
+// final sidecar will be one of the writers' outputs in its entirety
+// (no torn writes), but which writer wins is unspecified. The
+// previous version of this code created a `.stats.lock` marker file
+// before writing; that was security-blanket theatre — `os.Create` is
+// not atomic, the lock was never read by anyone, and the only real
+// invariant (single-writer-wins, no partial files) is already
+// provided by the temp-file + rename pattern. The lock has been
+// removed.
 func Save(edbPath string, s *Schema) error {
 	if s == nil {
 		return fmt.Errorf("stats.Save: nil schema")
 	}
 	out := SidecarPath(edbPath)
 	dir := filepath.Dir(out)
-
-	lock := LockPath(edbPath)
-	if f, err := os.Create(lock); err == nil {
-		f.Close()
-		defer os.Remove(lock)
-	}
 
 	tmp, err := os.CreateTemp(dir, ".tsq-stats-*.tmp")
 	if err != nil {

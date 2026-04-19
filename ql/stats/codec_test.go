@@ -34,7 +34,7 @@ func sampleSchema() *Schema {
 			},
 		},
 		Joins: []JoinStats{
-			{LeftRel: "R", LeftCol: 0, RightRel: "S", RightCol: 0, Selectivity: 0.0123, DistinctMatches: 42},
+			{LeftRel: "R", LeftCol: 0, RightRel: "S", RightCol: 0, LRSelectivity: 0.0123, RLSelectivity: 0.987, DistinctMatches: 42},
 		},
 	}
 	for i := range s.EDBHash {

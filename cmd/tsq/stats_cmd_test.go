@@ -81,8 +81,25 @@ func TestCLI_StatsInspectStale(t *testing.T) {
 	if code := run([]string{"stats", "compute", dbPath}, &b1, &b2); code != 0 {
 		t.Fatalf("compute failed: %s", b2.String())
 	}
-	// Mutate the EDB in place to invalidate the hash.
-	if err := os.WriteFile(dbPath, []byte("not a real db anymore"), 0o600); err != nil {
+	// Mutate the EDB by flipping a single byte in place — preserves
+	// file size, mtime granularity, etc., so the only thing that can
+	// distinguish "stale" is the SHA-256 content hash. This is the
+	// invalidation contract we actually want to verify.
+	f, err := os.OpenFile(dbPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orig [1]byte
+	if _, err := f.ReadAt(orig[:], 0); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	flipped := [1]byte{orig[0] ^ 0x01}
+	if _, err := f.WriteAt(flipped[:], 0); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 

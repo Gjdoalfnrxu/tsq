@@ -62,40 +62,63 @@ Col[0..ColCount-1]               # see §3.1
 ```
 Pos          uint32
 NDV          int64                # HyperLogLog estimate, ≥0
-NullFrac     float64              # zero-id fraction (0.0..1.0)
+NullFrac     float64              # null-fraction in [0.0, 1.0]; only
+                                  # incremented for columns whose
+                                  # ColumnDef.Nullable is true. Non-
+                                  # nullable columns always emit 0.
 TopKCount    uint32               # ≤ 32
 TopK[0..TopKCount-1]:
-    Value uint64
-    Count int64
+    Value uint64                  # raw id (int32/entity-ref) or 64-bit
+                                  # FNV-1a surrogate id (string column)
+    Count int64                   # SpaceSaving lower bound (count - err)
 HistBucketCount uint32            # 0 if NDV ≤ NDVHistogramThreshold
+                                  # OR column is TypeString (string
+                                  # histograms are out of scope for v1)
 Hist[0..count-1]:
     Lo    uint64
     Hi    uint64
     Count int64
 ```
 
+**Per-column-type bucket-shape limitation:** all histogram buckets use
+`uint64` Lo/Hi regardless of the underlying column type. For
+int32/entity-ref columns this is a faithful representation. For string
+columns no bucket is emitted (HistBucketCount = 0); per-string-id
+ordering is meaningless to the planner. Future column types
+(time-of-day, decimal) will need a per-type bucket shape — that's a
+format-version bump.
+
 ### 3.2 Sentinels
 
 - `TopKCount = 0` means "no observed top values" (e.g. empty relation).
 - `HistBucketCount = 0` means "no histogram emitted" — either because
   `NDV ≤ NDVHistogramThreshold` (currently 256) or because the column
-  type does not admit ordered bucketing (string columns are bucketed
-  on their interned uint32 id, which is monotonic with insertion
-  order, not lexicographic — this is a known and accepted limitation
-  for v1; see §6).
+  is `TypeString`. String columns currently use a 64-bit FNV-1a
+  surrogate id for TopK/reservoir tracking; that id has no useful
+  ordering, so a numeric equi-depth histogram on it would produce
+  meaningless boundaries. The planner's consumer falls back to default
+  selectivity for string columns. See §6 for the v1 limitations list.
 
 ## 4. Per-pair join block (`JoinStats`)
 
 ```
-LeftRelLen     uint32
-LeftRel        [..]byte
-LeftCol        uint32
-RightRelLen    uint32
-RightRel       [..]byte
-RightCol       uint32
-Selectivity    float64           # |L⋈R| / (|L| × |R|)
-DistinctMatches int64            # |πLeftCol(L) ∩ πRightCol(R)| (HLL intersect estimate)
+LeftRelLen      uint32
+LeftRel         [..]byte
+LeftCol         uint32
+RightRelLen     uint32
+RightRel        [..]byte
+RightCol        uint32
+LRSelectivity   float64           # P(random L row matches ≥1 R row)
+RLSelectivity   float64           # P(random R row matches ≥1 L row)
+DistinctMatches int64             # |πLeftCol(L) ∩ πRightCol(R)| (HLL intersect estimate)
 ```
+
+**Selectivity is asymmetric.** A symmetric scalar collapses two very
+different planner answers into one. Example: on `Contains(parent,
+child)` joined to itself, a child has exactly one parent (LR sel
+near 1) but a parent has many children (RL sel ≪ 1). The split is
+introduced now while no consumer reads JoinStats; bumping it later
+would require a format-version migration.
 
 `JoinStats` are emitted only for relation/column pairs declared in
 `extract/schema/joinpaired.go` (added by this PR). Initial set: empty.
@@ -124,11 +147,11 @@ populate as `mayResolveTo` shapes need them. The plan calls out
 
 ## 6. Known limitations (v1)
 
-- **String histograms are insertion-order, not lexicographic.** Buckets
-  on a string column partition the interned-id space, which is
-  insertion-order. This is fine for skew detection but useless for
-  range predicates on strings. The planner consumer (PR2) must not
-  use string histograms for range estimation.
+- **No string-column histograms.** Histograms are skipped entirely for
+  `TypeString` columns: their per-row id is a 64-bit FNV-1a hash of
+  the string contents, with no useful ordering. The TopK list still
+  surfaces frequent strings (skew detection works). Range predicates
+  on strings fall back to default selectivity in the planner.
 - **No streaming write.** The sidecar is built in memory then flushed
   in one shot. Mastodon-scale (~30 MB EDB) sidecar is ~1.5 MB; well
   within budget.

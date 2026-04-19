@@ -58,8 +58,9 @@ func Inspect(w io.Writer, s *Schema, relFilter string) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "joins:")
 		for _, j := range s.Joins {
-			fmt.Fprintf(w, "  %s.col%d <-> %s.col%d  selectivity=%.6g distinctMatches=%d\n",
-				j.LeftRel, j.LeftCol, j.RightRel, j.RightCol, j.Selectivity, j.DistinctMatches)
+			fmt.Fprintf(w, "  %s.col%d <-> %s.col%d  lrSel=%.6g rlSel=%.6g distinctMatches=%d\n",
+				j.LeftRel, j.LeftCol, j.RightRel, j.RightCol,
+				j.LRSelectivity, j.RLSelectivity, j.DistinctMatches)
 		}
 	}
 }

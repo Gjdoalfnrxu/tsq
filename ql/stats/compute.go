@@ -28,9 +28,13 @@ func newColAccum(seed int64) *colAccum {
 	}
 }
 
-func (c *colAccum) addInt(v int32) {
+// addInt records one int32/entity-ref cell. If nullable is true, v == 0
+// is counted as a null (the sole sentinel for int/entity-ref columns).
+// For non-nullable columns NullFrac stays at 0 — real EDB rows can and
+// do carry id 0 as a legitimate value (e.g. the first interned file).
+func (c *colAccum) addInt(v int32, nullable bool) {
 	c.rows++
-	if v == 0 {
+	if nullable && v == 0 {
 		c.nulls++
 	}
 	uv := uint64(uint32(v))
@@ -39,20 +43,26 @@ func (c *colAccum) addInt(v int32) {
 	c.reservoir.Add(uv)
 }
 
-func (c *colAccum) addStringID(idx uint32, raw []byte) {
+// addStringID records one string cell. If nullable is true, intern id 0
+// (the empty-string slot by writer convention) is counted as null.
+func (c *colAccum) addStringID(idx uint64, raw []byte, nullable bool) {
 	c.rows++
-	if idx == 0 {
-		// String table index 0 is the empty string by writer convention.
+	if nullable && idx == 0 {
 		c.nulls++
 	}
 	c.hll.AddBytes(raw)
-	c.heavy.Add(uint64(idx))
-	c.reservoir.Add(uint64(idx))
+	c.heavy.Add(idx)
+	c.reservoir.Add(idx)
 }
 
 // finalise produces a ColStats from the accumulator.
 // pos is the column position; relRows is the relation's row count.
-func (c *colAccum) finalise(pos int, relRows int64) ColStats {
+// emitHistogram=false suppresses the equi-depth histogram even when NDV
+// crosses NDVHistogramThreshold — used for TypeString columns, whose
+// surrogate uint64 ids carry no usable order, so a numeric equi-depth
+// histogram would be meaningless to the planner. The planner's
+// consumer-side default-selectivity fallback handles the absence.
+func (c *colAccum) finalise(pos int, relRows int64, emitHistogram bool) ColStats {
 	ndv := c.hll.Estimate()
 	cs := ColStats{
 		Pos:  pos,
@@ -62,7 +72,7 @@ func (c *colAccum) finalise(pos int, relRows int64) ColStats {
 	if c.rows > 0 {
 		cs.NullFrac = float64(c.nulls) / float64(c.rows)
 	}
-	if ndv > NDVHistogramThreshold {
+	if emitHistogram && ndv > NDVHistogramThreshold {
 		cs.HistBuckets = c.reservoir.Histogram(HistogramBuckets, relRows)
 	}
 	return cs
@@ -80,8 +90,11 @@ func Compute(database *db.DB, edbHash [HashSize]byte) (*Schema, error) {
 	s := &Schema{
 		FormatVersion: FormatVersion,
 		EDBHash:       edbHash,
-		BuiltAt:       time.Now().UTC(),
-		Rels:          make(map[string]*RelStats),
+		// Truncate to second: on-disk encoding is Unix seconds, so
+		// keeping nanosecond precision in-memory creates a
+		// round-trip mismatch (`s.BuiltAt != Decode(Encode(s)).BuiltAt`).
+		BuiltAt: time.Now().UTC().Truncate(time.Second),
+		Rels:    make(map[string]*RelStats),
 	}
 
 	// Per-relation: walk every tuple, accumulate per column.
@@ -102,31 +115,35 @@ func Compute(database *db.DB, edbHash [HashSize]byte) (*Schema, error) {
 		}
 		for t := 0; t < nrows; t++ {
 			for c := 0; c < def.Arity(); c++ {
+				nullable := def.Columns[c].Nullable
 				switch def.Columns[c].Type {
 				case schema.TypeInt32, schema.TypeEntityRef:
 					v, err := rel.GetInt(t, c)
 					if err != nil {
 						return nil, fmt.Errorf("stats: %s[%d].col%d: %w", def.Name, t, c, err)
 					}
-					accs[c].addInt(v)
+					accs[c].addInt(v, nullable)
 				case schema.TypeString:
 					str, err := rel.GetString(database, t, c)
 					if err != nil {
 						return nil, fmt.Errorf("stats: %s[%d].col%d: %w", def.Name, t, c, err)
 					}
-					// We need the interned id for TopK/reservoir. Re-use the
-					// writer's intern via the public API: AddTuple already
-					// populated the column with an index but we don't expose
-					// it. Hash the string for HLL; assign a stable id by
-					// hashing for top-K (collisions only affect TopK
-					// preview, not NDV — tolerable).
-					id := fnv32(str)
-					accs[c].addStringID(id, []byte(str))
+					// 64-bit FNV-1a id surrogate. The writer's intern id is
+					// not exposed via the public Relation API, so we hash
+					// the string ourselves to assign a stable id for
+					// TopK/reservoir. 64-bit space keeps collisions
+					// negligible at the EDB-string-table ceiling
+					// (~50% collision probability only at ≈5 × 10^9
+					// distinct strings, vs ~77k for the previous 32-bit
+					// surrogate). HLL still uses the bytes directly.
+					id := fnv64(str)
+					accs[c].addStringID(id, []byte(str), nullable)
 				}
 			}
 		}
 		for c := range accs {
-			rs.Cols[c] = accs[c].finalise(c, int64(nrows))
+			emitHist := def.Columns[c].Type != schema.TypeString
+			rs.Cols[c] = accs[c].finalise(c, int64(nrows), emitHist)
 		}
 		s.Rels[def.Name] = rs
 	}
@@ -165,23 +182,38 @@ func computeJoin(database *db.DB, jp JoinPair) (JoinStats, error) {
 	lrows := left.Tuples()
 	rrows := right.Tuples()
 
+	// setCap bounds either-side membership probe set. Big-side FK pairs
+	// (Contains, ParamBinding, ...) can be enormous and we only need a
+	// representative population to estimate hit rate from the
+	// fixed-stride sample on the other side. Cap at 2× probeSize so the
+	// probe-vs-set ratio stays informative; HLLs still see every row,
+	// so DistinctMatches is exact-up-to-HLL across the full join.
+	const probeSize = 1024
+	const setCap = 2 * probeSize
+
 	lhll := NewHLL()
+	leftSet := make(map[int32]struct{}, min(lrows, setCap))
 	for t := 0; t < lrows; t++ {
 		v, err := left.GetInt(t, jp.LeftCol)
 		if err != nil {
 			return JoinStats{}, err
 		}
 		lhll.AddUint64(uint64(uint32(v)))
+		if len(leftSet) < setCap {
+			leftSet[v] = struct{}{}
+		}
 	}
 	rhll := NewHLL()
-	rightSet := make(map[int32]struct{}, rrows)
+	rightSet := make(map[int32]struct{}, min(rrows, setCap))
 	for t := 0; t < rrows; t++ {
 		v, err := right.GetInt(t, jp.RightCol)
 		if err != nil {
 			return JoinStats{}, err
 		}
 		rhll.AddUint64(uint64(uint32(v)))
-		rightSet[v] = struct{}{}
+		if len(rightSet) < setCap {
+			rightSet[v] = struct{}{}
+		}
 	}
 
 	js := JoinStats{
@@ -192,48 +224,59 @@ func computeJoin(database *db.DB, jp JoinPair) (JoinStats, error) {
 		DistinctMatches: IntersectEstimate(lhll, rhll),
 	}
 
-	// Selectivity by sampling: for up to 1024 left rows, count matches
-	// against the right set, scale up.
-	const probeSize = 1024
-	probe := lrows
-	if probe > probeSize {
-		probe = probeSize
-	}
-	if probe == 0 || rrows == 0 {
+	if lrows == 0 || rrows == 0 {
 		return js, nil
 	}
-	step := lrows / probe
+
+	js.LRSelectivity = sampleSelectivity(left, jp.LeftCol, lrows, rightSet, rhll, probeSize)
+	js.RLSelectivity = sampleSelectivity(right, jp.RightCol, rrows, leftSet, lhll, probeSize)
+	return js, nil
+}
+
+// sampleSelectivity probes up to probeSize source rows with a fixed
+// stride against the targetSet membership set and returns the
+// inclusion-exclusion estimate
+//
+//	selectivity ≈ hits / (probed × distinct_target_keys)
+//
+// where hits is the number of probed rows whose key is present in
+// targetSet, and distinct_target_keys is the HLL distinct-count of the
+// target column. When the target set was capped (large-side FK), hits
+// is a downward-biased estimator: the planner prefers a conservative
+// (under-) estimate of selectivity to an over-estimate.
+func sampleSelectivity(
+	source interface {
+		GetInt(t, c int) (int32, error)
+	},
+	col, srcRows int,
+	targetSet map[int32]struct{},
+	targetHLL *HLL,
+	probeSize int,
+) float64 {
+	step := srcRows / probeSize
 	if step < 1 {
 		step = 1
 	}
 	var hits int64
-	for t := 0; t < lrows; t += step {
-		v, _ := left.GetInt(t, jp.LeftCol)
-		if _, ok := rightSet[v]; ok {
+	var probed int64
+	for t := 0; t < srcRows; t += step {
+		v, _ := source.GetInt(t, col)
+		probed++
+		if _, ok := targetSet[v]; ok {
 			hits++
 		}
 	}
-	probedLeft := int64(0)
-	for t := 0; t < lrows; t += step {
-		probedLeft++
+	if probed == 0 {
+		return 0
 	}
-	if probedLeft == 0 || rrows == 0 {
-		return js, nil
+	distinctTarget := targetHLL.Estimate()
+	if distinctTarget <= 0 {
+		distinctTarget = int64(len(targetSet))
 	}
-	// Selectivity := |L⋈R| / (|L| × |R|)
-	// Estimate |L⋈R| from the sample: each probed left row that hits
-	// joins with (rrows / distinct_right_keys) right rows on average.
-	// For NDV-balanced right keys this collapses to (hits/probed) ×
-	// (lrows × rrows / distinct_right_keys), giving:
-	// selectivity = hits / (probed × distinct_right_keys).
-	distinctRight := rhll.Estimate()
-	if distinctRight <= 0 {
-		distinctRight = int64(len(rightSet))
+	if distinctTarget <= 0 {
+		return 0
 	}
-	if distinctRight > 0 {
-		js.Selectivity = float64(hits) / (float64(probedLeft) * float64(distinctRight))
-	}
-	return js, nil
+	return float64(hits) / (float64(probed) * float64(distinctTarget))
 }
 
 // HashFile returns the SHA-256 of the file at path. Caller passes the
@@ -254,18 +297,22 @@ func HashFile(path string) ([HashSize]byte, error) {
 	return out, nil
 }
 
-// fnv32 is a tiny inline FNV-1a 32-bit hash. Used as a string-ID
-// surrogate for TopK/reservoir on string columns where we don't have
-// the writer's intern table accessible.
-func fnv32(s string) uint32 {
+// fnv64 is FNV-1a 64-bit. Used as a string-id surrogate for
+// TopK/reservoir on string columns where the writer's intern table is
+// not exposed via the public Relation API. 64-bit width keeps
+// collisions negligible for the EDB string-table sizes we expect (the
+// previous 32-bit surrogate hit a 50% collision probability around
+// 77,000 distinct strings, which corrupted histogram boundaries on
+// even moderate fact databases).
+func fnv64(s string) uint64 {
 	const (
-		offset32 = 2166136261
-		prime32  = 16777619
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
 	)
-	h := uint32(offset32)
+	h := offset64
 	for i := 0; i < len(s); i++ {
-		h ^= uint32(s[i])
-		h *= prime32
+		h ^= uint64(s[i])
+		h *= prime64
 	}
 	return h
 }
