@@ -559,6 +559,88 @@ func TestSmallExtentThreshold_Boundary(t *testing.T) {
 	}
 }
 
+// Adversarial-review F2 on PR #149: regression guard for the per-iteration
+// recompute fix in InferBackwardDemand (commit 30c32f1). Without that fix,
+// the original in-place intersect had a soundness gap when caller demand
+// grew LATER in the fixed point than the trampoline rule was first
+// visited: `intersect([], [0]) == []` would stick permanently and demand
+// could not lift back through a pure-rename trampoline.
+//
+// Source-order failure mode (mirrors the Mastodon `_disj_2` case from the
+// commit message):
+//
+//	rule 0 (trampoline):  functionContainsStar(fn, n) :- _disj_2(fn, n).
+//	rule 1 (grandparent): setStateUpdaterCallsFn(c, _) :-
+//	                          isUseStateSetterCall(c),
+//	                          CallArg(c, 0, argFn),
+//	                          functionContainsStar(argFn, _).
+//	rule 2 (disj defn):   _disj_2(fn, n) :- BigBase(fn, n).
+//
+// On iter 1 the trampoline (rule 0) is visited before the grandparent
+// (rule 1), so demand[functionContainsStar] is still uninitialised; the
+// trampoline records `_disj_2 -> []`. The grandparent then observes
+// `functionContainsStar -> [0]` (argFn bound by CallArg's constant col 1
+// shared with isUseStateSetterCall, which is small-extent). On iter 2 the
+// trampoline re-runs with demand[functionContainsStar] = [0] and observes
+// `_disj_2 -> [0]`. Per-iteration recompute: this is the converged value.
+// In-place intersect (the buggy pre-30c32f1 form): `intersect([], [0]) =
+// []`, stuck.
+//
+// Assertion: post-fix, `demand[_disj_2] == [0]`. The accompanying comment
+// records what the BUGGY behaviour would have been (`[]`) so that any
+// future refactor that silently re-introduces the gap will fail this test
+// with the diagnostic in plain sight.
+func TestInferBackwardDemand_RenameTrampolineLiftsAcrossIterations(t *testing.T) {
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			// rule 0: pure-rename trampoline — must appear BEFORE its
+			// grandparent caller in source order to trigger the gap.
+			{Head: datalog.Atom{Predicate: "functionContainsStar", Args: []datalog.Term{v("fn"), v("n")}},
+				Body: []datalog.Literal{atom("_disj_2", v("fn"), v("n"))}},
+			// rule 1: grandparent. isUseStateSetterCall is small-extent
+			// (binds c); CallArg(c, 0, argFn) shares c and carries a
+			// constant in col 1 → argFn is bound by the time
+			// functionContainsStar is probed, so col 0 is demanded.
+			{Head: datalog.Atom{Predicate: "setStateUpdaterCallsFn", Args: []datalog.Term{v("c"), v("_")}},
+				Body: []datalog.Literal{
+					atom("isUseStateSetterCall", v("c")),
+					atom("CallArg", v("c"), ic(0), v("argFn")),
+					atom("functionContainsStar", v("argFn"), v("_")),
+				}},
+			// rule 2: defining rule for _disj_2 (irrelevant to the
+			// inference shape — just makes _disj_2 a real IDB).
+			{Head: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{v("fn"), v("n")}},
+				Body: []datalog.Literal{atom("BigBase", v("fn"), v("n"))}},
+		},
+	}
+	hints := map[string]int{
+		"isUseStateSetterCall": 5,      // small extent → binds c
+		"CallArg":              500000, // unhinted-large; col 1 const + shared c grounds argFn
+		"BigBase":              500000,
+	}
+	d := InferBackwardDemand(prog, hints)
+
+	// Sanity: the grandparent must observe functionContainsStar col 0
+	// bound (otherwise we're not actually exercising the gap).
+	got, ok := d["functionContainsStar"]
+	if !ok || len(got) != 1 || got[0] != 0 {
+		t.Fatalf("precondition: expected functionContainsStar demand = [0], got %v (entry present=%v)", got, ok)
+	}
+
+	// The actual regression guard: demand must lift through the
+	// trampoline to _disj_2.
+	got, ok = d["_disj_2"]
+	if !ok {
+		t.Fatalf("expected _disj_2 in demand map (trampoline observed), got %v", d)
+	}
+	if len(got) != 1 || got[0] != 0 {
+		t.Fatalf("expected _disj_2 demand = [0] (lifted across iterations); "+
+			"got %v. If this is [], the per-iteration recompute in "+
+			"InferBackwardDemand has likely been reverted to in-place "+
+			"intersect — see commit 30c32f1.", got)
+	}
+}
+
 // Benchmark planning time for a taint-shaped rule. Regression guard:
 // P3a adds a fixed-point pass over all rules before orderJoins runs,
 // which is O(rules × body × iterations). Acceptable overhead per the

@@ -155,10 +155,18 @@ func InferRuleBodyDemandBindings(
 }
 
 // predHasQueryBinding returns true iff prog.Query.Body contains a
-// positive atom for pred whose `cols` positions are all bound by query
+// positive atom for pred whose `cols` positions are ALL bound by query
 // context (constants, equalities, or preceding base atoms with shared
 // vars). When true, the existing InferQueryBindings pipeline will emit
 // the seed rules; we don't want to double up.
+//
+// Adversarial-review F1 on PR #149: the previous version returned true
+// on any positive occurrence of pred regardless of binding. That makes
+// the demand-seed path silently bail for queries like `_disj_2(c, y)`
+// where neither var is grounded by query context — InferQueryBindings
+// also produces no seed, and the magic rewrite drops on the floor. We
+// must verify cols ⊆ query-context-bound-cols at the occurrence; only
+// then can we trust the query-binding pipeline to handle it.
 //
 // Conservative: false positives here just mean we DON'T emit a
 // demand-seed and let the query-binding path handle it (correct).
@@ -169,6 +177,8 @@ func predHasQueryBinding(prog *datalog.Program, pred string, cols []int) bool {
 	if prog.Query == nil || len(prog.Query.Body) == 0 {
 		return false
 	}
+	queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
+	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{})
 	for _, lit := range prog.Query.Body {
 		if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 			continue
@@ -176,11 +186,33 @@ func predHasQueryBinding(prog *datalog.Program, pred string, cols []int) bool {
 		if lit.Atom.Predicate != pred {
 			continue
 		}
-		// Match: the query references pred. Trust InferQueryBindings
-		// to produce the seed; we step aside.
-		return true
+		// Match: the query references pred. Verify the demanded cols
+		// are actually grounded at this occurrence before stepping
+		// aside for InferQueryBindings.
+		boundCols := literalBoundCols(lit, ctxBoundVars)
+		if containsAllInts(boundCols, cols) {
+			return true
+		}
 	}
 	return false
+}
+
+// containsAllInts returns true iff every element of need appears in
+// haystack. haystack is assumed sorted-unique; need need not be.
+func containsAllInts(haystack, need []int) bool {
+	if len(need) == 0 {
+		return true
+	}
+	set := make(map[int]bool, len(haystack))
+	for _, v := range haystack {
+		set[v] = true
+	}
+	for _, v := range need {
+		if !set[v] {
+			return false
+		}
+	}
+	return true
 }
 
 // buildDemandSeedsForPred constructs one demand-seed rule per call
