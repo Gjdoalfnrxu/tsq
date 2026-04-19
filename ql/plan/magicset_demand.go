@@ -124,12 +124,28 @@ func InferRuleBodyDemandBindings(
 			continue
 		}
 
-		predSeeds := buildDemandSeedsForPred(prog, pred, cols, sizeHints)
-		if len(predSeeds) == 0 {
+		predSeeds, parentBindings, parentSeeds := buildDemandSeedsForPredWithParents(prog, pred, cols, sizeHints, demand)
+		if len(predSeeds) == 0 && len(parentSeeds) == 0 {
 			continue
 		}
 		bindings[pred] = append([]int(nil), cols...)
 		seeds = append(seeds, predSeeds...)
+		// Fold in any parent-pred bindings/seeds discovered while
+		// chasing demand back through pure-rename trampolines (the
+		// `functionContainsStar(fn,node) :- _disj_2(fn,node)` shape
+		// from Mastodon). Without this, a synth pred whose only
+		// caller is a rename rule has no preceding grounding context
+		// to construct a safe seed body, so the rewrite drops on the
+		// floor — the bug PR #149 originally aimed to fix but missed
+		// (run_005 still cap-hit identically).
+		for parentPred, parentCols := range parentBindings {
+			if existing, ok := bindings[parentPred]; ok {
+				bindings[parentPred] = unionSortedCols(existing, parentCols)
+			} else {
+				bindings[parentPred] = append([]int(nil), parentCols...)
+			}
+		}
+		seeds = append(seeds, parentSeeds...)
 	}
 
 	if len(bindings) == 0 {
@@ -289,6 +305,185 @@ func buildDemandSeedsForPred(
 		}
 	}
 	return seeds
+}
+
+// buildDemandSeedsForPredWithParents extends buildDemandSeedsForPred
+// to traverse pure-rename trampoline rules upward when a direct seed
+// cannot be safely constructed at the call site.
+//
+// Motivation (Mastodon `_disj_2` / PR #149 follow-up). The desugarer
+// can emit a chain like:
+//
+//	functionContainsStar(fn, node) :- FunctionContains(fn, node).
+//	functionContainsStar(fn, node) :- _disj_2(fn, node).
+//
+//	_disj_2(fn, node) :- ...big base join...
+//
+// `_disj_2`'s only call site is the rename rule, which has zero
+// preceding literals. `buildDemandSeedsForPred` therefore can't ground
+// the demanded `fn` and emits no seeds — `_disj_2` stays unbound at
+// runtime and blows the binding cap.
+//
+// The grounding `fn` actually exists at the GRAND-caller of
+// `functionContainsStar`, e.g. `setStateUpdaterCallsFn` whose body has
+// `isUseStateSetterCall(c) and CallArg(c,0,argFn) and
+// functionContainsStar(argFn, innerCall)`. P3a's `InferBackwardDemand`
+// already records this — `demand[functionContainsStar] = [0]`. We
+// just have to lift it into the magic-set bindings.
+//
+// Algorithm (single hop only — extend later if needed):
+//
+//  1. Direct: try `buildDemandSeedsForPred(prog, pred, cols, ...)`.
+//     If it returns at least one seed, we're done — return it with
+//     empty parent maps.
+//  2. Rename traversal: for each call site of `pred` that is a "pure
+//     rename" (rule whose body is exactly the single positive
+//     `pred(...)` literal, and whose head shares variables with that
+//     literal at the demanded positions), the rule's HEAD is the
+//     parent. Look up `demand[parent]`. If it covers the renamed
+//     positions, mark the parent for magic-set inclusion (bindings)
+//     and emit seeds for `magic_<parent>` from ITS callers using the
+//     same `buildDemandSeedsForPred` logic — but keyed on the parent
+//     name so the magic-set transform's `propagateBindings` chains
+//     `magic_<parent>` → `magic_<pred>` automatically.
+//
+// Returning parents in a separate map (rather than recursing into
+// `InferRuleBodyDemandBindings`) keeps the scope-and-shape filtering
+// (synth-only) untouched — parents are typically NON-synth IDBs like
+// `functionContainsStar`, which the synth-only filter would otherwise
+// reject.
+//
+// Bound on traversal depth: 1 hop. Multi-hop rename chains are rare
+// in practice (the desugarer doesn't synthesise them) and a single
+// hop covers the Mastodon shape. Generalising to N-hops would require
+// cycle detection and is left for a follow-up if measurement shows
+// it matters.
+func buildDemandSeedsForPredWithParents(
+	prog *datalog.Program,
+	pred string,
+	cols []int,
+	sizeHints map[string]int,
+	demand DemandMap,
+) (predSeeds []datalog.Rule, parentBindings map[string][]int, parentSeeds []datalog.Rule) {
+	predSeeds = buildDemandSeedsForPred(prog, pred, cols, sizeHints)
+	if len(predSeeds) > 0 {
+		// Direct seeds already cover the demanded positions; no need
+		// to chase parents.
+		return predSeeds, nil, nil
+	}
+
+	parentBindings = map[string][]int{}
+	seenParent := map[string]bool{}
+
+	for _, rule := range prog.Rules {
+		if rule.Head.Predicate == pred {
+			continue
+		}
+		// A rule qualifies as a "rename trampoline" for pred iff its
+		// body is a single positive atom over pred. Comparisons or
+		// extra literals disqualify — those would require more
+		// careful per-position grounding analysis than we attempt
+		// here.
+		if len(rule.Body) != 1 {
+			continue
+		}
+		only := rule.Body[0]
+		if only.Cmp != nil || only.Agg != nil || !only.Positive {
+			continue
+		}
+		if only.Atom.Predicate != pred {
+			continue
+		}
+		if len(only.Atom.Args) < maxColIndex(cols)+1 {
+			continue
+		}
+
+		// Map the demanded body-atom column positions to head
+		// positions via variable correspondence. If body arg
+		// `cols[k]` is a var that also appears in the head at
+		// position `hPos`, then demand on body col cols[k] lifts to
+		// demand on head col hPos.
+		var headCols []int
+		mappedAll := true
+		for _, col := range cols {
+			arg := only.Atom.Args[col]
+			v, ok := arg.(datalog.Var)
+			if !ok || v.Name == "_" {
+				// Constant body arg or wildcard — no mapping needed
+				// (the constant is already-bound at the trampoline
+				// itself). We skip without disqualifying.
+				continue
+			}
+			hPos := -1
+			for hi, ha := range rule.Head.Args {
+				if hv, ok := ha.(datalog.Var); ok && hv.Name == v.Name {
+					hPos = hi
+					break
+				}
+			}
+			if hPos < 0 {
+				mappedAll = false
+				break
+			}
+			headCols = append(headCols, hPos)
+		}
+		if !mappedAll || len(headCols) == 0 {
+			continue
+		}
+
+		parent := rule.Head.Predicate
+		if seenParent[parent] {
+			continue
+		}
+		// Only honour parents that the demand pass already proves
+		// have demand on AT LEAST the head positions we need. This
+		// is the load-bearing soundness check — we never invent
+		// demand the analysis didn't already validate.
+		parentDemand, hasParentDemand := demand[parent]
+		if !hasParentDemand {
+			continue
+		}
+		if !subsetSortedCols(sortUniqueInts(headCols), parentDemand) {
+			continue
+		}
+
+		// Build seeds for the parent's magic predicate from ITS
+		// callers' grounding context.
+		grandSeeds := buildDemandSeedsForPred(prog, parent, sortUniqueInts(headCols), sizeHints)
+		if len(grandSeeds) == 0 {
+			continue
+		}
+		seenParent[parent] = true
+		if existing, ok := parentBindings[parent]; ok {
+			parentBindings[parent] = unionSortedCols(existing, headCols)
+		} else {
+			parentBindings[parent] = sortUniqueInts(headCols)
+		}
+		parentSeeds = append(parentSeeds, grandSeeds...)
+	}
+
+	if len(parentBindings) == 0 {
+		return nil, nil, nil
+	}
+	return nil, parentBindings, parentSeeds
+}
+
+// subsetSortedCols returns true iff every element of `sub` is in
+// `super`. Both must be sorted-unique slices.
+func subsetSortedCols(sub, super []int) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	i := 0
+	for _, x := range super {
+		if x == sub[i] {
+			i++
+			if i == len(sub) {
+				return true
+			}
+		}
+	}
+	return i == len(sub)
 }
 
 // isSynthDesugarName returns true for predicate names emitted by

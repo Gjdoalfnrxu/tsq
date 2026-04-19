@@ -253,6 +253,172 @@ func TestWithMagicSetAuto_SynthDisjNoDemandFallsThrough(t *testing.T) {
 	}
 }
 
+// TestInferRuleBodyDemandBindings_RenameTrampolinePropagation
+// mirrors the Mastodon `_disj_2` shape that PR #149 missed and this
+// follow-up fixes:
+//
+//	top(b) :- SmallExt(a), Bridge(a, x), mid(x, b).
+//	mid(x, b) :- _disj_N(x, b).
+//	_disj_N(x, b) :- BigBase1(x, m), BigBase2(m, b).
+//
+// `_disj_N`'s only call site is the pure-rename trampoline `mid(x,b)
+// :- _disj_N(x,b)`. The trampoline has zero preceding literals to
+// ground `x`, so `buildDemandSeedsForPred` cannot synthesise a safe
+// `magic__disj_N(x)` seed at that site. The grounding actually
+// exists at the grandparent `top` rule via `SmallExt(a)` (small
+// extent) → `Bridge(a, x)` (constant-bearing base shares `a`).
+//
+// The fix lifts the demand into `mid` (the parent of the rename) so
+// `magic_mid(x)` is seeded from `top`'s body, and the magic-set
+// transform's `propagateBindings` then chains
+// `magic_mid` → `magic__disj_N` automatically.
+func TestInferRuleBodyDemandBindings_RenameTrampolinePropagation(t *testing.T) {
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "top", Args: []datalog.Term{datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "SmallExt", Args: []datalog.Term{datalog.Var{Name: "a"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Bridge", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "x"}, datalog.IntConst{Value: 0}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "mid", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+		// Pure rename: mid(x,b) :- _disj_N(x,b). No preceding
+		// literals to ground x.
+		{
+			Head: datalog.Atom{Predicate: "mid", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "_disj_N", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+		// Big base join — the cardinality-dangerous body.
+		{
+			Head: datalog.Atom{Predicate: "_disj_N", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "BigBase1", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "BigBase2", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "b"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "top", Args: []datalog.Term{datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	hints := map[string]int{
+		"SmallExt": 7,
+		"Bridge":   100000,
+		"BigBase1": 100000,
+		"BigBase2": 100000,
+	}
+	idb := IDBPredicates(prog)
+
+	bindings, seeds := InferRuleBodyDemandBindings(prog, idb, hints)
+	if len(bindings) == 0 {
+		t.Fatalf("expected non-empty bindings (parent-lifted), got nil")
+	}
+	if cols, ok := bindings["_disj_N"]; !ok || len(cols) == 0 || cols[0] != 0 {
+		t.Fatalf("expected _disj_N bound at col 0, got %v", bindings["_disj_N"])
+	}
+	if cols, ok := bindings["mid"]; !ok || len(cols) == 0 || cols[0] != 0 {
+		t.Fatalf("expected parent `mid` lifted into bindings at col 0, got %v", bindings["mid"])
+	}
+	// Seeds must include a magic_mid(x) :- SmallExt(a), Bridge(a,x,0)
+	// (or similar shape) — the grandparent grounding context.
+	foundParentSeed := false
+	for _, sr := range seeds {
+		if sr.Head.Predicate != "magic_mid" {
+			continue
+		}
+		for _, lit := range sr.Body {
+			if lit.Atom.Predicate == "SmallExt" {
+				foundParentSeed = true
+			}
+		}
+	}
+	if !foundParentSeed {
+		t.Fatalf("expected magic_mid seed grounding x via SmallExt; seeds=%+v", seeds)
+	}
+}
+
+// TestWithMagicSetAuto_RenameTrampolineEndToEnd asserts that the
+// rename-trampoline shape produces a fully wired augmented program:
+// magic_mid is seeded from the grandparent context, magic__disj_N is
+// derived from magic_mid by `propagateBindings`, and `_disj_N`'s
+// body is rewritten with `magic__disj_N(x)` as its first literal.
+func TestWithMagicSetAuto_RenameTrampolineEndToEnd(t *testing.T) {
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "top", Args: []datalog.Term{datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "SmallExt", Args: []datalog.Term{datalog.Var{Name: "a"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Bridge", Args: []datalog.Term{datalog.Var{Name: "a"}, datalog.Var{Name: "x"}, datalog.IntConst{Value: 0}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "mid", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "mid", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "_disj_N", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "_disj_N", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "b"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "BigBase1", Args: []datalog.Term{datalog.Var{Name: "x"}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "BigBase2", Args: []datalog.Term{datalog.Var{Name: "m"}, datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "b"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "top", Args: []datalog.Term{datalog.Var{Name: "b"}}}},
+			},
+		},
+	}
+	hints := map[string]int{
+		"SmallExt": 7,
+		"Bridge":   100000,
+		"BigBase1": 100000,
+		"BigBase2": 100000,
+	}
+	ep, inf, errs := WithMagicSetAutoOpts(prog, hints, MagicSetOptions{Strict: true})
+	if len(errs) > 0 {
+		t.Fatalf("WithMagicSetAutoOpts strict failed: %v", errs)
+	}
+	if ep == nil {
+		t.Fatalf("nil execution plan")
+	}
+	if cols, ok := inf.Bindings["_disj_N"]; !ok || len(cols) == 0 || cols[0] != 0 {
+		t.Fatalf("expected _disj_N bound at col 0 in inf.Bindings, got %v", inf.Bindings)
+	}
+	if cols, ok := inf.Bindings["mid"]; !ok || len(cols) == 0 || cols[0] != 0 {
+		t.Fatalf("expected mid lifted into inf.Bindings at col 0, got %v", inf.Bindings)
+	}
+	// _disj_N rules must be rewritten to lead with magic__disj_N.
+	disjRewritten := 0
+	for _, st := range ep.Strata {
+		for _, r := range st.Rules {
+			if r.Head.Predicate != "_disj_N" {
+				continue
+			}
+			disjRewritten++
+			if len(r.Body) == 0 || r.Body[0].Atom.Predicate != "magic__disj_N" {
+				t.Errorf("expected first body literal of _disj_N to be magic__disj_N; got %s", r.Body[0].Atom.Predicate)
+			}
+		}
+	}
+	if disjRewritten == 0 {
+		t.Fatalf("no _disj_N rules in augmented plan")
+	}
+}
+
 func dumpJoinOrder(steps []JoinStep) string {
 	parts := make([]string, 0, len(steps))
 	for _, s := range steps {
