@@ -58,6 +58,24 @@ The three result rows correspond to the three `setCount(prev => …)` calls in `
 
 You can also ask for SARIF or CSV with `--format sarif` / `--format csv`, and run `tsq check QUERY_FILE.ql` to type-check a query without evaluating it.
 
+### Markdown reports
+
+For human review, `--format markdown` (alias `md`) renders each result as a `## path:line` section with a fenced code snippet of the offending source plus ±5 lines of context, headed by the query's `@name` / `@description` / `@id` and footed with the result count and wall time.
+
+```bash
+tsq query --db counter.db --format markdown \
+  --source-root . \
+  /path/to/tsq/testdata/queries/v2/find_setstate_updater_calls_fn.ql \
+  > report.md
+```
+
+Flags:
+
+- `--source-root DIR` — base directory for resolving relative file paths in result rows. Required for snippet rendering when paths are relative; also enables a path-traversal guard that skips rows whose paths escape the root.
+- `--md-file-col N` / `--md-line-col N` — column indices (0-based) for the file path and line number when the planner can't infer them from the column names. Defaults to auto-detect (`-1`); set explicitly when your `select` aliases are dropped or when columns are positional.
+
+If a row has no resolvable file/line, it falls through to a bullet list of the raw column values so nothing is silently dropped.
+
 ## How it works
 
 1. **Extract.** `extract/` walks a project, parses each `.ts` / `.tsx` file with tree-sitter, and writes typed tuples (functions, calls, variables, JSX elements, imports, …) into an in-memory fact database (`extract/db`).
