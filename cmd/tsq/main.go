@@ -849,18 +849,27 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 	return execPlan, mod, warnings, errs
 }
 
-// makeFunc returns a plan.Func that captures the magic-set wiring
-// (or its absence) implied by buildOptions. Extracted so that the same
-// inference + verbose/warn observability used by `check`'s buildProgramWithProg
-// path is also used by `query`'s EstimateAndPlan path. Without this, the
-// magic-set branch would only fire on the (now-discarded) pre-estimate plan
-// in buildProgramWithProg and `query` would always run plain Plan.
-func makeFunc(opts buildOptions) plan.Func {
+// makeFuncWithClassExtents returns a plan.FuncWithClassExtents that
+// captures the magic-set wiring (or its absence) implied by
+// buildOptions. Extracted so that the same inference + verbose/warn
+// observability used by `check`'s buildProgramWithProg path is also
+// used by `query`'s EstimateAndPlan path. Without this, the magic-set
+// branch would only fire on the (now-discarded) pre-estimate plan in
+// buildProgramWithProg and `query` would always run plain Plan.
+//
+// disj2-round3: returns the FuncWithClassExtents form so the planner
+// receives the materialised class-extent name set produced by
+// EstimateAndPlanWithExtentsCtx. Stripped class extents on a real
+// codebase ground downstream synth-disj demand via the threaded set
+// instead of being silently dropped (the round-3 fix).
+func makeFuncWithClassExtents(opts buildOptions) plan.FuncWithClassExtents {
 	if !opts.useMagicSets {
-		return plan.Plan
+		return func(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*plan.ExecutionPlan, []error) {
+			return plan.PlanWithClassExtents(prog, sizeHints, classExtentNames)
+		}
 	}
-	return func(prog *datalog.Program, sizeHints map[string]int) (*plan.ExecutionPlan, []error) {
-		ep, inf, errs := plan.WithMagicSetAutoOpts(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict})
+	return func(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*plan.ExecutionPlan, []error) {
+		ep, inf, errs := plan.WithMagicSetAutoOptsWithClassExtents(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict}, classExtentNames)
 		switch {
 		case inf.Fallback:
 			// Always surface a fallback warning to warnOut (not gated on
@@ -1060,13 +1069,17 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// EstimateAndPlan orchestrate: identify trivial IDBs → estimate →
 	// plan ONCE with the now-populated hints. The estimator hook honours
 	// maxBindingsPerRule (issue #130 / PR #132 — preserved end-to-end).
-	planFn := makeFunc(opts)
+	planFn := makeFuncWithClassExtents(opts)
 	// P2a: pre-materialise class extents so they're treated as base
 	// relations end-to-end. The sink map is populated by the
 	// materialising hook and handed to Evaluate via
 	// WithMaterialisedClassExtents.
+	//
+	// disj2-round3: use the Ctx variant so the planner receives the
+	// materialised class-extent name set and can ground vars sourced
+	// from those (now-stripped) extents in backward-demand inference.
 	matExtents := map[string]*eval.Relation{}
-	execPlan, planErrs := plan.EstimateAndPlanWithExtents(
+	execPlan, planErrs := plan.EstimateAndPlanWithExtentsCtx(
 		prog,
 		sizeHints,
 		maxBindingsPerRule,

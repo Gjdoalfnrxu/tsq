@@ -269,6 +269,16 @@ func WithMagicSetAuto(prog *datalog.Program, sizeHints map[string]int) (*Executi
 // returned to the caller rather than triggering fallback. Use this in tests
 // and CI to detect transform-soundness regressions (issue #112).
 func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts MagicSetOptions) (*ExecutionPlan, QueryBindingInference, []error) {
+	return WithMagicSetAutoOptsWithClassExtents(prog, sizeHints, opts, nil)
+}
+
+// WithMagicSetAutoOptsWithClassExtents is the disj2-round3 form: same
+// as WithMagicSetAutoOpts but additionally threads materialised
+// class-extent base names into both the rule-body demand inference
+// (which then fires for synth-disj predicates whose only grounding
+// source is a stripped class extent) and the underlying Plan call
+// (which orders rule bodies with the same demand-aware view).
+func WithMagicSetAutoOptsWithClassExtents(prog *datalog.Program, sizeHints map[string]int, opts MagicSetOptions, classExtentNames map[string]bool) (*ExecutionPlan, QueryBindingInference, []error) {
 	idb := IDBPredicates(prog)
 	inf := InferQueryBindings(prog, idb)
 
@@ -281,14 +291,14 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 	// `_disj_2` and its body would compute every tuple of B⋈C⋈D
 	// before the binding cap fires (Mastodon `_disj_2` failure mode,
 	// roadmap "Magic-set on synth-disj" section).
-	demandBindings, demandSeeds := InferRuleBodyDemandBindings(prog, idb, sizeHints)
+	demandBindings, demandSeeds := InferRuleBodyDemandBindingsWithClassExtents(prog, idb, sizeHints, classExtentNames)
 	if len(demandBindings) > 0 {
 		inf.Bindings = MergeBindings(inf.Bindings, demandBindings)
 		inf.SeedRules = append(inf.SeedRules, demandSeeds...)
 	}
 
 	if len(inf.Bindings) == 0 {
-		ep, errs := Plan(prog, sizeHints)
+		ep, errs := PlanWithClassExtents(prog, sizeHints, classExtentNames)
 		return ep, inf, errs
 	}
 
@@ -327,7 +337,7 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 			if opts.Strict {
 				return nil, QueryBindingInference{}, []error{arityErr}
 			}
-			ep, errs := Plan(prog, sizeHints)
+			ep, errs := PlanWithClassExtents(prog, sizeHints, classExtentNames)
 			return ep, QueryBindingInference{Fallback: true, FallbackReason: arityErr}, errs
 		}
 	}
@@ -343,7 +353,7 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 			Query: transformed.Query,
 		}
 	}
-	ep, errs := Plan(transformed, sizeHints)
+	ep, errs := PlanWithClassExtents(transformed, sizeHints, classExtentNames)
 	// Plan-error fallback (MAJOR 3 + transform-soundness safety net):
 	// if the augmented program fails to plan for any reason — unstratifiable
 	// (e.g. seed bodies copying a preceding `not Bar(m)` that creates a new
@@ -359,7 +369,7 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 		if opts.Strict {
 			return nil, QueryBindingInference{}, errs
 		}
-		ep2, errs2 := Plan(prog, sizeHints)
+		ep2, errs2 := PlanWithClassExtents(prog, sizeHints, classExtentNames)
 		return ep2, QueryBindingInference{Fallback: true, FallbackReason: errs[0]}, errs2
 	}
 	return ep, inf, errs

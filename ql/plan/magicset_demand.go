@@ -77,10 +77,26 @@ func InferRuleBodyDemandBindings(
 	idbPreds map[string]bool,
 	sizeHints map[string]int,
 ) (map[string][]int, []datalog.Rule) {
+	return InferRuleBodyDemandBindingsWithClassExtents(prog, idbPreds, sizeHints, nil)
+}
+
+// InferRuleBodyDemandBindingsWithClassExtents is the disj2-round3
+// entry point. classExtentNames carries the set of materialised
+// class-extent base predicate names — those names are treated as
+// grounders for any var they bind, regardless of size hint, when
+// computing backward demand and constructing the magic-set seed
+// bodies. nil classExtentNames degrades to the
+// InferRuleBodyDemandBindings behaviour.
+func InferRuleBodyDemandBindingsWithClassExtents(
+	prog *datalog.Program,
+	idbPreds map[string]bool,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+) (map[string][]int, []datalog.Rule) {
 	if prog == nil || len(prog.Rules) == 0 {
 		return nil, nil
 	}
-	demand := InferBackwardDemand(prog, sizeHints)
+	demand := InferBackwardDemandWithClassExtents(prog, sizeHints, classExtentNames)
 	if len(demand) == 0 {
 		return nil, nil
 	}
@@ -178,7 +194,7 @@ func predHasQueryBinding(prog *datalog.Program, pred string, cols []int) bool {
 		return false
 	}
 	queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
-	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{}, arity1BaseGroundedIDBs(prog))
+	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{}, arity1BaseGroundedIDBs(prog), nil)
 	for _, lit := range prog.Query.Body {
 		if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 			continue
