@@ -17,8 +17,9 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// Phase E: +3 HTTP + 2 IO + 2 RegExp = 114
 	// C3/C4/C6: +1 Decorator + 2 Namespace + 1 TypeGuard = 118
 	// Phase A3: +2 AdditionalTaintStep + AdditionalFlowStep = 120
-	if got := len(m.Available); got != 120 {
-		t.Errorf("expected 120 available classes, got %d", got)
+	// Round-2 setState alias (context): +1 ObjectLiteralField = 121
+	if got := len(m.Available); got != 121 {
+		t.Errorf("expected 121 available classes, got %d", got)
 	}
 }
 

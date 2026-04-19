@@ -64,6 +64,7 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "DestructureField", Relation: "DestructureField", File: "tsq_expressions.qll"},
 			{Name: "ArrayDestructure", Relation: "ArrayDestructure", File: "tsq_expressions.qll"},
 			{Name: "DestructureRest", Relation: "DestructureRest", File: "tsq_expressions.qll"},
+			{Name: "ObjectLiteralField", Relation: "ObjectLiteralField", File: "tsq_expressions.qll"},
 			{Name: "JsxElement", Relation: "JsxElement", File: "tsq_jsx.qll"},
 			{Name: "JsxAttribute", Relation: "JsxAttribute", File: "tsq_jsx.qll"},
 			{Name: "ImportBinding", Relation: "ImportBinding", File: "tsq_imports.qll"},
