@@ -47,6 +47,24 @@ func MagicSetTransform(prog *datalog.Program, queryBindings map[string][]int) *d
 	// through variable flow.
 	allBindings := propagateBindings(prog.Rules, relevantBindings)
 
+	// disj2-round5: arity-keyed IDB-head index for the propagation-rule
+	// emission below. allBindings is keyed by predicate NAME only — when
+	// PR #146's auto-emitted arity-1 class-extent helpers shadow an
+	// arity-N base relation of the same name (e.g. arity-1 `VarDecl(this)`
+	// helper alongside arity-4 base `VarDecl(_, sym, _, _)` usages), a
+	// name-only body-literal lookup projects arity-1 bindings onto the
+	// arity-N atom and produces unsafe `magic_X(_) :- ...` propagation
+	// rules. Restrict propagation emission to body literals whose arity
+	// matches at least one IDB head for that name.
+	idbHeadAritiesForProp := map[string]map[int]bool{}
+	for _, r := range prog.Rules {
+		name := r.Head.Predicate
+		if idbHeadAritiesForProp[name] == nil {
+			idbHeadAritiesForProp[name] = map[int]bool{}
+		}
+		idbHeadAritiesForProp[name][len(r.Head.Args)] = true
+	}
+
 	var newRules []datalog.Rule
 
 	// Generate magic seed facts from query bindings and propagation rules.
@@ -94,6 +112,37 @@ func MagicSetTransform(prog *datalog.Program, queryBindings map[string][]int) *d
 				bodyPred := lit.Atom.Predicate
 				bodyCols, ok := allBindings[bodyPred]
 				if !ok {
+					continue
+				}
+				// disj2-round5: only emit propagation rules for body
+				// literals that are GENUINE calls to an IDB at the
+				// matching (name, arity). Two failure modes otherwise:
+				//
+				//  - Same-name colliding arity (PR #146 class-extent
+				//    helper shadow): `VarDecl/1` IDB head + `VarDecl/N`
+				//    base usages. allBindings keys `VarDecl` by name
+				//    only; without arity gating, the arity-N base usage
+				//    has bindings recorded for arity-1 cols projected
+				//    onto its arity-N args — picking up wildcards at
+				//    the demanded position.
+				//
+				//  - Stripped class-extent helper (P2a `MaterialiseClassExtents`
+				//    pre-pass): the helper rule is REMOVED from
+				//    prog.Rules after materialisation, so by the time
+				//    MagicSetTransform runs the name has zero IDB
+				//    heads. propagateBindings can still flow a binding
+				//    onto the name from upstream rules that bind one of
+				//    its body-lit vars; without the gate, we emit a
+				//    `magic_<name>(...)` propagation rule that no IDB
+				//    consumes (the only would-be consumer was stripped),
+				//    AND the projected magic head args may include
+				//    wildcards at the demanded position, producing
+				//    `magic_<name>(_)` which validate.go rejects.
+				//
+				// Both failure modes collapse to: skip propagation rule
+				// emission when the body literal's (name, arity) does
+				// not appear as an IDB rule head.
+				if !idbHeadAritiesForProp[bodyPred][len(lit.Atom.Args)] {
 					continue
 				}
 
@@ -154,6 +203,24 @@ func propagateBindings(rules []datalog.Rule, initial map[string][]int) map[strin
 		bindings[k] = v
 	}
 
+	// disj2-round5: arity-keyed IDB-head index. Used to suppress
+	// propagation into a body literal whose arity does not match any
+	// IDB-head arity for its name. Without this guard, an arity-N
+	// base-relation usage (e.g. `VarDecl(_, sym, _, _)`) of a name
+	// that ALSO has an arity-1 IDB helper head (e.g.
+	// `VarDecl(this) :- VarDecl(this,_,_,_)`) would have arity-1
+	// bindings projected onto its arity-N args — picking up wildcards
+	// at the demanded positions and producing unsafe `magic_X(_)`
+	// propagation rules downstream.
+	idbHeadArities := map[string]map[int]bool{}
+	for _, r := range rules {
+		name := r.Head.Predicate
+		if idbHeadArities[name] == nil {
+			idbHeadArities[name] = map[int]bool{}
+		}
+		idbHeadArities[name][len(r.Head.Args)] = true
+	}
+
 	// Fixed-point iteration to propagate bindings.
 	changed := true
 	for changed {
@@ -188,6 +255,26 @@ func propagateBindings(rules []datalog.Rule, initial map[string][]int) map[strin
 				}
 
 				bodyPred := lit.Atom.Predicate
+				// disj2-round5: arity-keyed IDB-call gate for binding
+				// propagation. When `bodyPred` names an IDB head at SOME
+				// arity but the body literal's own arity does not match
+				// any of those IDB-head arities, this literal is a
+				// base-relation usage of a colliding name (the
+				// auto-emitted arity-1 class-extent helper shape from
+				// PR #146 — e.g. `VarDecl(this) :- VarDecl(this,_,_,_).`
+				// shadows arity-4 base `VarDecl/4` by name). Recording
+				// bindings on it under the IDB's name conflates the two
+				// and lets arity-1 bindings flow onto an arity-N atom.
+				// Skip the bindings record but keep the var-flow update
+				// so subsequent literals see vars bound by this one.
+				if arities, hasIDB := idbHeadArities[bodyPred]; hasIDB && !arities[len(lit.Atom.Args)] {
+					for _, arg := range lit.Atom.Args {
+						if v, isVar := arg.(datalog.Var); isVar && v.Name != "_" {
+							currentBound[v.Name] = true
+						}
+					}
+					continue
+				}
 				// Determine which columns of bodyPred are bound.
 				var boundBodyCols []int
 				for i, arg := range lit.Atom.Args {
