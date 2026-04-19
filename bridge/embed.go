@@ -2,7 +2,7 @@ package bridge
 
 import "embed"
 
-//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll compat_dataflow.qll compat_tainttracking.qll compat_security_xss.qll compat_security_cmdi.qll compat_security_sqli.qll compat_security_pathtraversal.qll compat_dom.qll compat_crypto.qll compat_http.qll compat_io.qll compat_regexp.qll
+//go:embed tsq_base.qll tsq_functions.qll tsq_calls.qll tsq_variables.qll tsq_expressions.qll tsq_jsx.qll tsq_imports.qll tsq_errors.qll tsq_types.qll tsq_symbols.qll tsq_callgraph.qll tsq_dataflow.qll tsq_summaries.qll tsq_composition.qll tsq_taint.qll tsq_valueflow.qll tsq_express.qll tsq_react.qll tsq_node.qll compat_javascript.qll compat_dataflow.qll compat_tainttracking.qll compat_security_xss.qll compat_security_cmdi.qll compat_security_sqli.qll compat_security_pathtraversal.qll compat_dom.qll compat_crypto.qll compat_http.qll compat_io.qll compat_regexp.qll
 var bridgeFS embed.FS
 
 // LoadBridge returns all embedded .qll files as a map from filename to contents.
@@ -23,6 +23,7 @@ func LoadBridge() map[string][]byte {
 		"tsq_summaries.qll",
 		"tsq_composition.qll",
 		"tsq_taint.qll",
+		"tsq_valueflow.qll",
 		"tsq_express.qll",
 		"tsq_react.qll",
 		"tsq_node.qll",
@@ -70,6 +71,7 @@ var ImportPathToFile = map[string]string{
 	"tsq::summaries":      "tsq_summaries.qll",
 	"tsq::composition":    "tsq_composition.qll",
 	"tsq::taint":          "tsq_taint.qll",
+	"tsq::valueflow":      "tsq_valueflow.qll",
 	"tsq::express":        "tsq_express.qll",
 	"tsq::react":          "tsq_react.qll",
 	"tsq::node":           "tsq_node.qll",

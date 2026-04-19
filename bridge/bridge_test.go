@@ -24,9 +24,27 @@ func TestBridgeFilesParseBasicStructure(t *testing.T) {
 	classRe := regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?class\s+(\w+)\s+extends\s+`)
 	predicateRe := regexp.MustCompile(`(?m)^\s+(?:override\s+)?(string|int|predicate|ASTNode|File|Call|JsxElement|Function|Parameter|CallArg|ParameterRest|ParameterOptional|ParameterDestructured|ParamIsFunctionType|CallArgSpread|VarDecl|Assign|ExprMayRef|ExprIsCall|FieldRead|FieldWrite|Await|Cast|DestructureField|ArrayDestructure|DestructureRest|JsxAttribute|ImportBinding|ExportBinding|ExtractError|SchemaVersion|Contains)\s+\w+\(`)
 
+	// Predicate-only bridge files: pure rule libraries with no class wrappers.
+	// tsq_valueflow.qll (Phase A) is the first of these — it exposes a set of
+	// named predicates (`mayResolveTo`, `mayResolveToBase`, ...) consumed by
+	// other bridge files and queries directly. Adding a vacuous class wrapper
+	// would buy nothing and obscure intent. Skip the class-presence assertion
+	// for these files but still require they parse and contain top-level
+	// `predicate` declarations.
+	predicateOnlyFiles := map[string]bool{
+		"tsq_valueflow.qll": true,
+	}
+	topLevelPredRe := regexp.MustCompile(`(?m)^predicate\s+\w+\(`)
+
 	files := LoadBridge()
 	for name, data := range files {
 		src := string(data)
+		if predicateOnlyFiles[name] {
+			if !topLevelPredRe.MatchString(src) {
+				t.Errorf("predicate-only bridge file %q contains no top-level predicate declarations", name)
+			}
+			continue
+		}
 		classes := classRe.FindAllStringSubmatch(src, -1)
 		if len(classes) == 0 {
 			t.Errorf("bridge file %q contains no class declarations", name)
