@@ -873,15 +873,17 @@ predicate test(Foo x) { a(x) or b(x) }
 		}
 	}
 
-	// Should have synthetic _disj rules.
+	// Should have synthetic _disj rules. Per-branch lifting (#166)
+	// produces 4 rules per disjunction: 2 per-branch IDBs (`_disj_N_l`,
+	// `_disj_N_r`) and 2 union projection rules (`_disj_N`).
 	var disjRules []*datalog.Rule
 	for i := range prog.Rules {
 		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_disj") {
 			disjRules = append(disjRules, &prog.Rules[i])
 		}
 	}
-	if len(disjRules) != 2 {
-		t.Fatalf("expected 2 synthetic disjunction rules, got %d", len(disjRules))
+	if len(disjRules) != 4 {
+		t.Fatalf("expected 4 synthetic disjunction rules (2 branch + 2 union), got %d", len(disjRules))
 	}
 
 	// The test predicate's body should reference the synthetic predicate.
@@ -1093,21 +1095,34 @@ predicate test(int x) { a(x, _) or b(x) }
 	rm := parseAndResolve(t, src)
 	prog := desugarOK(t, rm)
 
-	// Find the synthetic disjunction rule.
-	var synthRules []*datalog.Rule
+	// Find the synthetic union rule(s) — head named `_disj_N` exactly
+	// (not `_disj_N_l` / `_disj_N_r`). Per-branch lifting (#166) means
+	// the per-branch IDBs carry FULL var sets (so `_disj_N_l` includes
+	// `y`); only the union projection enforces the shared-vars-only head.
+	var unionRules []*datalog.Rule
+	var branchRules []*datalog.Rule
 	for i := range prog.Rules {
-		if strings.HasPrefix(prog.Rules[i].Head.Predicate, "_disj") {
-			synthRules = append(synthRules, &prog.Rules[i])
+		name := prog.Rules[i].Head.Predicate
+		if !strings.HasPrefix(name, "_disj") {
+			continue
+		}
+		if strings.HasSuffix(name, "_l") || strings.HasSuffix(name, "_r") {
+			branchRules = append(branchRules, &prog.Rules[i])
+		} else {
+			unionRules = append(unionRules, &prog.Rules[i])
 		}
 	}
-	if len(synthRules) != 2 {
-		t.Fatalf("expected 2 synthetic disjunction rules, got %d", len(synthRules))
+	if len(unionRules) != 2 {
+		t.Fatalf("expected 2 union projection rules, got %d", len(unionRules))
 	}
-	// Head args should only contain x (the shared variable), not y or _.
-	for _, r := range synthRules {
+	if len(branchRules) != 2 {
+		t.Fatalf("expected 2 per-branch IDB rules, got %d", len(branchRules))
+	}
+	// Union head args should only contain x (the shared variable), not y or _.
+	for _, r := range unionRules {
 		for _, arg := range r.Head.Args {
 			if v, ok := arg.(datalog.Var); ok && v.Name != "x" {
-				t.Errorf("synthetic disjunction head should only have shared var x, got %q", v.Name)
+				t.Errorf("union disjunction head should only have shared var x, got %q", v.Name)
 			}
 		}
 	}

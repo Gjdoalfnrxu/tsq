@@ -621,33 +621,74 @@ func (d *desugarer) desugarFormula(f ast.Formula, gen *freshVarGen) []datalog.Li
 		return append(left, right...)
 
 	case *ast.Disjunction:
-		// Rule splitting: create a synthetic predicate with both branches as separate rules.
+		// Per-branch lifting (#166): each branch gets its own named IDB
+		// carrying its FULL var set, then a union IDB projects the
+		// shared vars. This lets the planner size each branch
+		// independently (current default behaviour can't see across
+		// the two-rule union and produces wildly wrong cardinality
+		// estimates — see ql/plan/disj2_round[2-6]_*_test.go).
+		//
+		//   _disj_N_l(LV...)  :- leftBody.
+		//   _disj_N_r(RV...)  :- rightBody.
+		//   _disj_N(SV...)    :- _disj_N_l(LV...).   // project to shared vars
+		//   _disj_N(SV...)    :- _disj_N_r(RV...).   // project to shared vars
+		//
+		// where SV = intersect(LV, RV).
 		leftLits := d.desugarFormula(n.Left, gen)
 		rightLits := d.desugarFormula(n.Right, gen)
 
-		// Use only variables that appear in BOTH branches as head args.
-		// Variables in only one branch are unsafe in the other rule's head.
-		leftVars := collectVarsFromLiterals(leftLits)
-		rightVars := collectVarsFromLiterals(rightLits)
-		freeVars := intersectVars(leftVars, rightVars)
+		// `_` is a wildcard placeholder that the parser sometimes lowers
+		// as a Var with name "_" (rather than datalog.Wildcard{}).
+		// Including it in a per-branch IDB head would unify all
+		// occurrences in the body, which is wrong. Filter it out here so
+		// each `_` stays a local don't-care in the branch body. Note the
+		// pre-lifting code never hit this because the union head was
+		// `intersect(leftVars, rightVars)`, and `_` was usually
+		// asymmetric across branches; per-branch heads bypass that
+		// implicit filter.
+		leftVars := filterUnderscore(collectVarsFromLiterals(leftLits))
+		rightVars := filterUnderscore(collectVarsFromLiterals(rightLits))
+		sharedVars := intersectVars(leftVars, rightVars)
 
-		synthName := d.freshSynthName("_disj")
-		args := make([]datalog.Term, len(freeVars))
-		for i, v := range freeVars {
-			args[i] = datalog.Var{Name: v}
+		// Allocate union name first so that, in nested-disjunction
+		// debugging, the visible call name (`_disj_N`) keeps the lowest
+		// counter for the disjunction. The branch IDBs get derived
+		// names rather than fresh counter slots — this also avoids
+		// burning two extra counter values per disjunction in plan
+		// dumps.
+		unionName := d.freshSynthName("_disj")
+		leftName := unionName + "_l"
+		rightName := unionName + "_r"
+
+		termsForVars := func(vars []string) []datalog.Term {
+			args := make([]datalog.Term, len(vars))
+			for i, v := range vars {
+				args[i] = datalog.Var{Name: v}
+			}
+			return args
 		}
 
-		// Create two rules: one for left branch, one for right branch.
-		head := datalog.Atom{Predicate: synthName, Args: args}
+		leftHead := datalog.Atom{Predicate: leftName, Args: termsForVars(leftVars)}
+		rightHead := datalog.Atom{Predicate: rightName, Args: termsForVars(rightVars)}
+		unionHead := datalog.Atom{Predicate: unionName, Args: termsForVars(sharedVars)}
+
+		// Per-branch IDBs carry full var sets so the planner can size
+		// each branch independently.
 		d.syntheticRules = append(d.syntheticRules,
-			datalog.Rule{Head: head, Body: leftLits},
-			datalog.Rule{Head: head, Body: rightLits},
+			datalog.Rule{Head: leftHead, Body: leftLits},
+			datalog.Rule{Head: rightHead, Body: rightLits},
+			// Union IDB: trivial-IDB projection from each branch.
+			// P2a's class-extent shortcut handles this exact shape
+			// (head with body = single positive atom).
+			datalog.Rule{Head: unionHead, Body: []datalog.Literal{{Positive: true, Atom: leftHead}}},
+			datalog.Rule{Head: unionHead, Body: []datalog.Literal{{Positive: true, Atom: rightHead}}},
 		)
 
-		// Return a call to the synthetic predicate.
+		// Caller boundary unchanged: still sees a single _disj_N(SV...)
+		// literal over the shared vars only.
 		return []datalog.Literal{{
 			Positive: true,
-			Atom:     datalog.Atom{Predicate: synthName, Args: args},
+			Atom:     datalog.Atom{Predicate: unionName, Args: termsForVars(sharedVars)},
 		}}
 
 	case *ast.Negation:
@@ -1334,6 +1375,22 @@ func collectVarFromTerm(t datalog.Term, seen map[string]bool, vars *[]string) {
 			*vars = append(*vars, v.Name)
 		}
 	}
+}
+
+// filterUnderscore drops the wildcard placeholder name "_" from a var
+// list. The parser sometimes lowers `_` as datalog.Var{Name:"_"} rather
+// than datalog.Wildcard{}, and per-branch IDB heads must not promote a
+// wildcard into a real positional binding (it would force all `_`
+// occurrences in the body to unify to the same value).
+func filterUnderscore(vars []string) []string {
+	out := vars[:0:0]
+	for _, v := range vars {
+		if v == "_" {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // intersectVars returns variables present in both a and b, preserving order from a.
