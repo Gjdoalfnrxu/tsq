@@ -282,6 +282,60 @@ func TestEstimateAndPlanWithExtentsCtx_PlumbsClassExtentNamesThrough(t *testing.
 	}
 }
 
+// TestInferBackwardDemand_StrippedClassExtent_ArityGuard pins the
+// adversarial-review F1 finding: classExtentNames is keyed by name only
+// (per the MaterialisingEstimatorHook contract — class extents are
+// always arity-1). If a body literal references a name that happens to
+// collide with a class-extent name AT A DIFFERENT ARITY (defensive
+// against hand-written predicate name collisions), the relaxation must
+// NOT fire — that would over-ground vars in an unrelated wider literal.
+//
+// Setup: classExtentNames declares "Foo" but the body literal is
+// `Foo(a, b, c)` (arity 3). With the arity guard in place, vars
+// a/b/c stay unbound and demand for the downstream synth-disj does
+// not fire (size hints are the load-bearing signal for arity-N
+// literals, as it should be).
+func TestInferBackwardDemand_StrippedClassExtent_ArityGuard(t *testing.T) {
+	v := func(name string) datalog.Var { return datalog.Var{Name: name} }
+	atom := func(pred string, args ...datalog.Term) datalog.Literal {
+		return datalog.Literal{Positive: true, Atom: datalog.Atom{Predicate: pred, Args: args}}
+	}
+
+	// Body uses `Foo(a, b, c)` — arity 3, NOT the class extent shape.
+	// Even though "Foo" is in classExtentNames, the relaxation must not
+	// over-ground a/b/c.
+	prog := &datalog.Program{
+		Rules: []datalog.Rule{
+			{
+				Head: datalog.Atom{Predicate: "Caller", Args: []datalog.Term{v("a")}},
+				Body: []datalog.Literal{
+					atom("Foo", v("a"), v("b"), v("c")), // arity-3 collision
+					atom("_disj_2", v("b"), v("d")),
+				},
+			},
+			{
+				Head: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{v("x"), v("y")}},
+				Body: []datalog.Literal{atom("Bar", v("x"), v("y"))},
+			},
+		},
+		Query: &datalog.Query{
+			Select: []datalog.Term{v("a")},
+			Body:   []datalog.Literal{atom("Caller", v("a"))},
+		},
+	}
+	hints := map[string]int{
+		"Foo": 250_000,
+		"Bar": 100_000,
+	}
+	classExtentNames := map[string]bool{"Foo": true}
+
+	demand := InferBackwardDemandWithClassExtents(prog, hints, classExtentNames)
+	cols := demand["_disj_2"]
+	if len(cols) != 0 {
+		t.Fatalf("arity guard violated: classExtentNames[\"Foo\"] is keyed by name only, but body uses arity-3 Foo(a,b,c). The relaxation must not ground a/b/c. Got demand[_disj_2]=%v (should be empty since Foo's arity disqualifies it as the documented class-extent shape)", cols)
+	}
+}
+
 // TestInferBackwardDemand_StrippedClassExtent_NilSetIsBaseline pins the
 // no-classExtentNames behaviour: with nil set the existing PR #158
 // path runs unchanged. The arity1BaseGroundedIDBs detector cannot match

@@ -520,9 +520,17 @@ func bodyContextGroundedVars(
 			// ImportBinding(_,_,_)`) qualify too even when their hint
 			// exceeds SmallExtentThreshold — see disj2-round2 / PR #158
 			// rationale on LargeArityOneExtentThreshold.
+			// Materialised class extents are always arity-1 (the
+			// MaterialisingEstimatorHook contract — see plan.go). Restrict
+			// the relaxation to arity-1 occurrences so a name collision
+			// with an arity-N base relation (defensive case — desugarer
+			// shouldn't emit one but a hand-written predicate could)
+			// cannot over-ground the wider literal's vars.
+			isMatExt := len(lit.Atom.Args) == 1 &&
+				isMaterialisedClassExtentGrounder(lit.Atom.Predicate, classExtentNames)
 			if isSmallExtent(lit.Atom.Predicate, sizeHints) ||
 				isLargeArity1Grounder(lit.Atom.Predicate, sizeHints, largeArity1IDBs) ||
-				isMaterialisedClassExtentGrounder(lit.Atom.Predicate, classExtentNames) {
+				isMatExt {
 				for _, arg := range lit.Atom.Args {
 					if v, ok := arg.(datalog.Var); ok && v.Name != "_" {
 						if !bound[v.Name] {
