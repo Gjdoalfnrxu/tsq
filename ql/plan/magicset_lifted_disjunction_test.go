@@ -41,6 +41,10 @@ import (
 // disjunction with branch-private vars. Mirrors what the desugarer
 // emits today for:
 //
+// NOTE: this constructor is pure — returns a freshly-allocated program
+// and hints map on each call, so tests can mutate the result without
+// cross-test contamination (Finding 6, PR #187 review).
+//
 //	predicate Caller(int c, int y) {
 //	    ClassExt(c) and (
 //	        (A(c, y, m) and Guard(m))                 // left:  binds {c, y, m}
@@ -224,6 +228,14 @@ func TestLiftedDisj_MagicTransformAritiesAreCorrect(t *testing.T) {
 
 	// Cross-branch sanity: the rewritten branch IDB rules each begin
 	// with a magic literal NAMED for that branch — no cross-pollination.
+	// (Finding 3, PR #187 review): tighten beyond name-only — the magic
+	// literal's single arg must be the BOUND head var (`c`) at col 0,
+	// not some other variable. If the magic-set transform projected the
+	// wrong column from the head (e.g. `y` instead of `c`, or a wildcard
+	// from a length-mismatch path), the magic seed and the consumer's
+	// magic literal would key on different values and the demand prune
+	// would silently miss tuples. This catches arity confusion that the
+	// pure-name check cannot.
 	for _, st := range ep.Strata {
 		for _, r := range st.Rules {
 			name := r.Head.Predicate
@@ -239,6 +251,38 @@ func TestLiftedDisj_MagicTransformAritiesAreCorrect(t *testing.T) {
 			if first.Atom.Predicate != expectedMagic {
 				t.Errorf("first body literal of %s should be %s, got %s",
 					name, expectedMagic, first.Atom.Predicate)
+				continue
+			}
+			// Magic literal must be arity 1 (only `c` is bound).
+			if len(first.Atom.Args) != 1 {
+				t.Errorf("%s magic prefix should have arity 1 (only `c` bound); got %d args: %v",
+					name, len(first.Atom.Args), first.Atom.Args)
+				continue
+			}
+			// And that single arg must be the variable `c` — same name
+			// as the bound col 0 of the rewritten branch head. Any other
+			// var here means the transform projected the wrong column.
+			arg, ok := first.Atom.Args[0].(datalog.Var)
+			if !ok {
+				t.Errorf("%s magic arg[0] should be a Var (the bound `c`); got %T %v",
+					name, first.Atom.Args[0], first.Atom.Args[0])
+				continue
+			}
+			if arg.Name != "c" {
+				t.Errorf("%s magic arg[0] should be variable `c` (col 0 of branch head); got Var{%q} — magic-set projected the wrong column",
+					name, arg.Name)
+			}
+			// Cross-check: the head's col 0 must also be `c` (so the
+			// magic literal really does key on the bound col, not just
+			// happen to be named `c` in some other position).
+			if len(r.Head.Args) == 0 {
+				t.Errorf("%s rule head has no args", name)
+				continue
+			}
+			headCol0, ok := r.Head.Args[0].(datalog.Var)
+			if !ok || headCol0.Name != "c" {
+				t.Errorf("%s rule head col 0 should be Var{c} (matching magic prefix arg); got %v",
+					name, r.Head.Args[0])
 			}
 		}
 	}
@@ -313,45 +357,111 @@ func progManyBranchLiftedDisj(n int) (*datalog.Program, map[string]int) {
 // loose enough to absorb the per-branch propagation routes without
 // admitting any quadratic term).
 func TestLiftedDisj_TenBranchMagicFanoutIsLinear(t *testing.T) {
-	const n = 10
-	prog, hints := progManyBranchLiftedDisj(n)
-	ep, _, errs := WithMagicSetAutoOpts(prog, hints, MagicSetOptions{Strict: true})
-	if len(errs) > 0 {
-		t.Fatalf("WithMagicSetAutoOpts failed for %d-branch lifted disjunction: %v", n, errs)
-	}
-	if ep == nil {
-		t.Fatalf("nil execution plan for %d-branch lifted disjunction", n)
-	}
-
-	// Count magic rules in the augmented plan.
-	magicRules := 0
-	for _, st := range ep.Strata {
-		for _, r := range st.Rules {
-			if strings.HasPrefix(r.Head.Predicate, "magic_") {
-				magicRules++
+	// Run the assertion at TWO branch counts so a linear-with-bigger-
+	// slope regression (e.g. coefficient creep from 2 → 4) surfaces as a
+	// ratio change rather than passing both envelopes silently
+	// (Finding 4, PR #187 review).
+	for _, n := range []int{5, 10} {
+		t.Run("N="+itoa(n), func(t *testing.T) {
+			prog, hints := progManyBranchLiftedDisj(n)
+			ep, _, errs := WithMagicSetAutoOpts(prog, hints, MagicSetOptions{Strict: true})
+			if len(errs) > 0 {
+				t.Fatalf("WithMagicSetAutoOpts failed for %d-branch lifted disjunction: %v", n, errs)
 			}
-		}
-	}
+			if ep == nil {
+				t.Fatalf("nil execution plan for %d-branch lifted disjunction", n)
+			}
 
-	// Linear envelope: 4*N + 4 is generous (today the count is closer
-	// to 2*N + small constant). Anything quadratic in N (e.g. N²/2 = 50
-	// at N=10) would blow this envelope by an order of magnitude as N
-	// grows. If this assertion ever flips, the planner is doing
-	// per-branch-pair work somewhere and the lifting transform's
-	// linearity guarantee is broken.
-	envelope := 4*n + 4
-	if magicRules > envelope {
-		t.Fatalf("magic-set fan-out non-linear: %d magic rules for %d branches (envelope %d). Branch interactions are scaling quadratically — investigate per-branch propagation.",
-			magicRules, n, envelope)
-	}
+			// Count magic rules in the augmented plan AND collect the
+			// distinct magic head names (used for the per-branch lower-
+			// bound check below — Finding 5).
+			magicRules := 0
+			magicHeadNames := map[string]bool{}
+			for _, st := range ep.Strata {
+				for _, r := range st.Rules {
+					if strings.HasPrefix(r.Head.Predicate, "magic_") {
+						magicRules++
+						magicHeadNames[r.Head.Predicate] = true
+					}
+				}
+			}
 
-	// Lower bound: at least N magic-rewritten branch rules must exist
-	// (one per branch). If we somehow emitted zero magic rules, the
-	// linear-envelope check above passes vacuously.
-	if magicRules < n {
-		t.Fatalf("expected at least %d magic rules (one per branch rewrite), got %d — magic-set rewrite is dropping branches",
-			n, magicRules)
+			// Tightened linear envelope (Finding 4): today the actual
+			// count is 2*N + 1 (one rewritten union projection per
+			// branch + one magic propagation per branch + one seed for
+			// the union itself). Slack budget: +4 — absorbs minor
+			// per-branch bookkeeping changes without admitting any
+			// linear-with-2×-coefficient regression.
+			//
+			// Previous envelope was 4*N + 4 (loose enough that a
+			// regression doubling the per-branch cost would still pass
+			// silently). New envelope of 2*N + 5 forces such a
+			// regression to surface immediately.
+			const slackBudget = 4
+			envelope := 2*n + 1 + slackBudget
+			if magicRules > envelope {
+				t.Fatalf("magic-set fan-out exceeds tightened linear envelope: %d magic rules for %d branches (envelope %d = 2N+1+%d). Either the per-branch coefficient regressed or branch interactions appeared — investigate.",
+					magicRules, n, envelope, slackBudget)
+			}
+
+			// Per-branch ratio check (Finding 4): magicRules / N must
+			// stay in [2, 3]. Linear-with-bigger-slope regressions
+			// (e.g. coefficient 4) surface here even when the absolute
+			// count stays under the envelope at small N.
+			ratioMin, ratioMax := 2, 3
+			ratio := magicRules / n
+			if ratio < ratioMin || ratio > ratioMax {
+				t.Errorf("magic-set per-branch ratio out of band: magicRules/N = %d/%d = %d, expected in [%d, %d]",
+					magicRules, n, ratio, ratioMin, ratioMax)
+			}
+
+			// Lower bound: at least N magic-rewritten rules.
+			if magicRules < n {
+				t.Fatalf("expected at least %d magic rules (one per branch rewrite), got %d — magic-set rewrite is dropping branches",
+					n, magicRules)
+			}
+
+			// Per-branch coverage (Finding 5): every per-branch IDB name
+			// must produce at least one magic head — otherwise some
+			// branches got no rewrite and the linear envelope above
+			// passes only because the dropped branches reduced the
+			// count. Walk the input fixture's branch IDB names and
+			// confirm each has a corresponding `magic_<branchName>`
+			// head somewhere in the augmented plan.
+			for i := 0; i < n; i++ {
+				branchName := "_disj_N_b" + string(rune('0'+i%10)) + string(rune('a'+i/10))
+				wantMagic := "magic_" + branchName
+				if !magicHeadNames[wantMagic] {
+					t.Errorf("branch %d (%s) has no %s rule in augmented plan — magic-set rewrite dropped this branch; magicHeadNames=%v",
+						i, branchName, wantMagic, magicHeadNames)
+				}
+			}
+		})
 	}
+}
+
+// itoa is a tiny strconv-free helper so the test file's import block
+// stays minimal (the test package already pulls in strings/testing).
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // TestLiftedDisj_ArityKeyedGateDoesNotDropBranchPropagation is the
@@ -408,6 +518,168 @@ func TestLiftedDisj_ArityKeyedGateDoesNotDropBranchPropagation(t *testing.T) {
 	for _, want := range []string{"_disj_2", "_disj_2_l", "_disj_2_r"} {
 		if !headsSeen[want] {
 			t.Errorf("expected %s rules in augmented plan, missing — magic-set rewrite dropped a head", want)
+		}
+	}
+}
+
+// progLiftedDisjShapeWithArityCollision models the lifted-disjunction
+// shape PLUS the (name, arity) collision the magicset.go:270 gate is
+// designed to catch: a name `VarDecl` lives BOTH as an arity-1 IDB
+// helper head (`VarDecl(this) :- VarDecl(this,_,_,_).`) AND as an
+// arity-4 base relation referenced inside a lifted-disj branch body.
+//
+// Without the gate, the branch body's arity-4 `VarDecl(c,_,_,_)` call
+// would record `bindings["VarDecl"] = [0]` — wrong, because that key
+// is consumed by downstream magic-set machinery as the IDB-arity-1
+// shape and produces `magic_VarDecl(_)` propagation rules with
+// wildcards at demanded positions (see magicset.go:208-214 comment).
+//
+// Shape:
+//
+//	Caller(c, y)             :- ClassExt(c), _disj_2(c, y).
+//	_disj_2_l(c, y, m)       :- VarDecl(c,_,_,_), Guard(m).
+//	_disj_2_r(c, y, n, k)    :- E(c, y, n, k), Other(n, k).
+//	_disj_2(c, y)            :- _disj_2_l(c, y, m).
+//	_disj_2(c, y)            :- _disj_2_r(c, y, n, k).
+//	VarDecl(this)            :- VarDecl(this,_,_,_).   // arity-1 IDB shadow
+//
+// Pure constructor — fresh program + hints per call.
+func progLiftedDisjShapeWithArityCollision() (*datalog.Program, map[string]int) {
+	rules := []datalog.Rule{
+		{
+			Head: datalog.Atom{Predicate: "Caller", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "ClassExt", Args: []datalog.Term{datalog.Var{Name: "c"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+		// LEFT branch IDB: body uses arity-4 base `VarDecl/4` — the
+		// colliding-name literal whose arity does NOT match any
+		// `VarDecl` IDB head arity. Gate at magicset.go:270 must skip
+		// the bindings record on this literal.
+		{
+			Head: datalog.Atom{Predicate: "_disj_2_l", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}, datalog.Var{Name: "m"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "VarDecl", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "_"}, datalog.Var{Name: "y"}, datalog.Var{Name: "m"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Guard", Args: []datalog.Term{datalog.Var{Name: "m"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "_disj_2_r", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}, datalog.Var{Name: "n"}, datalog.Var{Name: "k"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "E", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}, datalog.Var{Name: "n"}, datalog.Var{Name: "k"}}}},
+				{Positive: true, Atom: datalog.Atom{Predicate: "Other", Args: []datalog.Term{datalog.Var{Name: "n"}, datalog.Var{Name: "k"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "_disj_2_l", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}, datalog.Var{Name: "m"}}}},
+			},
+		},
+		{
+			Head: datalog.Atom{Predicate: "_disj_2", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "_disj_2_r", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}, datalog.Var{Name: "n"}, datalog.Var{Name: "k"}}}},
+			},
+		},
+		// Arity-1 IDB helper that collides on NAME with the arity-4
+		// base relation referenced in the branch body above.
+		{
+			Head: datalog.Atom{Predicate: "VarDecl", Args: []datalog.Term{datalog.Var{Name: "this"}}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "VarDecl", Args: []datalog.Term{datalog.Var{Name: "this"}, datalog.Var{Name: "_"}, datalog.Var{Name: "_"}, datalog.Var{Name: "_"}}}},
+			},
+		},
+	}
+	prog := &datalog.Program{
+		Rules: rules,
+		Query: &datalog.Query{
+			Select: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}},
+			Body: []datalog.Literal{
+				{Positive: true, Atom: datalog.Atom{Predicate: "Caller", Args: []datalog.Term{datalog.Var{Name: "c"}, datalog.Var{Name: "y"}}}},
+			},
+		},
+	}
+	hints := map[string]int{
+		"ClassExt": 7,
+		"VarDecl":  100000,
+		"Guard":    100000,
+		"E":        100000,
+		"Other":    100000,
+	}
+	return prog, hints
+}
+
+// TestLiftedDisj_ArityCollisionGateSuppressesArityNBinding is the
+// *non-vacuous* regression test for the (name, arity) gate at
+// magicset.go:270. The fixture above has a real name+arity collision:
+// `VarDecl` has IDB heads only at arity 1, but a lifted-disj branch
+// body calls `VarDecl(c,_,_,_)` (arity 4, base usage).
+//
+// With the gate intact: the arity-4 body call does NOT contribute to
+// bindings["VarDecl"], so any later bindings entry for VarDecl reflects
+// only flow from arity-1-matched paths (which there are none here, so
+// the entry stays absent or empty).
+//
+// With the gate REMOVED: the arity-4 call records bindings["VarDecl"]
+// = [0] from the `_disj_2_l` rule when col 0 is the bound `c`. That's
+// the bug shape the gate exists to suppress.
+//
+// We assert: bindings["VarDecl"] is absent OR has zero entries.
+//
+// SPOT-CHECK PROCEDURE (for future maintainers): comment out the gate
+// at magicset.go:270 (the `if arities, hasIDB := ...` block) and
+// re-run this test. It MUST fail. Restore and re-run; it MUST pass.
+// This was performed when the test was authored (PR #187, Finding 1).
+func TestLiftedDisj_ArityCollisionGateSuppressesArityNBinding(t *testing.T) {
+	prog, hints := progLiftedDisjShapeWithArityCollision()
+	ep, inf, errs := WithMagicSetAutoOpts(prog, hints, MagicSetOptions{Strict: true})
+	if len(errs) > 0 {
+		t.Fatalf("WithMagicSetAutoOpts failed: %v", errs)
+	}
+	if ep == nil {
+		t.Fatal("nil execution plan")
+	}
+
+	// Sanity: union and branch IDBs still get bindings. The gate must
+	// not over-reject legitimate IDB-call propagation.
+	if cols, ok := inf.Bindings["_disj_2"]; !ok || len(cols) != 1 || cols[0] != 0 {
+		t.Fatalf("expected _disj_2 bound at col 0, got %v", inf.Bindings["_disj_2"])
+	}
+
+	// Load-bearing differential assertion: walk the augmented plan and
+	// find every rule whose head is `VarDecl`. Each such rule's body
+	// must NOT begin with a `magic_VarDecl(...)` literal.
+	//
+	// With the magicset.go:270 gate intact, propagateBindings does NOT
+	// record bindings["VarDecl"] (the arity-4 body call is gate-skipped),
+	// so the outer emission loop never iterates pred=VarDecl, and the
+	// arity-1 IDB rule `VarDecl(this) :- VarDecl(this,_,_,_)` survives
+	// unrewritten.
+	//
+	// With the gate REMOVED, bindings["VarDecl"] = [0] leaks in from the
+	// `_disj_2_l` branch's arity-4 base usage, and the IDB rule becomes
+	// `VarDecl(this) :- magic_VarDecl(this), VarDecl(this,_,_,_)` — a
+	// rewrite that prefixes a magic literal onto an arity-1 IDB whose
+	// magic seed has no consumer chain. This is the bug shape the gate
+	// exists to suppress.
+	//
+	// Spot-check verified at authorship time: commenting out the gate
+	// at magicset.go:270 makes this assertion fire (PR #187, Finding 1).
+	for _, st := range ep.Strata {
+		for _, r := range st.Rules {
+			if r.Head.Predicate != "VarDecl" {
+				continue
+			}
+			if len(r.Body) == 0 {
+				continue
+			}
+			first := r.Body[0]
+			if first.Atom.Predicate == "magic_VarDecl" {
+				t.Fatalf("(name, arity) gate failed: VarDecl IDB rule was magic-rewritten with %s prefix, indicating arity-1/arity-4 binding collision leaked through propagateBindings; rule head=%v body[0]=%v",
+					first.Atom.Predicate, r.Head, first.Atom)
+			}
 		}
 	}
 }
