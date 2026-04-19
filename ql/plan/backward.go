@@ -73,6 +73,132 @@ import (
 //     backward_test.go.
 const SmallExtentThreshold = 5000
 
+// LargeArityOneExtentThreshold is the upper bound on a predicate's
+// sizeHint for an arity-1 IDB literal to count as a grounder for its
+// single var.
+//
+// Rationale (disj2-round2 / PR #158): per-tuple iteration of an
+// arity-1 IDB extent is cheap regardless of size — it's a single-column
+// scan. An arity-1 literal whose hint sits in the 5k–500k range (real
+// class extents like UseStateSetterCall on mastodon-shape corpora) is
+// the SOLE source of demand for downstream synth `_disj_*` predicates
+// in setStateUpdater-style queries. Refusing to ground at 5001 because
+// the generic SmallExtentThreshold caps at 5000 leaves the synth-disj
+// with empty demand and forces the planner into a 5-atom cross-product
+// cap-hit. Allowing arity-1 grounding up to a much higher ceiling
+// avoids that failure mode without touching the multi-arity case
+// (where wider tuples make per-tuple scoring matter).
+//
+// Saturated hints (eval.SaturatedSizeHint = 1<<30 → genuinely huge or
+// MaterialiseClassExtents-failed) deliberately stay above this ceiling
+// and continue to drop demand. The fix targets known-mid-sized arity-1
+// extents only; unknowable-size literals remain untreated.
+const LargeArityOneExtentThreshold = 1_000_000
+
+// arity1BaseGroundedIDBs returns the set of IDB predicate names whose
+// every defining rule has a single head var (arity 1) and a body
+// composed entirely of non-IDB (base/extensional) positive atoms or
+// comparisons — i.e. the structural shape of a class-extent helper
+// (concrete-charPred-style: `Pred(this) :- Base1(this,_), Base2(_,_)`).
+//
+// Such predicates are safe to treat as grounders for their single
+// column at any size up to LargeArityOneExtentThreshold: per-tuple
+// iteration is a single-column scan and the body is non-recursive so
+// the tuple count is bounded by the underlying base relations.
+//
+// This is the gating set for the disj2-round2 fix in
+// bodyContextGroundedVars. Conservative on purpose:
+//   - mixed-arity heads → excluded (mirror of mixedArity skip in
+//     InferBackwardDemand, prevents the audit-#3 name/arity hazard)
+//   - any IDB-on-IDB body atom → excluded (recursion or IDB-stacking
+//     means the size hint is the load-bearing signal we should not
+//     bypass)
+//   - aggregates / negation / empty body → excluded
+func arity1BaseGroundedIDBs(prog *datalog.Program) map[string]bool {
+	out := map[string]bool{}
+	if prog == nil || len(prog.Rules) == 0 {
+		return out
+	}
+	// First pass: collect IDB names so we can check body atoms.
+	idb := map[string]bool{}
+	for _, r := range prog.Rules {
+		idb[r.Head.Predicate] = true
+	}
+	// Group rules by head and arity-check.
+	type ruleSet struct {
+		ok    bool
+		rules []datalog.Rule
+	}
+	heads := map[string]*ruleSet{}
+	for _, r := range prog.Rules {
+		rs, ok := heads[r.Head.Predicate]
+		if !ok {
+			rs = &ruleSet{ok: true}
+			heads[r.Head.Predicate] = rs
+		}
+		if len(r.Head.Args) != 1 {
+			rs.ok = false
+		}
+		rs.rules = append(rs.rules, r)
+	}
+	for name, rs := range heads {
+		if !rs.ok {
+			continue
+		}
+		allOK := true
+		for _, r := range rs.rules {
+			if len(r.Body) == 0 {
+				allOK = false
+				break
+			}
+			for _, lit := range r.Body {
+				if lit.Cmp != nil {
+					continue
+				}
+				if lit.Agg != nil || !lit.Positive {
+					allOK = false
+					break
+				}
+				if idb[lit.Atom.Predicate] {
+					allOK = false
+					break
+				}
+			}
+			if !allOK {
+				break
+			}
+		}
+		if allOK {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// isLargeArity1Grounder returns true if `pred` is an arity-1 base-grounded
+// IDB AND its size hint is within LargeArityOneExtentThreshold (or
+// unknown — treat as plausibly small for grounding purposes since the
+// alternative is dropping demand and producing a cross-product plan).
+// Saturated hints (>= LargeArityOneExtentThreshold, in practice 1<<30)
+// deliberately do NOT qualify; we only relax the gate for mid-sized
+// extents.
+func isLargeArity1Grounder(pred string, sizeHints map[string]int, large map[string]bool) bool {
+	if !large[pred] {
+		return false
+	}
+	sz, ok := sizeHints[pred]
+	if !ok {
+		// No hint: treat as eligible — refusing to ground here is what
+		// triggers the disj2-round2 cap-hit in the SaturatedSizeHint
+		// sibling case where the pre-pass overwrote the hint with the
+		// saturated marker. Caller bears responsibility for not over-
+		// committing on truly-huge extents (the threshold above guards
+		// the saturated marker explicitly).
+		return true
+	}
+	return sz > 0 && sz <= LargeArityOneExtentThreshold
+}
+
 // DemandMap records, per predicate name, the argument positions whose
 // values are known to be bound at rule-evaluation time because every
 // caller of this predicate grounds them. Keys are predicate names;
@@ -124,6 +250,8 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 	// arities (shouldn't happen after desugar, but be defensive), we
 	// skip backward inference for it — the name/arity ambiguity from
 	// the roadmap's audit-#3 finding would give unsafe results.
+	largeArity1IDBs := arity1BaseGroundedIDBs(prog)
+
 	idbArity := map[string]int{}
 	mixedArity := map[string]bool{}
 	for _, r := range prog.Rules {
@@ -192,7 +320,7 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 		// references. Adversarial-review Finding 1 on PR #143.
 		if prog.Query != nil && len(prog.Query.Body) > 0 {
 			queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
-			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{})
+			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{}, largeArity1IDBs)
 			for _, lit := range prog.Query.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 					continue
@@ -223,7 +351,7 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 					headBoundVars[v.Name] = true
 				}
 			}
-			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars)
+			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars, largeArity1IDBs)
 
 			for _, lit := range rule.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
@@ -319,6 +447,7 @@ func bodyContextGroundedVars(
 	rule datalog.Rule,
 	sizeHints map[string]int,
 	headBoundVars map[string]bool,
+	largeArity1IDBs map[string]bool,
 ) map[string]bool {
 	bound := map[string]bool{}
 	for v := range headBoundVars {
@@ -347,8 +476,13 @@ func bodyContextGroundedVars(
 				continue
 			}
 			// Small extent: every var in the atom becomes bound after
-			// seeding.
-			if isSmallExtent(lit.Atom.Predicate, sizeHints) {
+			// seeding. Arity-1 base-grounded IDB extents (class-extent
+			// helpers like `UseStateSetterCall(c) :- CallCalleeSym(c,_),
+			// ImportBinding(_,_,_)`) qualify too even when their hint
+			// exceeds SmallExtentThreshold — see disj2-round2 / PR #158
+			// rationale on LargeArityOneExtentThreshold.
+			if isSmallExtent(lit.Atom.Predicate, sizeHints) ||
+				isLargeArity1Grounder(lit.Atom.Predicate, sizeHints, largeArity1IDBs) {
 				for _, arg := range lit.Atom.Args {
 					if v, ok := arg.(datalog.Var); ok && v.Name != "_" {
 						if !bound[v.Name] {
