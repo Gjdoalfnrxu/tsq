@@ -169,16 +169,14 @@ predicate useStateSetterCallLine(UseStateSetterCall c, int line) {
  * nested-arrow positive case above would be silently missed.
  *
  * Implementation note: the explicit `c instanceof UseStateSetterCall`
- * guard is load-bearing. The desugarer does NOT inject a class-extent
- * type literal for predicate parameters — only for `from`-clause and
- * `exists`-clause declarations (`desugar.go:558,789`). Without the
- * `instanceof`, the planner sees `c` as a free integer and does not
- * anchor the join against the materialised `UseStateSetterCall` extent;
- * the seed becomes whichever base relation has the smallest hint, and
- * the optimisation is lost. Follow-on improvement: extend
- * `desugarTopLevelPredicate` to inject parameter-type constraints so
- * authors don't need this redundancy. Tracked as a planner-roadmap
- * follow-on in PR.
+ * guard is now redundant — PR #146 taught `desugarTopLevelPredicate`
+ * to inject class-extent type literals for predicate parameters, so
+ * the planner anchors the join against the materialised
+ * `UseStateSetterCall` extent without it. The guard is kept defensively
+ * because it documents intent at the call site and is a no-op in plan
+ * shape (same literal as the auto-injected one — deduplicated by the
+ * planner). Output equivalence to the flat form is verified by
+ * bench run_008 (bit-identical CSVs across both corpora).
  */
 predicate setStateUpdaterCallsFn(UseStateSetterCall c, int line) {
     c instanceof UseStateSetterCall and
