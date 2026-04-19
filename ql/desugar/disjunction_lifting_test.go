@@ -71,7 +71,9 @@ func TestLiftedDisjunction_PerBranchHeadCarriesFullVars(t *testing.T) {
 	src := `
 predicate a(int x, int y) { any() }
 predicate b(int x, int z) { any() }
-predicate test(int x) { a(x, _) or b(x, _) }
+predicate test(int x) {
+    exists(int y, int z | a(x, y) or b(x, z))
+}
 `
 	prog := desugarOK(t, parseAndResolve(t, src))
 	branch, union := classifyDisj(prog)
@@ -105,6 +107,42 @@ predicate test(int x) { a(x, _) or b(x, _) }
 					r.Head.Predicate)
 			}
 		}
+	}
+
+	// LOAD-BEARING #166 invariant: the `_l` branch head must carry the
+	// full var set visible in the left body — `{x, y}` — and the `_r`
+	// branch head must carry `{x, z}`. A regression that re-narrowed
+	// branch heads back to shared-vars-only would still pass the
+	// shape/wildcard checks above, so assert the var sets explicitly.
+	headVarSet := func(r *datalog.Rule) map[string]bool {
+		s := map[string]bool{}
+		for _, arg := range r.Head.Args {
+			if v, ok := arg.(datalog.Var); ok {
+				s[v.Name] = true
+			}
+		}
+		return s
+	}
+	var lRule, rRule *datalog.Rule
+	for _, r := range branch {
+		if strings.HasSuffix(r.Head.Predicate, "_l") {
+			lRule = r
+		} else if strings.HasSuffix(r.Head.Predicate, "_r") {
+			rRule = r
+		}
+	}
+	if lRule == nil || rRule == nil {
+		t.Fatalf("expected one _l and one _r branch rule, got l=%v r=%v", lRule, rRule)
+	}
+	lVars := headVarSet(lRule)
+	if !lVars["x"] || !lVars["y"] {
+		t.Errorf("_l branch head must carry full left var set {x,y}, got %v (rule %s)",
+			lVars, lRule.Head.Predicate)
+	}
+	rVars := headVarSet(rRule)
+	if !rVars["x"] || !rVars["z"] {
+		t.Errorf("_r branch head must carry full right var set {x,z}, got %v (rule %s)",
+			rVars, rRule.Head.Predicate)
 	}
 }
 
@@ -147,15 +185,18 @@ func TestLiftedDisjunction_TenBranches(t *testing.T) {
 	prog := desugarOK(t, parseAndResolve(t, src))
 	branch, union := classifyDisj(prog)
 
-	// 10 branches → 9 disjunction nodes (right-associated parse) →
-	// 9 * 2 = 18 branch rules and 18 union rules. Don't pin the
-	// associativity exactly; just assert we got per-branch lifting
-	// for every disjunction node.
-	if len(branch) < 18 {
-		t.Errorf("expected >=18 per-branch IDB rules from 10-way disjunction, got %d", len(branch))
+	// 10 branches → 9 disjunction nodes (right-associated parse by the
+	// current parser) → 9 * 2 = 18 branch rules and 18 union rules.
+	// Pinned to `==` (not `>=`) so over-generation regressions are
+	// caught too — `>=` would silently accept an explosion in
+	// synthetic-rule count. If the parser ever changes associativity
+	// (or introduces n-ary disjunction nodes), this assertion will
+	// flip and is the right place to revisit the invariant.
+	if len(branch) != 18 {
+		t.Errorf("expected exactly 18 per-branch IDB rules from 10-way disjunction, got %d", len(branch))
 	}
-	if len(union) < 18 {
-		t.Errorf("expected >=18 union rules from 10-way disjunction, got %d", len(union))
+	if len(union) != 18 {
+		t.Errorf("expected exactly 18 union rules from 10-way disjunction, got %d", len(union))
 	}
 	if len(branch) != len(union) {
 		t.Errorf("branch and union rule counts must match, got %d vs %d", len(branch), len(union))
