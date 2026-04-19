@@ -208,6 +208,116 @@ func extractDB(t *testing.T, projectDir string) *db.DB {
 	return database
 }
 
+// TestInterFlowStepKindsNonZero is the Phase C PR3 regression guard mirror
+// of TestLocalFlowStepKindsNonZero (PR2). Each new ifs* primitive must emit
+// non-zero rows on at least one real fixture, summed across the corpus.
+// Floors set at ~50% of observed actuals per the PR2-established discipline
+// (a uniform floor=1 only catches total absence; ~50% catches partial
+// regressions where a kind silently drops half its output).
+//
+// The `valueflow-rta-dispatch` fixture (added in PR3 review F1) is the
+// dedicated minimal RTA carrier — interface I, class C implements I, a
+// `new C()` instantiation, and an `o.f(v)` method call against an `I`
+// receiver. It supplies all the AST-derivable inputs `CallTargetRTA`
+// needs (`MethodCall`, `InterfaceDecl`, `Implements`, `NewExpr`,
+// `MethodDecl`).
+//
+// Why ifsCallTargetRTA's floor is still 0: `CallTargetRTA` additionally
+// requires `ExprType(recv, ifaceId)`, which is a tsgo-derived semantic
+// fact — see `extract/walker_v2.go` ("ExprType and SymbolType relations
+// are left empty" without tsgo). The test harness runs without tsgo, so
+// `CallTargetRTA` (and therefore `ifsCallTargetRTA`) is structurally 0
+// across the corpus. The floor reflects an environmental constraint, not
+// laziness. When tsgo enrichment lands in the test path, the
+// `valueflow-rta-dispatch` fixture will start emitting non-zero rows and
+// this floor must be raised to ~50% of observed.
+func TestInterFlowStepKindsNonZero(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	if repoRoot == "" {
+		t.Fatal("repo root not found from CWD; regression guard cannot run")
+	}
+
+	fixtures := []string{
+		"react-component",
+		"react-usestate",
+		"react-usestate-context-alias",
+		"react-usestate-context-alias-r3",
+		"react-usestate-prop-alias",
+		"async-patterns",
+		"destructuring",
+		"imports",
+		"full-ts-project",
+		"valueflow-base",
+		"valueflow-multihop",
+		"valueflow-negative",
+		"valueflow-fnref",
+		"valueflow-rta-dispatch",
+	}
+
+	// Per-kind floors (~50% of observed totals during PR3 implementation).
+	// `InterFlowStep` and `FlowStep` are union/composite floors — they're
+	// derived from the per-kind sums above and don't add independent
+	// regression-guard signal beyond a smoke-test that the unions wire
+	// up. Kept for cheap end-to-end coverage.
+	// Per-kind floors (~50% of observed totals on this corpus).
+	// Observed (PR3 review F1+F2 measurement): ifsRetToCall=16,
+	// ifsImportExport=37, ifsCallTargetRTA=0 (tsgo-gated, see comment above),
+	// InterFlowStep=53, FlowStep=526.
+	//
+	// `InterFlowStep` and `FlowStep` floors are derived from per-kind
+	// sums and don't add independent regression-guard signal beyond a
+	// smoke-test that the union/composite rules wire up. Cheap to keep.
+	floors := map[string]int{
+		"ifsRetToCall":     8,
+		"ifsImportExport":  18,
+		"ifsCallTargetRTA": 0, // tsgo-gated; see method comment above
+		"InterFlowStep":    26,
+		"FlowStep":         263,
+	}
+
+	totals := map[string]int{}
+	present := 0
+	for _, name := range fixtures {
+		dir := filepath.Join(repoRoot, "testdata", "projects", name)
+		if _, err := os.Stat(dir); err != nil {
+			t.Logf("fixture not present: %s", dir)
+			continue
+		}
+		present++
+		baseRels := dbToRelations(extractDB(t, dir))
+		var b strings.Builder
+		b.WriteString(name)
+		b.WriteString(": ")
+		for kind := range floors {
+			c, err := evalCount(baseRels, kind, 2)
+			if err != nil {
+				t.Fatalf("eval %s on %s: %v", kind, name, err)
+			}
+			totals[kind] += c
+			b.WriteString(kind)
+			b.WriteString("=")
+			b.WriteString(itoa(c))
+			b.WriteString(" ")
+		}
+		t.Log(b.String())
+	}
+	if present == 0 {
+		t.Fatal("no fixtures present")
+	}
+
+	for kind, floor := range floors {
+		if floor == 0 {
+			// Tsgo-gated kind — see method-level comment for ifsCallTargetRTA.
+			// Synthetic unit test (TestIfsCallTargetRTA) guards body correctness.
+			continue
+		}
+		if totals[kind] < floor {
+			t.Errorf("regression guard: %s emitted %d rows across corpus, want >= %d",
+				kind, totals[kind], floor)
+		}
+	}
+}
+
 // TestCallTargetCrossModuleNonZero is a regression guard for the Phase C PR1
 // CallTargetCrossModule rule. The budget test above only logs per-fixture
 // counts; if a future change broke the rule body or column semantics drifted,

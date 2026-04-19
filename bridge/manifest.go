@@ -128,6 +128,12 @@ func v2Manifest() *CapabilityManifest {
 			// Populated by extract/rules/localflowstep.go; QL consumer
 			// arrives in Phase C PR3/PR4 (`flowStep` / `mayResolveTo`).
 			{Name: "LocalFlowStep", Relation: "LocalFlowStep", File: "tsq_dataflow.qll"},
+			// v2 Phase C PR3 (value-flow): inter-procedural step union and
+			// the top-level `FlowStep` union (LocalFlowStep ∪ InterFlowStep).
+			// Populated by extract/rules/interflowstep.go. PR4 will close
+			// `FlowStep` into the recursive `mayResolveTo` predicate.
+			{Name: "InterFlowStep", Relation: "InterFlowStep", File: "tsq_dataflow.qll"},
+			{Name: "FlowStep", Relation: "FlowStep", File: "tsq_dataflow.qll"},
 			// v2 Phase F: framework models
 			{Name: "ExpressHandler", Relation: "ExpressHandler", File: "tsq_express.qll"},
 			// v2 Phase D: taint analysis

@@ -1,0 +1,7 @@
+{
+  "name": "valueflow-rta-dispatch-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fixture exercising RTA-resolved interface method dispatch for ifsCallTargetRTA regression guard",
+  "type": "module"
+}
