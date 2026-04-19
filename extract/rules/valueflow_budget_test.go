@@ -143,6 +143,12 @@ func extractAndCount(t *testing.T, projectDir string) map[string]int {
 		t.Fatalf("eval CallTargetRTA: %v", err)
 	}
 	counts["CallTargetRTA"] = rtaCount
+
+	xmodCount, err := evalCount(baseRels, "CallTargetCrossModule", 2)
+	if err != nil {
+		t.Fatalf("eval CallTargetCrossModule: %v", err)
+	}
+	counts["CallTargetCrossModule"] = xmodCount
 	return counts
 }
 
@@ -197,7 +203,7 @@ func evalCount(baseRels map[string]*eval.Relation, pred string, arity int) (int,
 }
 
 func formatCounts(c map[string]int) string {
-	keys := []string{"Node", "CallArg", "Parameter", "CallTarget", "CallTargetRTA", "ParamBinding", "ExprValueSource", "AssignExpr", "Assign"}
+	keys := []string{"Node", "CallArg", "Parameter", "CallTarget", "CallTargetRTA", "CallTargetCrossModule", "ParamBinding", "ExprValueSource", "AssignExpr", "Assign"}
 	var b strings.Builder
 	for _, k := range keys {
 		b.WriteString(k)

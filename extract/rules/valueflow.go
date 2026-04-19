@@ -82,5 +82,38 @@ func ValueFlowRules() []datalog.Rule {
 		// Budget gate (valueflow_budget_test.go) bounds the multiplicative
 		// blow-up.
 		rule("ParamBinding", head, body("CallTargetRTA")...),
+
+		// Value-flow Phase C PR1: CallTargetCrossModule(call, fn) — bridges a
+		// call whose callee resolves through one import/export hop to the
+		// exported function. Mirrors the bridge's `importedFunctionSymbol`
+		// helper, joined with `CallCalleeSym` so the head is keyed by the
+		// call site rather than the local symbol. Phase C PR3 will consume
+		// this in `ifsRetToCall` to avoid a 4-table join under the
+		// recursive `mayResolveTo` closure.
+		//
+		// CallTargetCrossModule(call, fn) :-
+		//     CallCalleeSym(call, localSym),
+		//     ImportBinding(localSym, _, importedName),
+		//     ExportBinding(importedName, exportedSym, _),
+		//     FunctionSymbol(exportedSym, fn).
+		//
+		// Unsoundness (documented, plan §3.2 / §4.1): the join on
+		// importedName ignores the module specifier, so two modules that
+		// export the same name will cross-bridge. Same posture as the
+		// existing bridge predicate; tightening requires a real module
+		// resolver (deferred indefinitely from Phase C).
+		rule("CallTargetCrossModule",
+			[]datalog.Term{v("call"), v("fn")},
+			pos("CallCalleeSym", v("call"), v("localSym")),
+			mustNamedLiteral("ImportBinding", map[string]datalog.Term{
+				"localSym":     v("localSym"),
+				"importedName": v("importedName"),
+			}),
+			mustNamedLiteral("ExportBinding", map[string]datalog.Term{
+				"exportedName": v("importedName"),
+				"localSym":     v("exportedSym"),
+			}),
+			pos("FunctionSymbol", v("exportedSym"), v("fn")),
+		),
 	}
 }

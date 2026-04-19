@@ -115,6 +115,11 @@ var stdlibCoverageAllowlist = map[string]string{
 	"AssignExpr":      "value-flow Phase A grounded base; QL consumer arrives in PR3",
 	"ParamBinding":    "value-flow Phase A grounded base; QL consumer arrives in PR3",
 
+	// Value-flow Phase C PR1: pre-joined cross-module call target.
+	// Populated as a system rule; QL consumer ships in Phase C PR3
+	// (`ifsRetToCall`).
+	"CallTargetCrossModule": "value-flow Phase C grounded base; QL consumer arrives in Phase C PR3",
+
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
 

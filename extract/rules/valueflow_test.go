@@ -159,12 +159,143 @@ func TestParamBinding_UnresolvedCallSkipped(t *testing.T) {
 	}
 }
 
-// TestValueFlowRulesCount documents the rule count (2 today: ParamBinding via
-// CallTarget and via CallTargetRTA; will grow in PR3).
+// TestValueFlowRulesCount documents the rule count (3 after Phase C PR1:
+// ParamBinding via CallTarget, ParamBinding via CallTargetRTA, and
+// CallTargetCrossModule).
 func TestValueFlowRulesCount(t *testing.T) {
 	rules := ValueFlowRules()
-	if len(rules) != 2 {
-		t.Errorf("expected 2 value-flow rules (ParamBinding x2), got %d", len(rules))
+	if len(rules) != 3 {
+		t.Errorf("expected 3 value-flow rules (ParamBinding x2 + CallTargetCrossModule), got %d", len(rules))
+	}
+}
+
+// callTargetCrossModuleBaseRels extends valueFlowBaseRels with the
+// import/export EDB rels needed to evaluate CallTargetCrossModule.
+func callTargetCrossModuleBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relation {
+	base := valueFlowBaseRels(nil)
+	base["ImportBinding"] = eval.NewRelation("ImportBinding", 3)
+	base["ExportBinding"] = eval.NewRelation("ExportBinding", 3)
+	for k, v := range overrides {
+		base[k] = v
+	}
+	return base
+}
+
+// crossModuleQuery returns a Query that selects all CallTargetCrossModule rows.
+func crossModuleQuery() *datalog.Query {
+	return &datalog.Query{
+		Select: []datalog.Term{v("call"), v("fn")},
+		Body: []datalog.Literal{
+			pos("CallTargetCrossModule", v("call"), v("fn")),
+		},
+	}
+}
+
+// TestCallTargetCrossModule_SingleHop verifies the canonical case:
+//
+//	// lib.ts
+//	export function helper(x) { return x + 1; }
+//	// consumer.ts
+//	import { helper } from "./lib";
+//	helper(7);
+//
+// emits CallTargetCrossModule(call=helper-call, fn=helper-fn).
+func TestCallTargetCrossModule_SingleHop(t *testing.T) {
+	// Import side: localSym=10 ("helper" in consumer.ts).
+	// Export side: exportedSym=20 ("helper" in lib.ts), targetFn=1.
+	// Call site: call=300, callee identifier resolves to localSym=10.
+	baseRels := callTargetCrossModuleBaseRels(map[string]*eval.Relation{
+		"CallCalleeSym":  makeRel("CallCalleeSym", 2, iv(300), iv(10)),
+		"ImportBinding":  makeRel("ImportBinding", 3, iv(10), sv("./lib"), sv("helper")),
+		"ExportBinding":  makeRel("ExportBinding", 3, sv("helper"), iv(20), iv(900)),
+		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(20), iv(1)),
+	})
+	rs := planAndEval(t, AllSystemRules(), crossModuleQuery(), baseRels)
+	if len(rs.Rows) != 1 {
+		t.Fatalf("expected 1 CallTargetCrossModule row, got %d: %v", len(rs.Rows), rs.Rows)
+	}
+	if !resultContains(rs, iv(300), iv(1)) {
+		t.Errorf("expected CallTargetCrossModule(300, 1), got %v", rs.Rows)
+	}
+}
+
+// TestCallTargetCrossModule_NameMismatchSkipped verifies that an import of one
+// name does not bridge to an export of a different name.
+func TestCallTargetCrossModule_NameMismatchSkipped(t *testing.T) {
+	baseRels := callTargetCrossModuleBaseRels(map[string]*eval.Relation{
+		"CallCalleeSym":  makeRel("CallCalleeSym", 2, iv(300), iv(10)),
+		"ImportBinding":  makeRel("ImportBinding", 3, iv(10), sv("./lib"), sv("helper")),
+		"ExportBinding":  makeRel("ExportBinding", 3, sv("other"), iv(20), iv(900)),
+		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(20), iv(1)),
+	})
+	rs := planAndEval(t, AllSystemRules(), crossModuleQuery(), baseRels)
+	if len(rs.Rows) != 0 {
+		t.Errorf("expected 0 CallTargetCrossModule rows on name mismatch, got %d: %v", len(rs.Rows), rs.Rows)
+	}
+}
+
+// TestCallTargetCrossModule_NonFunctionExportSkipped verifies that an
+// imported name resolving to a non-function exported symbol (e.g. `const VERSION = "1.0"`)
+// does not produce a CallTargetCrossModule row — the FunctionSymbol join filters
+// it out.
+func TestCallTargetCrossModule_NonFunctionExportSkipped(t *testing.T) {
+	baseRels := callTargetCrossModuleBaseRels(map[string]*eval.Relation{
+		"CallCalleeSym": makeRel("CallCalleeSym", 2, iv(300), iv(10)),
+		"ImportBinding": makeRel("ImportBinding", 3, iv(10), sv("./lib"), sv("VERSION")),
+		"ExportBinding": makeRel("ExportBinding", 3, sv("VERSION"), iv(20), iv(900)),
+		// No FunctionSymbol(20, _) — VERSION is not a function.
+	})
+	rs := planAndEval(t, AllSystemRules(), crossModuleQuery(), baseRels)
+	if len(rs.Rows) != 0 {
+		t.Errorf("expected 0 CallTargetCrossModule rows for non-function export, got %d: %v", len(rs.Rows), rs.Rows)
+	}
+}
+
+// TestCallTargetCrossModule_NameCollisionOverBridges documents the v1
+// over-bridging behaviour (plan §3.2 / §4.1): two modules exporting the same
+// name produce two CallTargetCrossModule rows for one import/call. This is
+// load-bearing — the bridge's `importedFunctionSymbol` has the same posture,
+// and tightening to a per-module match requires a real module resolver
+// (deferred). The test exists so the documented unsoundness can't drift
+// silently.
+func TestCallTargetCrossModule_NameCollisionOverBridges(t *testing.T) {
+	// Two modules both export "helper": one resolves to fn=1, the other fn=2.
+	// The call site imports "helper" from ./libA but the join is name-only,
+	// so both fns surface. Documented unsoundness.
+	baseRels := callTargetCrossModuleBaseRels(map[string]*eval.Relation{
+		"CallCalleeSym": makeRel("CallCalleeSym", 2, iv(300), iv(10)),
+		"ImportBinding": makeRel("ImportBinding", 3, iv(10), sv("./libA"), sv("helper")),
+		"ExportBinding": makeRel("ExportBinding", 3,
+			sv("helper"), iv(20), iv(900),
+			sv("helper"), iv(21), iv(901),
+		),
+		"FunctionSymbol": makeRel("FunctionSymbol", 2,
+			iv(20), iv(1),
+			iv(21), iv(2),
+		),
+	})
+	rs := planAndEval(t, AllSystemRules(), crossModuleQuery(), baseRels)
+	if len(rs.Rows) != 2 {
+		t.Fatalf("expected 2 CallTargetCrossModule rows for name collision (documented over-bridging), got %d: %v",
+			len(rs.Rows), rs.Rows)
+	}
+	if !resultContains(rs, iv(300), iv(1)) || !resultContains(rs, iv(300), iv(2)) {
+		t.Errorf("expected both CallTargetCrossModule(300, 1) and (300, 2), got %v", rs.Rows)
+	}
+}
+
+// TestCallTargetCrossModule_LocalCallNotBridged verifies that a same-module
+// call (no ImportBinding for the callee) emits no CallTargetCrossModule row —
+// the cross-module rule must not subsume direct CallTarget cases.
+func TestCallTargetCrossModule_LocalCallNotBridged(t *testing.T) {
+	// localSym=10 has a CallCalleeSym row but is NOT in ImportBinding.
+	baseRels := callTargetCrossModuleBaseRels(map[string]*eval.Relation{
+		"CallCalleeSym":  makeRel("CallCalleeSym", 2, iv(300), iv(10)),
+		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(10), iv(1)),
+	})
+	rs := planAndEval(t, AllSystemRules(), crossModuleQuery(), baseRels)
+	if len(rs.Rows) != 0 {
+		t.Errorf("expected 0 CallTargetCrossModule rows for local call, got %d: %v", len(rs.Rows), rs.Rows)
 	}
 }
 
