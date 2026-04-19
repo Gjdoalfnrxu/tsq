@@ -527,6 +527,9 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	cpuProfile := fs.String("cpu-profile", "", "write a CPU profile to this `file` for the duration of the query (analyse with 'go tool pprof')")
 	memProfile := fs.String("mem-profile", "", "write a heap profile to this `file` after the query completes (analyse with 'go tool pprof')")
 	memSnapshotDir := fs.String("mem-snapshot-dir", "", "write a heap profile every 10s into this `dir` while the query runs; useful for diagnosing eval-time memory blow-ups (see issue #130)")
+	printRelSizes := fs.Bool("print-rel-sizes", false, "print one line per non-empty fact relation to stderr at evaluation start (descending row count); diagnostic for planner cap-hit investigations")
+	dumpPlan := fs.Bool("dump-plan", false, "after planning, print the planned join order for every rule to stderr with bound/free variable annotations")
+	dumpRewrittenRules := fs.Bool("dump-rewritten-rules", false, "print the rules AFTER magic-set rewrites (before evaluation) to stderr; no-op when --magic-sets is off or no bindings are inferable")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -622,6 +625,15 @@ func cmdQuery(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	bopts := buildOptions{useMagicSets: *magicSets, magicSetsStrict: *magicSetsStrict, warnOut: stderr}
 	if *verbose {
 		bopts.verboseOut = stderr
+	}
+	if *printRelSizes {
+		bopts.printRelSizesOut = stderr
+	}
+	if *dumpPlan {
+		bopts.dumpPlanOut = stderr
+	}
+	if *dumpRewrittenRules {
+		bopts.dumpRewrittenRulesOut = stderr
 	}
 	queryStart := time.Now()
 	rs, err := compileAndEval(ctx, queryFile, *dbFile, *maxBindingsPerRule, *maxIterations, *allowPartial, bopts)
@@ -721,6 +733,20 @@ func writeMemProfile(path string, stderr io.Writer) {
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	// Custom usage so `tsq check --help` (and unknown-flag errors) print a
+	// one-liner describing the subcommand instead of the bare flag dump.
+	// Previously cmdCheck registered no flags and no Usage, so unknown
+	// flags fell through silently — caller-confusing, especially since
+	// the planner-fix investigation involves passing diagnostic flags
+	// to cmdQuery and cmdCheck side by side.
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: tsq check QUERY_FILE")
+		fmt.Fprintln(stderr, "  Validate that QUERY_FILE parses, resolves, desugars, and plans without errors.")
+		fmt.Fprintln(stderr, "  No fact DB is loaded; planning uses default cardinality heuristics.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -808,6 +834,14 @@ type buildOptions struct {
 	magicSetsStrict bool      // when true, surfaces magic-set planning errors instead of silently falling back (issue #112)
 	verboseOut      io.Writer // if non-nil, magic-set-fired diagnostics (verbose) are written here
 	warnOut         io.Writer // if non-nil, magic-set-fallback warnings (always-on) are written here
+
+	// Diagnostic outputs (off when nil). Plumbed from the --print-rel-sizes,
+	// --dump-plan, and --dump-rewritten-rules flags on `tsq query`. Each
+	// writer, when non-nil, receives the corresponding dump at the
+	// appropriate point in compileAndEval. See cmd/tsq/diag.go.
+	printRelSizesOut      io.Writer
+	dumpPlanOut           io.Writer
+	dumpRewrittenRulesOut io.Writer
 }
 
 func buildProgram(src, file string, importLoader func(string) (*ast.Module, error), sizeHints map[string]int) (*plan.ExecutionPlan, *ast.Module, []resolve.Warning, []error) {
@@ -976,6 +1010,13 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// order joins by true relation size rather than a uniform default of 1000.
 	sizeHints := buildSizeHints(factDB)
 
+	// --print-rel-sizes: emit one line per non-empty fact relation before
+	// any further work, so even an OOM/cap-hit downstream still leaves the
+	// caller with the relation-size snapshot they came for.
+	if opts.printRelSizesOut != nil {
+		printRelSizes(opts.printRelSizesOut, factDB)
+	}
+
 	// Compile (parse → resolve → desugar → MergeSystemRules) WITHOUT planning.
 	// Planning happens below via plan.EstimateAndPlan — the single
 	// estimate-then-plan entry point (P1 of the planner roadmap, replacing
@@ -988,6 +1029,23 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 		// by phase and join with newline-indented messages so callers see one
 		// error per phase boundary rather than a flat error.Join blob.
 		return nil, joinPhaseErrors(buildErrs)
+	}
+
+	// --dump-rewritten-rules: emit the program after magic-set rewriting (or
+	// the unmodified program if magic sets are disabled / no bindings are
+	// inferable). Done here, before planning/evaluation, so a cap-hit during
+	// eval still leaves the rewritten rules visible.
+	if opts.dumpRewrittenRulesOut != nil {
+		var bindings map[string][]int
+		if opts.useMagicSets {
+			idb := map[string]bool{}
+			for _, r := range prog.Rules {
+				idb[r.Head.Predicate] = true
+			}
+			inf := plan.InferQueryBindings(prog, idb)
+			bindings = inf.Bindings
+		}
+		dumpRewrittenRules(opts.dumpRewrittenRulesOut, prog, bindings)
 	}
 
 	// Load base relations once and reuse them for both the pre-pass (via the
@@ -1022,6 +1080,13 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 			errs = append(errs, fmt.Errorf("plan: %w", e))
 		}
 		return nil, joinPhaseErrors(errs)
+	}
+
+	// --dump-plan: emit the planned join order after the estimate-aware
+	// plan is final but before evaluation. Same rationale as the rewritten-
+	// rules dump: surface diagnostics before any cap-hit can hide them.
+	if opts.dumpPlanOut != nil {
+		dumpPlan(opts.dumpPlanOut, execPlan)
 	}
 
 	// Evaluate.
