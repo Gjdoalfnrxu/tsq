@@ -369,7 +369,7 @@ func PlanWithClassExtents(prog *datalog.Program, sizeHints map[string]int, class
 		ps := Stratum{}
 		for _, rule := range stratum {
 			headDemand := demand[rule.Head.Predicate]
-			order := orderJoinsWithDemand(rule.Head, rule.Body, sizeHints, headDemand)
+			order := orderJoinsWithDemandAndIDB(rule.Head, rule.Body, sizeHints, headDemand, demand)
 			// P3b: annotate each step with the demand frontier so the
 			// evaluator can drop unused columns from intermediate
 			// bindings.
@@ -460,7 +460,7 @@ func RePlanStratumWithDemand(s *Stratum, sizeHints map[string]int, demand Demand
 			continue
 		}
 		headDemand := demand[s.Rules[i].Head.Predicate]
-		s.Rules[i].JoinOrder = orderJoinsWithDemand(s.Rules[i].Head, body, sizeHints, headDemand)
+		s.Rules[i].JoinOrder = orderJoinsWithDemandAndIDB(s.Rules[i].Head, body, sizeHints, headDemand, demand)
 		computeLiveVars(s.Rules[i].JoinOrder, headVars(s.Rules[i].Head))
 	}
 }

@@ -696,6 +696,40 @@ func orderJoinsWithDemand(
 	sizeHints map[string]int,
 	headDemand []int,
 ) []JoinStep {
+	return orderJoinsWithDemandAndIDB(head, body, sizeHints, headDemand, nil)
+}
+
+// orderJoinsWithDemandAndIDB extends orderJoinsWithDemand with awareness
+// of per-IDB demand bindings: for any positive body literal that calls
+// an IDB whose demand map names bound positions, the planner penalises
+// scheduling that literal until the corresponding variables are
+// runtime-bound. This is the disj2-round4 fix.
+//
+// Concretely, after magic-set rewriting an IDB call P(x,y) with
+// demand[P]=[0] will be evaluated as `magic_P(x), P(x,y)` — i.e. the
+// magic seed prefilters x. If we schedule P(x,y) before x is bound by
+// some grounder in the body, we lose that benefit and the underlying
+// recursive evaluation iterates the entire predicate. The fix tells
+// the greedy scorer "defer this literal until x is runtime-bound" by
+// inflating its effective size hint to SaturatedSizeHint when the
+// precondition is unmet. Once a later step grounds x, the literal
+// becomes attractively-cheap again at its real size.
+//
+// Only POSITIVE atom literals on IDBs with non-empty demand are
+// affected. Comparisons, negatives, aggregates, base relations, and
+// IDBs with empty demand keep their current scoring. The penalty does
+// NOT apply to the rule's OWN head predicate (that would forbid
+// recursive self-calls from being scheduled at all).
+//
+// idbDemand may be nil; nil degrades exactly to orderJoinsWithDemand's
+// pre-round4 behaviour.
+func orderJoinsWithDemandAndIDB(
+	head datalog.Atom,
+	body []datalog.Literal,
+	sizeHints map[string]int,
+	headDemand []int,
+	idbDemand DemandMap,
+) []JoinStep {
 	if len(body) == 0 {
 		return nil
 	}
@@ -745,7 +779,28 @@ func orderJoinsWithDemand(
 		// review Finding 2 on PR #143. The "head-demand biases scoring"
 		// promise is preserved at scoreLiteral below (which keeps
 		// plannerBound).
-		tinyIdx := pickTinySeed(body, placed, runtimeBound, sizeHints, defaultSizeHint)
+		// Tiny-seed override is suppressed for IDB literals whose demand
+		// preconditions aren't met yet — a pickTinySeed promotion via the
+		// shared-bound-var branch would otherwise schedule a demand-IDB
+		// before its bound vars are grounded, defeating the round4 fix.
+		// We pass placedView equal to placed but block IDB-demand-deferred
+		// candidates by marking them temporarily placed for this lookup.
+		var tinyMask []bool
+		if hasIDBDemand(body, idbDemand) {
+			tinyMask = make([]bool, len(body))
+			copy(tinyMask, placed)
+			for i, lit := range body {
+				if tinyMask[i] {
+					continue
+				}
+				if isIDBCallDeferred(lit, head.Predicate, idbDemand, runtimeBound, sizeHints) {
+					tinyMask[i] = true
+				}
+			}
+		} else {
+			tinyMask = placed
+		}
+		tinyIdx := pickTinySeed(body, tinyMask, runtimeBound, sizeHints, defaultSizeHint)
 		if tinyIdx != -1 && isEligible(body[tinyIdx], runtimeBound) {
 			bestIdx = tinyIdx
 		} else {
@@ -757,6 +812,14 @@ func orderJoinsWithDemand(
 					continue
 				}
 				negBound, size := scoreLiteral(lit, plannerBound, sizeHints)
+				// Round4: defer IDB literals whose demand requires
+				// positions not yet runtime-bound. Inflate their size to
+				// SaturatedSizeHint so any other eligible candidate wins;
+				// when a later step binds the required vars they regain
+				// their true cost and become competitive again.
+				if isIDBCallDeferred(lit, head.Predicate, idbDemand, runtimeBound, sizeHints) {
+					size = idbDeferredPenalty
+				}
 				if bestIdx == -1 || negBound < bestNegBound || (negBound == bestNegBound && size < bestSize) {
 					bestIdx = i
 					bestNegBound = negBound
@@ -796,4 +859,93 @@ func orderJoinsWithDemand(
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+// idbDeferredPenalty is the cost-model penalty assigned to an IDB
+// literal whose demand bindings are not yet runtime-bound. It must
+// dominate any plausible real size hint while staying below int
+// overflow; aligning with eval.SaturatedSizeHint (1<<30) is the
+// natural choice — both signal "treat as effectively unbounded".
+const idbDeferredPenalty = 1 << 30
+
+// hasIDBDemand returns true if any literal in body refers to a
+// predicate present in idbDemand with a non-empty bound-position list.
+// Used as a cheap pre-check to skip the per-step deferral computation
+// when no demand applies (the common case).
+func hasIDBDemand(body []datalog.Literal, idbDemand DemandMap) bool {
+	if len(idbDemand) == 0 {
+		return false
+	}
+	for _, lit := range body {
+		if !lit.Positive || lit.Cmp != nil || lit.Agg != nil {
+			continue
+		}
+		if cols, ok := idbDemand[lit.Atom.Predicate]; ok && len(cols) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// isIDBCallDeferred reports whether lit is a positive call to an IDB
+// whose demand map names argument positions that are NOT yet bound in
+// runtimeBound. Such a call should be deferred until a later step
+// grounds the required vars — but only when:
+//
+//   - The literal's size hint is "large" (≥ SmallExtentThreshold) or
+//     unhinted (defaultSizeHint). A genuinely small IDB call (e.g.
+//     a tiny class extent like TaintSink at size 7) is cheap to
+//     schedule even with free args; deferring it would suppress the
+//     existing tiny-seed heuristic that depends on small-hinted IDBs
+//     winning slot 0. Round4's target is the recursive / big-IDB
+//     shape (functionContainsStar), not small lookup helpers.
+//
+//   - The predicate is NOT the rule's own head (recursive self-call).
+//     A literal that is a recursive self-call (e.g. `Path :- Path,
+//     Edge`) is NEVER deferred — that would forbid scheduling the
+//     recursive case at all, breaking fixpoint convergence.
+//
+// Comparisons, negatives, aggregates, and base relations always return
+// false (idbDemand has no entry, or is gated out above).
+func isIDBCallDeferred(
+	lit datalog.Literal,
+	selfHead string,
+	idbDemand DemandMap,
+	runtimeBound map[string]bool,
+	sizeHints map[string]int,
+) bool {
+	if !lit.Positive || lit.Cmp != nil || lit.Agg != nil {
+		return false
+	}
+	pred := lit.Atom.Predicate
+	if pred == "" || pred == selfHead {
+		return false
+	}
+	cols, ok := idbDemand[pred]
+	if !ok || len(cols) == 0 {
+		return false
+	}
+	// Size-gate: only defer literals that would be expensive to
+	// scan unbound. A known-small IDB hint exempts the literal from
+	// deferral — its full scan is cheap.
+	if sz, hinted := sizeHints[pred]; hinted && sz > 0 && sz <= SmallExtentThreshold {
+		return false
+	}
+	for _, col := range cols {
+		if col < 0 || col >= len(lit.Atom.Args) {
+			// Arity mismatch — treat as not-deferred to avoid
+			// silently breaking malformed but otherwise-eligible plans.
+			return false
+		}
+		v, isVar := lit.Atom.Args[col].(datalog.Var)
+		if !isVar || v.Name == "" || v.Name == "_" {
+			// Constant or wildcard at the demand position satisfies
+			// the magic-set seed without runtime binding.
+			continue
+		}
+		if !runtimeBound[v.Name] {
+			return true
+		}
+	}
+	return false
 }
