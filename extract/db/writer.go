@@ -12,7 +12,7 @@ import (
 
 const (
 	Magic         = "TSQ\x00"
-	SchemaVersion = 1
+	SchemaVersion = 2
 	MaxTuples     = math.MaxUint32
 	MaxStringLen  = 1 << 20 // 1MB per string — sanity limit
 )

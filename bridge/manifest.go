@@ -111,6 +111,13 @@ func v2Manifest() *CapabilityManifest {
 			// v2 Phase C3: inter-procedural composition
 			{Name: "InterFlow", Relation: "InterFlow", File: "tsq_composition.qll"},
 			{Name: "FlowStar", Relation: "FlowStar", File: "tsq_composition.qll"},
+			// v2 Phase A (value-flow): grounded base relations for non-recursive
+			// mayResolveTo. QL consumers ship in Phase A PR3 (tsq_valueflow.qll);
+			// the relations themselves are populated now so downstream PRs can
+			// be merged independently. See docs/design/valueflow-phase-a-plan.md.
+			{Name: "ExprValueSource", Relation: "ExprValueSource", File: "tsq_expressions.qll"},
+			{Name: "AssignExpr", Relation: "AssignExpr", File: "tsq_variables.qll"},
+			{Name: "ParamBinding", Relation: "ParamBinding", File: "tsq_calls.qll"},
 			// v2 Phase F: framework models
 			{Name: "ExpressHandler", Relation: "ExpressHandler", File: "tsq_express.qll"},
 			// v2 Phase D: taint analysis

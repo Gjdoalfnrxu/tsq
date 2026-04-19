@@ -157,6 +157,15 @@ func (fw *FactWalker) enterNode(node ASTNode) (bool, error) {
 	if IsFunctionKind(kind) {
 		fw.emitFunction(node, id, kind)
 	}
+	// Value-flow Phase A: ExprValueSource(expr, expr) for value-producing literals.
+	// Identity row — the planner uses it as a grounded base predicate for
+	// non-recursive mayResolveTo. See docs/design/valueflow-phase-a-plan.md §1.2.
+	if IsValueSourceKind(kind) {
+		fw.emit("ExprValueSource", id, id)
+	} else if kind == "TemplateString" && !templateHasSubstitution(node) {
+		// Template literal with no ${...} substitutions — value is its own subtree.
+		fw.emit("ExprValueSource", id, id)
+	}
 	switch kind {
 	case "CallExpression":
 		fw.emitCall(node, id)
@@ -536,6 +545,13 @@ func (fw *FactWalker) emitAssign(node ASTNode, id uint32) {
 	}
 
 	fw.emit("Assign", leftID, rightID, lhsSymID)
+
+	// Value-flow Phase A: AssignExpr(lhsSym, rhsExpr) — symmetric-to-VarDecl
+	// projection. Only emit when we have a resolved lhsSym; assigns to member
+	// expressions or unresolved identifiers go through other relations.
+	if lhsSymID != 0 && rightID != 0 {
+		fw.emit("AssignExpr", lhsSymID, rightID)
+	}
 
 	// FieldWrite if LHS is a member expression
 	if leftNode != nil && leftNode.Kind() == "MemberExpression" {
@@ -1051,6 +1067,24 @@ func (fw *FactWalker) emitJsxAttr(node ASTNode, elementID uint32) {
 }
 
 // ---- Template Literals ----
+
+// templateHasSubstitution reports whether a TemplateString node contains any
+// `${...}` substitution children. Used by ExprValueSource emission to decide
+// whether a template literal is itself a value-source (no substitutions ⇒
+// runtime value is determined by the literal subtree alone).
+func templateHasSubstitution(node ASTNode) bool {
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		if child.Kind() == "TemplateSubstitution" {
+			return true
+		}
+	}
+	return false
+}
 
 func (fw *FactWalker) emitTemplateLiteral(node ASTNode, id uint32, tagID uint32) {
 	fw.emit("TemplateLiteral", id, tagID)

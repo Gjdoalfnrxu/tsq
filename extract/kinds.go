@@ -75,3 +75,59 @@ func init() {
 func isExpressionKind(kind string) bool {
 	return expressionKindSet[kind]
 }
+
+// ValueSourceKinds lists tree-sitter node kinds that are "value-producing
+// literals at their own location" — expressions whose runtime value is
+// determined entirely by their own subtree. Used to populate the
+// `ExprValueSource` relation that grounds the value-flow Phase A
+// non-recursive `mayResolveTo`. See docs/design/valueflow-phase-a-plan.md §1.2.
+//
+// Carve-outs (NOT in this list, by design): identifiers, calls, member
+// access, binary ops, await, `as` / `!` / parenthesised casts. Those resolve
+// through other relations (ExprMayRef, ExprIsCall, FieldRead, Cast, ...).
+//
+// TemplateString (template literals) covers the no-substitutions case. The
+// emit site checks for embedded TemplateExpression children and skips when
+// substitutions are present — those are not deterministic by their own
+// subtree.
+var ValueSourceKinds = []string{
+	// Object / array / function / class literals
+	"Object",           // tree-sitter ObjectExpression
+	"ObjectExpression", // tsgo / alternative kind name
+	"ArrayExpression",
+	"Array",
+	"ArrowFunction",
+	"FunctionExpression",
+	"GeneratorFunction",
+	"ClassExpression",
+	// Primitive literals
+	"String",
+	"Number",
+	"True",
+	"False",
+	"Null",
+	"Undefined",
+	"Regex",
+	"RegularExpressionLiteral",
+	// JSX
+	"JsxElement",
+	"JsxSelfClosingElement",
+	"JsxFragment",
+}
+
+var valueSourceKindSet map[string]bool
+
+func init() {
+	valueSourceKindSet = make(map[string]bool, len(ValueSourceKinds))
+	for _, k := range ValueSourceKinds {
+		valueSourceKindSet[k] = true
+	}
+}
+
+// IsValueSourceKind returns true if kind is a value-producing literal whose
+// runtime value equals its own AST subtree. Template literals are NOT
+// included here because some template strings have substitutions; the
+// per-node check at emit time handles that case.
+func IsValueSourceKind(kind string) bool {
+	return valueSourceKindSet[kind]
+}

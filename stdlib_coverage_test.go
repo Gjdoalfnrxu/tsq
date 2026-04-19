@@ -107,6 +107,13 @@ var stdlibCoverageAllowlist = map[string]string{
 	"InterFlow": "internal interprocedural composition",
 	"FlowStar":  "used in custom_config.ql but as bare predicate, not class reference",
 
+	// Value-flow Phase A grounded base relations — populated for the
+	// non-recursive mayResolveTo predicate added in Phase A PR3 (no QL
+	// consumers ship in PR1 / PR2).
+	"ExprValueSource": "value-flow Phase A grounded base; QL consumer arrives in PR3",
+	"AssignExpr":      "value-flow Phase A grounded base; QL consumer arrives in PR3",
+	"ParamBinding":    "value-flow Phase A grounded base; QL consumer arrives in PR3",
+
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
 

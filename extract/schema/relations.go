@@ -442,6 +442,49 @@ func init() {
 		{Name: "constraintTypeId", Type: TypeEntityRef},
 	}})
 
+	// v2 Phase A (value-flow): grounded base relations for non-recursive mayResolveTo.
+	// See docs/design/valueflow-phase-a-plan.md §1.2.
+
+	// ExprValueSource(expr, sourceExpr) — one row per AST expression that is a
+	// "value-producing literal at its own location": object literals, array
+	// literals, function/arrow expressions, class expressions, primitive
+	// literals (string/number/bool/null/undefined/regex/template-without-subs),
+	// JSX elements. Identity row: expr == sourceExpr. Provides a grounded base
+	// predicate for the planner's trivial-IDB pre-pass to size mayResolveTo.
+	// NOT emitted for: identifiers, calls, member access, binary ops, await,
+	// `as`/`!`/parenthesised casts (those resolve through other relations).
+	RegisterRelation(RelationDef{Name: "ExprValueSource", Version: 2, Columns: []ColumnDef{
+		{Name: "expr", Type: TypeEntityRef},
+		{Name: "sourceExpr", Type: TypeEntityRef},
+	}})
+
+	// AssignExpr(lhsSym, rhsExpr) — symmetric-to-VarDecl projection of Assign.
+	// Materialised as a 2-column projection so the planner can key joins on
+	// lhsSym directly without dragging Assign's unused lhsNode column through
+	// binding inference. Pure projection of Assign; emitted at the same site.
+	RegisterRelation(RelationDef{Name: "AssignExpr", Version: 2, Columns: []ColumnDef{
+		{Name: "lhsSym", Type: TypeEntityRef},
+		{Name: "rhsExpr", Type: TypeEntityRef},
+	}})
+
+	// ParamBinding(fn, paramIdx, paramSym, argExpr) — one row per
+	// (call site × parameter slot) where fn is the callee function id
+	// (resolved via CallTarget), paramIdx is the parameter position, paramSym
+	// is the symbol of that parameter inside the callee, and argExpr is the
+	// actual-argument expression at the call site. Materialises the
+	// CallTarget ⨝ CallArg ⨝ Parameter join once so non-recursive
+	// mayResolveTo can consume it as an already-bound base predicate.
+	// Computed by the value-flow system Datalog rules (see extract/rules).
+	// Carve-outs (NOT emitted in v1): spread args (`f(...rest)`), rest
+	// params (`function f(...args)`). Both are silently skipped — adding
+	// them needs an array-shape model and is deferred to Phase C.
+	RegisterRelation(RelationDef{Name: "ParamBinding", Version: 2, Columns: []ColumnDef{
+		{Name: "fn", Type: TypeEntityRef},
+		{Name: "paramIdx", Type: TypeInt32},
+		{Name: "paramSym", Type: TypeEntityRef},
+		{Name: "argExpr", Type: TypeEntityRef},
+	}})
+
 	// C1: Template literal extraction
 	RegisterRelation(RelationDef{Name: "TemplateLiteral", Version: 2, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},
