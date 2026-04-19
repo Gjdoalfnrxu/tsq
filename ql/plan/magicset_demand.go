@@ -50,8 +50,74 @@
 package plan
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 )
+
+// dumpMagicSetDiag is the TSQ_MAGICSET_DEBUG=1 diagnostic. Walks the
+// program, prints the demand map, every synth-pred call site with
+// its surrounding rule body, and the rename-trampoline lookup result
+// for each. Output goes to stderr. Strictly opt-in.
+func dumpMagicSetDiag(prog *datalog.Program, idb map[string]bool, sizeHints map[string]int, finalBindings map[string][]int) {
+	w := os.Stderr
+	demand := InferBackwardDemand(prog, sizeHints)
+	fmt.Fprintf(w, "[magicset-diag] InferBackwardDemand returned %d entries:\n", len(demand))
+	for pred, cols := range demand {
+		fmt.Fprintf(w, "[magicset-diag]   %s -> %v (sizeHint=%d, isSynth=%v)\n", pred, cols, sizeHints[pred], isSynthDesugarName(pred))
+	}
+	fmt.Fprintf(w, "[magicset-diag] final demand bindings handed to MagicSetTransform: %d entries: %v\n", len(finalBindings), finalBindings)
+
+	// For each synth pred with non-empty demand, dump every call
+	// site and what buildDemandSeedsForPredWithParents would do.
+	for pred, cols := range demand {
+		if len(cols) == 0 || !isSynthDesugarName(pred) || !idb[pred] {
+			continue
+		}
+		fmt.Fprintf(w, "[magicset-diag] synth pred %s/%d demand=%v — call sites:\n", pred, len(cols), cols)
+		for _, rule := range prog.Rules {
+			if rule.Head.Predicate == pred {
+				continue
+			}
+			for i, lit := range rule.Body {
+				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
+					continue
+				}
+				if lit.Atom.Predicate != pred {
+					continue
+				}
+				fmt.Fprintf(w, "[magicset-diag]   in rule head=%s/%d (body len=%d, call at idx=%d): %s\n",
+					rule.Head.Predicate, len(rule.Head.Args), len(rule.Body), i, dumpRuleBody(rule.Body))
+				_ = i
+			}
+		}
+	}
+}
+
+func dumpRuleBody(body []datalog.Literal) string {
+	parts := make([]string, 0, len(body))
+	for _, lit := range body {
+		if lit.Cmp != nil {
+			parts = append(parts, fmt.Sprintf("Cmp(%v %s %v)", lit.Cmp.Left, lit.Cmp.Op, lit.Cmp.Right))
+			continue
+		}
+		if lit.Agg != nil {
+			parts = append(parts, "Agg(...)")
+			continue
+		}
+		sign := ""
+		if !lit.Positive {
+			sign = "!"
+		}
+		argParts := make([]string, 0, len(lit.Atom.Args))
+		for _, a := range lit.Atom.Args {
+			argParts = append(argParts, fmt.Sprintf("%v", a))
+		}
+		parts = append(parts, fmt.Sprintf("%s%s(%v)", sign, lit.Atom.Predicate, argParts))
+	}
+	return fmt.Sprintf("[%v]", parts)
+}
 
 // InferRuleBodyDemandBindings walks `prog`'s rules, computes the
 // backward demand map (per `InferBackwardDemand`), and converts it

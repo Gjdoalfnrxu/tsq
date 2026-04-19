@@ -24,6 +24,7 @@ package plan
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 )
@@ -282,6 +283,15 @@ func WithMagicSetAutoOpts(prog *datalog.Program, sizeHints map[string]int, opts 
 	if len(demandBindings) > 0 {
 		inf.Bindings = MergeBindings(inf.Bindings, demandBindings)
 		inf.SeedRules = append(inf.SeedRules, demandSeeds...)
+	}
+	// Diagnostic dump (TSQ_MAGICSET_DEBUG=1). Emits the demand map,
+	// per-synth-pred call-site survey, and rename-trampoline lookups
+	// to stderr so we can trace why a real-world synth pred isn't
+	// getting magic-set rewritten. Strictly opt-in — no impact on
+	// normal runs. Remove or downgrade once Mastodon `_disj_2` is
+	// confirmed bounded.
+	if os.Getenv("TSQ_MAGICSET_DEBUG") == "1" {
+		dumpMagicSetDiag(prog, idb, sizeHints, demandBindings)
 	}
 
 	if len(inf.Bindings) == 0 {
