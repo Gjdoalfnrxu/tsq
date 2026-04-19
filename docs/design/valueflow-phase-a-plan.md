@@ -640,3 +640,75 @@ do not consume `resolveToObjectExpr` and remain unchanged.
    before claiming subsumption — JsxExpression wrappers in real code may
    carry intermediate kinds tree-sitter labels differently across
    backends.
+
+---
+
+## Phase A complete — summary (PR4, 2026-04-19)
+
+Phase A shipped across four PRs (#173, #174, #176 — PR4 in flight). The
+non-recursive value-flow vocabulary is in place, the bridge consumes it
+through `mayResolveToObjectExpr`, and the JSX-wrapper amendment closed
+the subsumption gap surfaced during PR3.
+
+### Measurement matrix (HEAD vs baseline @ 9d08906)
+
+Captured by `TestValueflow_MeasurementMatrix`
+(`TSQ_PHASE_A_MEASURE=1`) against every `testdata/projects/*` fixture.
+Pre-Phase-A baseline rows are zero by definition for the new EDB
+relations and `mayResolveTo` (none of those existed at 9d08906); the
+useful comparison is **extraction wall time** (does Phase A slow the
+walker?) and **bridge query results** (does the migration regress).
+
+**Extraction wall time** is statistically indistinguishable between
+baseline and HEAD across all 15 fixtures (largest delta ≤ 4 ms; both
+sides spend single-digit ms per fixture). Phase A's three new emit
+sites (`ExprValueSource`, `AssignExpr`) add ≤ 1 % overhead — the
+post-pass cost lives in the system rule evaluation path, not extraction.
+
+**`mayResolveTo` aggregate row counts at HEAD** (small fixtures only —
+Mastodon measurement deferred until next bench cycle):
+
+| Fixture | ExprValueSource | ParamBinding | AssignExpr | mayResolveTo (union) |
+|---|---:|---:|---:|---:|
+| valueflow-base | 33 | 2 | 1 | 56 |
+| react-usestate | 26 | 2 | 0 | 39 |
+| react-usestate-context-alias | 38 | 1 | 0 | 45 |
+| react-usestate-context-alias-r3 | 69 | 0 | 1 | 95 |
+| react-usestate-context-alias-r4 | 54 | 0 | 0 | 60 |
+| full-ts-project | 87 | 2 | 0 | 95 |
+
+Union/EDB ratio holds at ≤ 1.7× across all fixtures — the small-fixture
+budget gate (3.0×) in `TestValueflow_RowCountBudget` has comfortable
+headroom. Mastodon-scale 10× gate per plan §2.7 untested at this size.
+
+### Phase A exit criteria — pass/fail
+
+Derived from PR1–PR4 merge gates (§5), §3.3 quantified target, and
+§§6–7 boundary commitments:
+
+| # | Criterion | Status | Evidence |
+|---|---|---|---|
+| 1 | New EDB relations populated; extractor tests green | PASS | PR1 (#173) merged with `TestExprValueSource`, `TestAssignExpr` walker tests + `TestParamBindingBudget` |
+| 2 | ParamBinding ≤ 5× CallArg budget gate | PASS | `extract/rules/valueflow_budget_test.go::TestParamBindingBudget` green across all React fixtures |
+| 3 | `mayResolveTo` per-branch fixture rows match expected; negative-fixture leakage bounded | PASS | `TestValueflow_AllBranchesFireOnBase` (7 branches), `TestValueflow_NegativeFixtureNoLeakage` (per-fixture pinned + ≤ 60 aggregate) |
+| 4 | Disjunction-poisoning (#166) regression guard: union ≥ max(branch), union ≤ sum(branches), every branch pair in union | PASS | `TestValueflow_UnionMatchesSumOfBranches`, `TestValueflow_MultiHopFixture` |
+| 5 | `resolvesToFunctionDirect` derived helper wired correctly | PASS | `TestValueflow_ResolvesToFunctionDirect` against `valueflow-fnref` |
+| 6 | JSX-wrapper-tolerant branch resolves `<Provider value={X} />` to object-literal source | PASS | `TestValueflow_JsxWrappedBranch` (count + object-literal-source variant) |
+| 7 | Bridge through-context query still resolves on r3 fixture under Phase A vocabulary | PASS | `TestValueflow_BridgeThroughContextStillResolves`, `TestSetStateUpdaterCallsOtherSetStateThroughContext_R3` (3 rows, exact baseline) |
+| 8 | All round-1 → round-4 React regression tests pass unmodified | PASS | `setstate_*_test.go`, `compat_test.go`, `regression_*_test.go` all green at HEAD |
+| 9 | ≥ 30 LoC removed from `bridge/tsq_react.qll` (§3.3 floor) | **PARTIAL** | PR3 deleted 2 of the 5 plan-targeted predicates (Direct + VarD1); `objectLiteralFieldOwn` and the two contextProviderField variants were deferred to a follow-up because inlining `ObjectLiteralField` into the spread unions would break the `or`-of-calls #166 workaround. Net diff: -23 LoC across 41 ins / 23 del. Rationale captured in wiki PR3 note. |
+| 10 | Mastodon wall-time delta within ±10 % of pre-PR baseline | **DEFERRED** | Mastodon bench not run as part of PR4; small-fixture extraction wall time delta is < 1 % across 15 fixtures. To be re-measured in next bench cycle. |
+| 11 | No `mayResolveTo` rule body references `mayResolveTo` itself (§6 #1) | PASS | `bridge/tsq_valueflow.qll` audit: every branch body uses only EDB rels + `mayResolveToCore` (a single-call dispatch); no recursive back-edge |
+| 12 | Schema additive only — older readers ignore new rels (§7.2) | PASS | PR1 schema bump landed; existing `compat_test.go` cases pass unchanged |
+
+**Net status:** 10 PASS, 1 PARTIAL (criterion 9 — bridge LoC reduction
+fell short of plan §3.3 floor; tracked as follow-up), 1 DEFERRED
+(criterion 10 — Mastodon bench scheduled for next cycle).
+
+Phase A's **vocabulary** ships fully; the **bridge collapse** delivered
+2 of 5 targeted predicate deletions. The remaining 3 are blocked on a
+separate `or`-of-calls-vs-`ObjectLiteralField` inlining decision that
+belongs to its own PR rather than being forced into Phase A. Phase B
+(planner work for recursive-IDB sizing + magic-set propagation) and
+Phase C (recursive `mayResolveTo`) inherit a clean, sized,
+non-recursive base.
