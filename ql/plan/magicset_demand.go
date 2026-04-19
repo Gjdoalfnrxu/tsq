@@ -220,6 +220,17 @@ func predHasQueryBinding(prog *datalog.Program, pred string, cols []int) bool {
 		return false
 	}
 	queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
+	// nil lookup is deliberate (Phase B PR4): this function gates
+	// whether to skip emitting a demand-seed in favour of the
+	// InferQueryBindings pipeline. InferQueryBindings does NOT consult
+	// the stats sidecar — it grounds only via constants, equalities,
+	// and preceding base atoms with shared vars. If we passed a
+	// non-nil lookup here, the stats-driven grounding could mark a
+	// pred as "query-bound", we'd skip emitting the demand-seed, and
+	// InferQueryBindings would also produce no seed (it can't see the
+	// stats grounding), leaving the magic predicate seedless and
+	// triggering silent fallback to plain Plan. Keep the contracts
+	// aligned by mirroring InferQueryBindings's grounding view here.
 	ctxBoundVars := bodyContextGroundedVars(queryRule, nil, map[string]bool{}, arity1BaseGroundedIDBs(prog), nil, nil)
 	for _, lit := range prog.Query.Body {
 		if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
