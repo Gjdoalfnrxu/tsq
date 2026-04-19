@@ -86,8 +86,8 @@ func lfsRules() []datalog.Rule {
 		// lfsParamBind(from, to) :- ParamBinding(_, _, paramSym, from),
 		//                           ExprMayRef(to, paramSym).
 		// Call-arg flows to references of the bound parameter inside the
-		// callee body. Carve-outs (spread, rest, destructured) are handled
-		// upstream by the ParamBinding rule itself (extract/rules/valueflow.go).
+		// callee body. Carve-outs handled by ParamBinding rule
+		// (extract/rules/valueflow.go).
 		rule("lfsParamBind",
 			[]datalog.Term{v("from"), v("to")},
 			mustNamedLiteral("ParamBinding", map[string]datalog.Term{

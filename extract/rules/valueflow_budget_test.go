@@ -127,35 +127,25 @@ func TestLocalFlowStepKindsNonZero(t *testing.T) {
 		"valueflow-fnref",
 	}
 
-	// Per-kind floors. These are tuned conservatively — each kind that
-	// can plausibly appear in this corpus must emit at least the
-	// listed sum across all fixtures.
+	// Per-kind floors. Each value is ~50% of observed total — catches
+	// partial regressions while permitting legitimate fixture churn.
+	// (Floors of 1 only catch total-absence regressions; a rule that
+	// silently drops half its output would still pass.)
 	//
-	// Why these floors:
-	//   - lfsAssign/lfsVarInit/lfsParamBind: every fixture has variable
-	//     bindings and at least one resolved call.
-	//   - lfsReturnToCallSite: most React fixtures call helpers/hooks.
-	//   - lfsDestructureField/lfsArrayDestructure: useState destructuring
-	//     dominates React fixtures.
-	//   - lfsObjectLiteralStore: prop-pass / context fixtures use object
-	//     literals heavily.
-	//   - lfsSpreadElement: only the r3 spread fixture exercises this;
-	//     keep floor=1 to flag total absence.
-	//   - lfsFieldRead/lfsFieldWrite: covered by general TS fixtures.
-	//   - lfsAwait: floor=1; async-patterns is the only fixture and
-	//     it would be a real bug for the Await rel to be empty there.
+	// Follow-up: PR3+ should bake the same posture in for ifs* kinds —
+	// set floors at ~50% of observed actuals, never default to 1.
 	floors := map[string]int{
-		"lfsAssign":             1,
-		"lfsVarInit":            10,
-		"lfsParamBind":          1,
-		"lfsReturnToCallSite":   1,
-		"lfsDestructureField":   1,
-		"lfsArrayDestructure":   1,
-		"lfsObjectLiteralStore": 1,
-		"lfsSpreadElement":      1,
-		"lfsFieldRead":          1,
-		"lfsFieldWrite":         1,
-		"lfsAwait":              1,
+		"lfsAssign":             6,
+		"lfsVarInit":            70,
+		"lfsParamBind":          5,
+		"lfsReturnToCallSite":   6,
+		"lfsDestructureField":   10,
+		"lfsArrayDestructure":   38,
+		"lfsObjectLiteralStore": 28,
+		"lfsSpreadElement":      3,
+		"lfsFieldRead":          50,
+		"lfsFieldWrite":         4,
+		"lfsAwait":              3,
 	}
 
 	totals := map[string]int{}
