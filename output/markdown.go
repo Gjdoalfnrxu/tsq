@@ -2,17 +2,23 @@ package output
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/Gjdoalfnrxu/tsq/ql/eval"
 )
+
+// errPathOutsideRoot is returned by fileCache.load when SourceRoot is set and
+// the requested path resolves outside the root (absolute path or upward
+// traversal). WriteMarkdown turns this into a "path outside source root" note
+// instead of a hard read error.
+var errPathOutsideRoot = errors.New("path outside source root")
 
 // MarkdownOptions controls markdown report output.
 type MarkdownOptions struct {
@@ -52,19 +58,21 @@ func WriteMarkdown(w io.Writer, rs *eval.ResultSet, opts MarkdownOptions) error 
 		opts.ContextLines = 5
 	}
 	// Column-index overrides: callers must set negative values to opt out
-	// (i.e. fall back to the column-name heuristic). Struct-literal
-	// callers using zero-values get treated as "not set" — both-zero is
-	// disambiguated by negative defaulting in the constructor below.
+	// (i.e. fall back to the column-name heuristic). The CLI defaults
+	// --md-file-col and --md-line-col to -1, so a zero here is a real
+	// caller-provided index (e.g. col 0 is the file column).
 	fileColOverride := opts.FileColumn
 	lineColOverride := opts.LineColumn
-	// A zero-value MarkdownOptions (no fields set) means "auto" — flip the
-	// 0/0 sentinel into the explicit -1/-1 disabled-override state.
-	if fileColOverride == 0 && lineColOverride == 0 {
-		fileColOverride = -1
-		lineColOverride = -1
-	}
 
 	bw := bufio.NewWriter(w)
+
+	// Nil result-set guard: emit a minimal header + "no results" footer.
+	if rs == nil {
+		fmt.Fprintf(bw, "# %s\n\n", opts.QueryName)
+		fmt.Fprintln(bw, "---")
+		fmt.Fprintf(bw, "_0 result(s) in %s — tsq %s_\n", formatDuration(opts.WallTime), opts.ToolVersion)
+		return bw.Flush()
+	}
 
 	// Header.
 	fmt.Fprintf(bw, "# %s\n\n", opts.QueryName)
@@ -86,13 +94,11 @@ func WriteMarkdown(w io.Writer, rs *eval.ResultSet, opts MarkdownOptions) error 
 
 	cache := newFileCache(opts.SourceRoot)
 
-	rendered := 0
 	for _, row := range rs.Rows {
 		file, line, ok := tryResolveFileLine(colIdx, row, fileColOverride, lineColOverride)
 		if !ok {
 			// No location — render as a plain bullet so the data isn't lost.
 			fmt.Fprintf(bw, "- %s\n", buildRowMessage(rs.Columns, row))
-			rendered++
 			continue
 		}
 
@@ -110,11 +116,15 @@ func WriteMarkdown(w io.Writer, rs *eval.ResultSet, opts MarkdownOptions) error 
 		lang := languageForFile(file)
 		snippet, err := cache.snippet(file, line, opts.ContextLines)
 		if err != nil {
-			fmt.Fprintf(bw, "_could not read source: %v_\n\n", err)
-			rendered++
+			if errors.Is(err, errPathOutsideRoot) {
+				fmt.Fprintf(bw, "_skipped: path outside source root_\n\n")
+			} else {
+				fmt.Fprintf(bw, "_could not read source: %v_\n\n", err)
+			}
 			continue
 		}
-		fmt.Fprintf(bw, "```%s\n", lang)
+		fence := fenceFor(snippet)
+		fmt.Fprintf(bw, "%s%s\n", fence, lang)
 		if _, werr := bw.WriteString(snippet); werr != nil {
 			return werr
 		}
@@ -123,16 +133,38 @@ func WriteMarkdown(w io.Writer, rs *eval.ResultSet, opts MarkdownOptions) error 
 				return werr
 			}
 		}
-		fmt.Fprintln(bw, "```")
+		fmt.Fprintln(bw, fence)
 		fmt.Fprintln(bw)
-		rendered++
 	}
 
 	// Footer.
 	fmt.Fprintln(bw, "---")
 	fmt.Fprintf(bw, "_%d result(s) in %s — tsq %s_\n", len(rs.Rows), formatDuration(opts.WallTime), opts.ToolVersion)
-	_ = rendered
 	return bw.Flush()
+}
+
+// fenceFor returns a backtick fence string at least 3 long, and always longer
+// than the longest run of consecutive backticks inside snippet. This prevents
+// a snippet containing literal triple-backticks from prematurely closing the
+// outer fence.
+func fenceFor(snippet string) string {
+	longest := 0
+	run := 0
+	for i := 0; i < len(snippet); i++ {
+		if snippet[i] == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	n := longest + 1
+	if n < 3 {
+		n = 3
+	}
+	return strings.Repeat("`", n)
 }
 
 // tryResolveFileLine extracts (file, line) from a row using the same column
@@ -180,6 +212,9 @@ func tryResolveFileLine(colIdx map[string]int, row []eval.Value, fileColOverride
 }
 
 // fileCache reads source files once and serves snippet requests against them.
+//
+// Not safe for concurrent use; intended for one-shot CLI runs where a single
+// goroutine builds the report.
 type fileCache struct {
 	root  string
 	files map[string][]string // path -> lines (no trailing \n)
@@ -202,8 +237,22 @@ func (c *fileCache) load(path string) ([]string, error) {
 		return nil, err
 	}
 	full := path
-	if c.root != "" && !filepath.IsAbs(path) {
-		full = filepath.Join(c.root, path)
+	if c.root != "" {
+		// Containment: when a root is configured, reject absolute paths
+		// from query results outright, and reject any relative path that
+		// escapes the root via ".." traversal. When no root is set,
+		// behaviour is unchanged — the caller is trusted to supply paths.
+		if filepath.IsAbs(path) {
+			c.errs[path] = errPathOutsideRoot
+			return nil, errPathOutsideRoot
+		}
+		joined := filepath.Join(c.root, path)
+		rel, relErr := filepath.Rel(c.root, joined)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			c.errs[path] = errPathOutsideRoot
+			return nil, errPathOutsideRoot
+		}
+		full = joined
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
@@ -375,8 +424,6 @@ func ParseQueryMetadata(src string) (name, description, id string) {
 			cur.value += "\n" + line
 		}
 	}
-	// Stable ordering by tag name doesn't matter; we only consume known ones.
-	sort.SliceStable(tags, func(i, j int) bool { return false })
 	for _, t := range tags {
 		switch t.name {
 		case "name":
