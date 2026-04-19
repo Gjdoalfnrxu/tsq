@@ -558,6 +558,91 @@ predicate resolveToObjectExprVarD2(int valueExpr, int objExpr) {
     )
 }
 
+/**
+ * Round-4: resolve through a function-call initialiser to the ObjectLiteral
+ * expression in the called function's return statement (factory-hook pattern).
+ *
+ *   function useActions() {
+ *     return { setX, setY };           // shape A: return IS the ObjectLiteral
+ *   }
+ *   const actions = useActions();
+ *   <Ctx.Provider value={actions}>     // round-3 chain dies here; round-4 follows the call.
+ *
+ * Two return shapes are recognised, each as a named branch so the top-level
+ * union is `or`-of-calls (#166 workaround discipline, same as round-3).
+ *
+ * Same-module path uses `FunctionSymbol(hookSym, hookFn)`; cross-module path
+ * uses `importedFunctionSymbol(hookSym, hookFn)` — the same pair already used
+ * by `useContextCallSiteResolvesContext` for hook-indirection callees.
+ *
+ * Conditional-return functions are over-approximated (any branch's
+ * ObjectLiteral surfaces). Hand-bounded depth: shape B is one VarDecl hop
+ * from the return expression to the ObjectLiteral; deeper indirection inside
+ * the hook body is intentionally out of scope for v1.
+ */
+
+// Caller-side seed: the value expression resolves to a CallExpression whose
+// callee symbol is `hookSym`. Shared across all four hook-return branches.
+// This is the SMALL end of the join — Provider value attributes that are
+// identifier-bound to a CallExpression are rare in real corpora.
+predicate valueExprCallsHook(int valueExpr, int hookSym) {
+    exists(int identExpr, int sym, int varDecl, int callExpr, int call |
+        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
+        ExprMayRef(identExpr, sym) and
+        VarDecl(varDecl, sym, callExpr, _) and
+        ExprIsCall(callExpr, call) and
+        CallCalleeSym(call, hookSym)
+    )
+}
+
+// Helper: `hookFn` is a function whose symbol is callable from
+// `valueExprCallsHook` (i.e. is the target of some Provider-value-side call).
+// Bridges the symbol layer once so the four resolveToObjectExprHookReturn*
+// branches share a single demand-seedable hookFn frontier rather than
+// re-walking the symbol table per return-shape.
+predicate hookFnInvokedByValueExpr(int valueExpr, int hookFn) {
+    exists(int hookSym |
+        valueExprCallsHook(valueExpr, hookSym) and
+        FunctionSymbol(hookSym, hookFn)
+    )
+    or
+    exists(int hookSym |
+        valueExprCallsHook(valueExpr, hookSym) and
+        importedFunctionSymbol(hookSym, hookFn)
+    )
+}
+
+// Shape A — return expression IS the ObjectLiteral. Seeded from the value
+// side (`hookFnInvokedByValueExpr` constrains hookFn to actually-called
+// hooks), then the cheap `ReturnStmt + isObjectLiteralExpr` gate. Avoids
+// the cap-hit observed when seeding from `isObjectLiteralExpr` (~50k on
+// mastodon) or unbounded `ReturnStmt` ⨝ `ExprMayRef`.
+predicate resolveToObjectExprHookReturnDirect(int valueExpr, int objExpr) {
+    exists(int hookFn |
+        hookFnInvokedByValueExpr(valueExpr, hookFn) and
+        ReturnStmt(hookFn, _, objExpr) and
+        isObjectLiteralExpr(objExpr)
+    )
+}
+
+// Shape B — return expression refs a sym whose VarDecl init IS the
+// ObjectLiteral. Same value-side seed; inner var-rebind hop is depth-1 only.
+predicate resolveToObjectExprHookReturnVar(int valueExpr, int objExpr) {
+    exists(int hookFn, int retExpr, int retSym, int innerVarDecl |
+        hookFnInvokedByValueExpr(valueExpr, hookFn) and
+        ReturnStmt(hookFn, _, retExpr) and
+        ExprMayRef(retExpr, retSym) and
+        VarDecl(innerVarDecl, retSym, objExpr, _) and
+        isObjectLiteralExpr(objExpr)
+    )
+}
+
+predicate resolveToObjectExprHookReturn(int valueExpr, int objExpr) {
+    resolveToObjectExprHookReturnDirect(valueExpr, objExpr)
+    or
+    resolveToObjectExprHookReturnVar(valueExpr, objExpr)
+}
+
 predicate resolveToObjectExpr(int valueExpr, int objExpr) {
     resolveToObjectExprDirect(valueExpr, objExpr)
     or
@@ -566,6 +651,8 @@ predicate resolveToObjectExpr(int valueExpr, int objExpr) {
     resolveToObjectExprVarD1(valueExpr, objExpr)
     or
     resolveToObjectExprVarD2(valueExpr, objExpr)
+    or
+    resolveToObjectExprHookReturn(valueExpr, objExpr)
 }
 
 /**
