@@ -397,6 +397,467 @@ predicate setStateUpdaterCallsOtherSetStateThroughProps(int call, int line) {
     )
 }
 
+/* -----------------------------------------------------------------------
+ * Round-2 of setState alias tracking — through React Context
+ * -----------------------------------------------------------------------
+ *
+ * Extends `useStateSetterAlias` to follow setters that arrive at a call
+ * site through `createContext` + `<Ctx.Provider value={{ setX }}>` +
+ * `useContext(Ctx)` (or a hook wrapping useContext) + destructure.
+ *
+ * Motivating shape:
+ *
+ *   const ViewerStateActions = createContext<...>(null);
+ *
+ *   function ViewerProvider({ children }) {
+ *     const [zoom, setZoom] = useState(1);
+ *     return <ViewerStateActions.Provider value={{ setZoom }}>{children}</...>;
+ *   }
+ *
+ *   function useViewerActions() { return useContext(ViewerStateActions); }
+ *
+ *   function ZoomButton() {
+ *     const { setZoom } = useViewerActions();
+ *     setZoom(prev => prev + 1);   // <-- recognised as a setter-alias call
+ *   }
+ *
+ * Soundness vs. precision call-outs (deferrals documented in the round-2
+ * wiki page):
+ *  - createContext recognition is name-based on the callee identifier
+ *    binding (`ImportBinding(_, "react", "createContext")`). Aliased
+ *    `import { createContext as cc }` works because the callee sym still
+ *    resolves to the imported binding, but a wholesale `import * as React`
+ *    + `React.createContext(...)` callee shape is NOT covered in v1.
+ *  - Multi-Provider disambiguation is intentionally over-approximate —
+ *    a useContext(Ctx) resolves to the value of ANY Provider for Ctx in
+ *    the program. A program with two unrelated Providers for the same
+ *    context will produce false positives.
+ *  - Hook-indirection depth is hand-unrolled to two levels (useContext,
+ *    useFoo() = useContext, useBar() = useFoo()). Same planner-sizing
+ *    rationale as `functionContainsStar` and `useStateSetterAlias`.
+ *  - Object-literal field tracking treats `value={{ a, b }}` as exposing
+ *    BOTH `a` and `b`; field-name binding to destructure-key is enforced
+ *    on the consumer side via `DestructureField(parent, propName, _, _, _)`
+ *    matched against `ObjectLiteralField(obj, propName, valueExpr)`.
+ */
+
+/**
+ * Holds if `sym` is a symbol bound to a `createContext(...)` call result —
+ * i.e. the context handle.
+ *
+ *   const ViewerStateActions = createContext<...>(null);
+ *
+ * Recognition is name-based on the callee identifier binding via
+ * `ImportBinding(_, "react", "createContext")`. Namespace-import call sites
+ * (e.g. `React.createContext(...)`) are NOT recognised in v1 — same
+ * deferral as the namespace shape for useState in the round-1 base case.
+ */
+predicate contextSym(int sym) {
+    exists(int initExpr, int createCtxSym |
+        VarDecl(_, sym, initExpr, _) and
+        CallCalleeSym(initExpr, createCtxSym) and
+        ImportBinding(createCtxSym, "react", "createContext")
+    )
+}
+
+/**
+ * Holds if `objExpr` is contained, directly or transitively via the
+ * JsxExpression wrapper, by `valueAttrExpr`. Used to find the object
+ * literal expression inside a Provider's `value={{ ... }}` attribute
+ * (the JsxAttribute valueExpr column points at the `{ ... }` JsxExpression
+ * node, not at the inner Object literal directly).
+ */
+predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
+    valueAttrExpr = objExpr
+    or
+    Contains(valueAttrExpr, objExpr)
+}
+
+/**
+ * Holds if a JSX element `elem` is a Provider for context symbol `ctxSym`
+ * — i.e. its tag is the member access `<ctxSym.Provider ...>` — and its
+ * `value` attribute carries object literal `objExpr`.
+ *
+ * The tag of a `<Foo.Provider />` JSX element is a MemberExpression node;
+ * the walker emits a FieldRead row for it with `baseSym = Foo` and
+ * `fieldName = "Provider"`. We pivot on that to identify the context.
+ *
+ * Limitations:
+ *  - `Contains(valueAttrExpr, objExpr)` over-approximates: nested object
+ *    literals inside a non-object value (e.g. `value={makeActions({...})}`)
+ *    would also match. The downstream field-name match constrains this.
+ *  - Only direct object-literal values are recognised; values built by a
+ *    helper function call (`value={makeActions()}`) are out of scope.
+ */
+predicate contextProviderValueObject(int ctxSym, int objExpr) {
+    exists(int elem, int tagNode, int valueAttrExpr |
+        JsxElement(elem, tagNode, _) and
+        FieldRead(tagNode, ctxSym, "Provider") and
+        JsxAttribute(elem, "value", valueAttrExpr) and
+        jsxAttrValueObject(valueAttrExpr, objExpr) and
+        ObjectLiteralField(objExpr, _, _)
+    )
+}
+
+/**
+ * Holds if a Provider for context symbol `ctxSym` exposes field `fieldName`
+ * bound to a value expression that may-refs `valueSym`.
+ *
+ * Combines `contextProviderValueObject` with `ObjectLiteralField`. The
+ * shorthand form `{ setX }` is the load-bearing case — the walker emits
+ * the field with valueExpr pointing at the Identifier node and the
+ * Identifier emit-pass produces the ExprMayRef row we then look up.
+ */
+predicate contextProviderField(int ctxSym, string fieldName, int valueSym) {
+    exists(int objExpr, int valueExpr |
+        contextProviderValueObject(ctxSym, objExpr) and
+        ObjectLiteralField(objExpr, fieldName, valueExpr) and
+        ExprMayRef(valueExpr, valueSym)
+    )
+}
+
+/**
+ * Holds if `call` is a direct `useContext(ctxSym)` invocation, where the
+ * argument may-refs the given context symbol. `useContext` is recognised
+ * by the same import-name shape as `useState` and `createContext`.
+ */
+predicate useContextCall(int call, int ctxSym) {
+    exists(int useCtxSym, int argNode |
+        CallCalleeSym(call, useCtxSym) and
+        ImportBinding(useCtxSym, "react", "useContext") and
+        CallArg(call, 0, argNode) and
+        ExprMayRef(argNode, ctxSym)
+    )
+}
+
+/**
+ * Holds if `hookFn` is a function whose body has a return statement whose
+ * expression is a `useContext(ctxSym)` call. This is the "hook indirection"
+ * pattern:
+ *
+ *   function useViewerActions() {
+ *     return useContext(ViewerStateActions);
+ *   }
+ *
+ * Hand-unrolled to depth 2 (useContext directly, OR a hook returning a
+ * call to a hook returning useContext). Same planner-sizing rationale as
+ * `useStateSetterAlias`. Deeper chains (3+) are deferred follow-up.
+ */
+predicate hookIndirectionD1(int hookFn, int ctxSym) {
+    exists(int retExpr, int innerCall |
+        ReturnStmt(hookFn, _, retExpr) and
+        ExprIsCall(retExpr, innerCall) and
+        useContextCall(innerCall, ctxSym)
+    )
+}
+
+predicate hookIndirectionD2(int hookFn, int ctxSym) {
+    exists(int retExpr, int innerCall, int innerCalleeSym, int innerHookFn |
+        ReturnStmt(hookFn, _, retExpr) and
+        ExprIsCall(retExpr, innerCall) and
+        CallCalleeSym(innerCall, innerCalleeSym) and
+        FunctionSymbol(innerCalleeSym, innerHookFn) and
+        innerHookFn != hookFn and
+        hookIndirectionD1(innerHookFn, ctxSym)
+    )
+}
+
+predicate hookIndirection(int hookFn, int ctxSym) {
+    hookIndirectionD1(hookFn, ctxSym)
+    or
+    hookIndirectionD2(hookFn, ctxSym)
+}
+
+/**
+ * Holds if `call` is a call site that resolves (directly or via a hook
+ * indirection) to a useContext(ctxSym) value, i.e. its result symbol carries
+ * the Provider's value object for context `ctxSym`.
+ *
+ * Direct path: `useContext(ctx)` — `call` is the useContext call itself.
+ * Indirect path: `useFoo()` where `useFoo` is a `hookIndirection` for ctx.
+ */
+/**
+ * Holds if `localSym` (a callee binding seen at a call site) resolves —
+ * possibly across module boundaries via an import/export pair on the same
+ * exported name — to function symbol `targetFnSym`. v1 cross-module
+ * resolution: import-binding name matches an export-binding name, and the
+ * export-binding symbol is the target function's defining symbol.
+ *
+ * The module-spec path string from `ImportBinding` is NOT compared against
+ * the export-binding's file path (different shapes), so this is loosely
+ * over-approximated by name. Disambiguation is left to downstream filters
+ * (only callers using a specific imported name will match).
+ */
+predicate importedFunctionSymbol(int localSym, int targetFn) {
+    exists(string importedName, int exportSym |
+        ImportBinding(localSym, _, importedName) and
+        ExportBinding(importedName, exportSym, _) and
+        FunctionSymbol(exportSym, targetFn)
+    )
+}
+
+predicate useContextCallSiteResolvesContext(int call, int ctxSym) {
+    useContextCall(call, ctxSym)
+    or
+    exists(int hookSym, int hookFn |
+        CallCalleeSym(call, hookSym) and
+        FunctionSymbol(hookSym, hookFn) and
+        hookIndirection(hookFn, ctxSym)
+    )
+    or
+    exists(int hookSym, int hookFn |
+        CallCalleeSym(call, hookSym) and
+        importedFunctionSymbol(hookSym, hookFn) and
+        hookIndirection(hookFn, ctxSym)
+    )
+}
+
+/**
+ * Holds if `paramSym` is the symbol bound by destructuring the field
+ * `fieldName` from the result of a `useContextCallSiteResolvesContext`
+ * call for context `ctxSym`.
+ *
+ *   const { setZoom } = useViewerActions();
+ *   //      ^^^^^^^ paramSym; fieldName = "setZoom"
+ *
+ * Matches the shape:
+ *   VarDecl(varDecl, _, initExpr, _) where initExpr is (transitively via
+ *   non-null assertion / cast) a `useContextCallSiteResolvesContext` call,
+ *   and the destructure pattern is contained in the same VarDecl.
+ *
+ * Implementation note: we tolerate a single Cast hop on the initExpr to
+ * cover the common `useContext(...)!` non-null assertion shape.
+ */
+predicate contextDestructureBinding(int ctxSym, string fieldName, int paramSym) {
+    exists(int varDecl, int parent, int initExpr, int callExpr, int call |
+        VarDecl(varDecl, _, initExpr, _) and
+        Contains(varDecl, parent) and
+        DestructureField(parent, fieldName, _, paramSym, _) and
+        // initExpr resolves to a useContextCallSite call, possibly via a
+        // single non-null assertion / cast hop.
+        (
+            callExpr = initExpr
+            or
+            Cast(initExpr, callExpr)
+        ) and
+        ExprIsCall(callExpr, call) and
+        useContextCallSiteResolvesContext(call, ctxSym)
+    )
+}
+
+/**
+ * One-hop CONTEXT alias step: holds if `paramSym` is a destructured
+ * binding from a useContext call site for context `ctxSym`, AND a Provider
+ * for `ctxSym` exposes a field of that name bound to symbol `valueSym`.
+ *
+ * Mirrors `setterAliasStep` but for the context channel. `paramSym`
+ * therefore aliases `valueSym` for callers that invoke `paramSym(...)` in
+ * the consumer body.
+ *
+ * The field-name match between `contextDestructureBinding` and
+ * `contextProviderField` is what disambiguates which provided field the
+ * destructure is reading — even though a single Provider's value object
+ * may expose many fields, only the one matching the destructure binding
+ * name participates in this alias step.
+ */
+/**
+ * Links a Provider-side context symbol to a Consumer-side context symbol
+ * across the import/export boundary (or trivially, the same symbol when
+ * Provider and Consumer share a module). Cross-module link is by exported
+ * name match. v1 doesn't try to disambiguate module paths — same-name
+ * collisions are over-approximated.
+ */
+predicate contextSymLink(int providerCtxSym, int consumerCtxSym) {
+    providerCtxSym = consumerCtxSym
+    or
+    exists(string name |
+        ExportBinding(name, providerCtxSym, _) and
+        ImportBinding(consumerCtxSym, _, name)
+    )
+}
+
+predicate contextSetterAliasStep(int valueSym, int paramSym) {
+    exists(int providerCtxSym, int consumerCtxSym, string fieldName |
+        contextSym(providerCtxSym) and
+        contextProviderField(providerCtxSym, fieldName, valueSym) and
+        contextSymLink(providerCtxSym, consumerCtxSym) and
+        contextDestructureBinding(consumerCtxSym, fieldName, paramSym)
+    )
+}
+
+/**
+ * Extension of `useStateSetterAlias` to ALSO follow the context-provided
+ * setter chain. Adds disjuncts of the form
+ *   "useStateSetterSym(s0) and contextSetterAliasStep(s0, sym)"
+ * up to depth 3, mirroring the JSX-prop-alias unrolling. Mixed chains
+ * (prop hop then context hop, or context then prop) are also covered up
+ * to combined depth 3.
+ *
+ * Why hand-unrolled: identical planner-sizing rationale as the round-1
+ * `useStateSetterAlias`. The base relation set is finite (createContext
+ * call results, Provider JSX elements, useContext / hook calls) so each
+ * step is a finite extent.
+ *
+ * Note: the round-1 `useStateSetterAlias` predicate is REPLACED rather
+ * than wrapped — this avoids defining two predicates with the same name
+ * and keeps a single point-of-truth for the alias closure.
+ */
+predicate setterAliasStepAny(int valueSym, int paramSym) {
+    setterAliasStep(valueSym, paramSym)
+    or
+    contextSetterAliasStep(valueSym, paramSym)
+}
+
+/**
+ * Round-2 alias closure. SUPERSEDES the round-1 `useStateSetterAlias`
+ * disjunction body; round-1's predicate is preserved above for source
+ * compatibility but new code should reference this one.
+ *
+ * Hand-unrolled to depth 3 over `setterAliasStepAny`, which mixes JSX prop
+ * hops and Context hops freely.
+ */
+predicate useStateSetterAliasV2(int sym) {
+    useStateSetterSym(sym)
+    or
+    exists(int s0 |
+        useStateSetterSym(s0) and
+        setterAliasStepAny(s0, sym)
+    )
+    or
+    exists(int s0, int s1 |
+        useStateSetterSym(s0) and
+        setterAliasStepAny(s0, s1) and
+        setterAliasStepAny(s1, sym)
+    )
+    or
+    exists(int s0, int s1, int s2 |
+        useStateSetterSym(s0) and
+        setterAliasStepAny(s0, s1) and
+        setterAliasStepAny(s1, s2) and
+        setterAliasStepAny(s2, sym)
+    )
+}
+
+/**
+ * V2 sibling of `useStateSetterAliasCall`. Recognises calls whose callee
+ * symbol may-refs ANY useStateSetterAliasV2 symbol — i.e. a direct
+ * useState setter, a JSX-prop-aliased parameter, OR a context-aliased
+ * destructure binding.
+ */
+predicate useStateSetterAliasCallV2(int call) {
+    exists(int sym |
+        CallCalleeSym(call, sym) and
+        useStateSetterAliasV2(sym)
+    )
+}
+
+/**
+ * Holds if `sym` is a context-aliased setter binding — i.e. a paramSym
+ * produced by `contextSetterAliasStep` for some chain rooted at a
+ * useStateSetterSym. This is the "at least one context hop" filter used
+ * to keep the through-context query diagnostically distinct from the
+ * direct-form and through-props queries. Hand-unrolled to depth 3 to
+ * mirror the alias closure.
+ */
+predicate isContextAliasedSetterSym(int sym) {
+    exists(int s0 |
+        useStateSetterSym(s0) and
+        contextSetterAliasStep(s0, sym)
+    )
+    or
+    exists(int s0, int s1 |
+        useStateSetterSym(s0) and
+        setterAliasStepAny(s0, s1) and
+        contextSetterAliasStep(s1, sym)
+    )
+    or
+    exists(int s0, int s1 |
+        useStateSetterSym(s0) and
+        contextSetterAliasStep(s0, s1) and
+        setterAliasStepAny(s1, sym)
+    )
+    or
+    exists(int s0, int s1, int s2 |
+        useStateSetterSym(s0) and
+        setterAliasStepAny(s0, s1) and
+        contextSetterAliasStep(s1, s2) and
+        setterAliasStepAny(s2, sym)
+    )
+}
+
+/**
+ * Holds if `call` is a setter-alias call AND its callee chain involves at
+ * least one Context hop. Filters out direct + pure-prop alias matches so
+ * the through-context query reports only matches that are diagnostically
+ * about the context channel.
+ */
+predicate useStateSetterContextAliasCall(int call) {
+    exists(int sym |
+        CallCalleeSym(call, sym) and
+        isContextAliasedSetterSym(sym)
+    )
+}
+
+/**
+ * Sibling of `setStateUpdaterCallsOtherSetStateThroughProps` that requires
+ * at least ONE side of the outer/inner setter pair to be reached through
+ * React Context aliasing. The other side may be a direct setter, a
+ * prop-aliased setter, or another context-aliased setter. Covers the
+ * canonical motivating shape:
+ *
+ *   function ZoomButton() {
+ *     const { setZoom, setPan } = useViewerActions();
+ *     setZoom(prev => { setPan(p => ...); return ...; });
+ *   }
+ *
+ * The "at least one context hop" filter (`useStateSetterContextAliasCall`)
+ * keeps this query diagnostically distinct from the direct-form and the
+ * through-props queries — a pure direct-form match would not surface here
+ * even though the underlying `useStateSetterAliasV2` closure is a strict
+ * superset.
+ *
+ * `line` is the start line of the OUTER call's callee identifier.
+ */
+predicate setStateUpdaterCallsOtherSetStateThroughContext_outerCtx(int call, int line) {
+    useStateSetterAliasCallV2(call) and
+    useStateSetterContextAliasCall(call) and
+    exists(int innerCall, int argFn, int callee, int outerSym, int innerSym |
+        useStateSetterAliasCallV2(innerCall) and
+        CallArg(call, 0, argFn) and
+        Function(argFn, _, _, _, _, _) and
+        functionContainsStar(argFn, innerCall) and
+        Call(innerCall, _, _) and
+        Call(call, callee, _) and
+        Node(callee, _, _, line, _, _, _) and
+        CallCalleeSym(call, outerSym) and
+        CallCalleeSym(innerCall, innerSym) and
+        outerSym != innerSym
+    )
+}
+
+predicate setStateUpdaterCallsOtherSetStateThroughContext_innerCtx(int call, int line) {
+    useStateSetterAliasCallV2(call) and
+    exists(int innerCall, int argFn, int callee, int outerSym, int innerSym |
+        useStateSetterAliasCallV2(innerCall) and
+        useStateSetterContextAliasCall(innerCall) and
+        CallArg(call, 0, argFn) and
+        Function(argFn, _, _, _, _, _) and
+        functionContainsStar(argFn, innerCall) and
+        Call(innerCall, _, _) and
+        Call(call, callee, _) and
+        Node(callee, _, _, line, _, _, _) and
+        CallCalleeSym(call, outerSym) and
+        CallCalleeSym(innerCall, innerSym) and
+        outerSym != innerSym
+    )
+}
+
+predicate setStateUpdaterCallsOtherSetStateThroughContext(int call, int line) {
+    setStateUpdaterCallsOtherSetStateThroughContext_outerCtx(call, line)
+    or
+    setStateUpdaterCallsOtherSetStateThroughContext_innerCtx(call, line)
+}
+
 /**
  * A React XSS sink via dangerouslySetInnerHTML. These are TaintSink facts
  * with kind "xss" derived from JsxAttribute facts matching the attribute

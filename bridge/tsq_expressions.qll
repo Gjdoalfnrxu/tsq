@@ -98,6 +98,35 @@ class Cast extends @cast {
 }
 
 /**
+ * A field in an object literal expression ({ a, b: expr }).
+ *
+ * For shorthand `{ foo }` the fieldName equals the binding name and
+ * valueExpr is the Identifier node (which has its own ExprMayRef row).
+ * For `{ foo: expr }` the fieldName is the source key and valueExpr is the
+ * value-position expression. Spread elements (`{ ...rest }`) and computed-key
+ * properties are skipped by the extractor — v1 limitation.
+ *
+ * NOTE: `this` binds to col 0 (parent), which is not a unique identifier.
+ * Multiple fields in the same object literal share the same col-0 value,
+ * causing entity collapse. Same v1 limitation as DestructureField.
+ */
+class ObjectLiteralField extends @object_literal_field {
+    ObjectLiteralField() { ObjectLiteralField(this, _, _) }
+
+    /** Gets the parent object-literal node. */
+    ASTNode getParent() { result = this }
+
+    /** Gets the field name (shorthand binding name OR source key). */
+    string getFieldName() { ObjectLiteralField(this, result, _) }
+
+    /** Gets the value-position expression node. */
+    ASTNode getValueExpr() { ObjectLiteralField(this, _, result) }
+
+    /** Gets a textual representation. */
+    string toString() { result = this.getFieldName() }
+}
+
+/**
  * A field in a destructuring pattern ({ key: binding }).
  *
  * NOTE: `this` binds to col 0 (parent), which is not a unique identifier.

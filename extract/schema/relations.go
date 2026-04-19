@@ -155,6 +155,21 @@ func init() {
 		{Name: "sym", Type: TypeEntityRef},
 		{Name: "libName", Type: TypeString},
 	}})
+	// Object literals
+	// ObjectLiteralField: a field in an object literal expression.
+	// For shorthand `{ foo }` the fieldName equals the binding name and
+	// valueExpr is the Identifier node (which in turn has an ExprMayRef row).
+	// For `{ foo: expr }` the fieldName is the source key and valueExpr is
+	// the value-position expression.
+	// Used by the React context-alias tracking in `bridge/tsq_react.qll` to
+	// look up which symbol a Provider's value object exposes under a given
+	// field name. v1 limitations: spread elements (`{ ...rest }`) and
+	// computed-key properties are skipped silently.
+	RegisterRelation(RelationDef{Name: "ObjectLiteralField", Version: 1, Columns: []ColumnDef{
+		{Name: "parent", Type: TypeEntityRef},
+		{Name: "fieldName", Type: TypeString},
+		{Name: "valueExpr", Type: TypeEntityRef},
+	}})
 	// JSX
 	RegisterRelation(RelationDef{Name: "JsxElement", Version: 1, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},

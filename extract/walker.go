@@ -160,6 +160,8 @@ func (fw *FactWalker) enterNode(node ASTNode) (bool, error) {
 		fw.emitCast(node, id)
 	case "ObjectPattern":
 		fw.emitDestructureObject(node, id)
+	case "Object":
+		fw.emitObjectLiteral(node, id)
 	case "ArrayPattern":
 		fw.emitDestructureArray(node, id)
 	case "ImportDeclaration":
@@ -562,6 +564,68 @@ func (fw *FactWalker) emitCast(node ASTNode, id uint32) {
 		innerID = fw.nid(innerNode)
 	}
 	fw.emit("Cast", id, innerID)
+}
+
+// ---- Object Literals ----
+
+// emitObjectLiteral emits an ObjectLiteralField row for each named field of an
+// object expression `{ a, b: expr, c }`. Spread elements (`...rest`) and
+// computed-key properties are skipped silently — v1 limitations documented in
+// the schema. The valueExpr column points at the value-position node:
+//   - shorthand `{ foo }`        → valueExpr is the Identifier `foo`
+//   - pair       `{ foo: expr }` → valueExpr is `expr`
+//
+// This is consumed by the React context-alias tracking in
+// `bridge/tsq_react.qll` to look up which symbol a Provider value object
+// exposes under a given field name. See round-2 of the setState-alias work.
+func (fw *FactWalker) emitObjectLiteral(node ASTNode, id uint32) {
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		switch child.Kind() {
+		case ",", "{", "}":
+			continue
+		case "ShorthandPropertyIdentifier":
+			// `{ foo }` — value is the identifier itself. The visitor
+			// dispatches `case "Identifier"` to emit ExprMayRef, but
+			// tree-sitter classifies the shorthand-property identifier as
+			// `ShorthandPropertyIdentifier` (NOT `Identifier`), so the
+			// visitor never emits the expected ExprMayRef row. Emit it
+			// explicitly here so downstream context-alias predicates can
+			// resolve the shorthand binding back to its declaration.
+			name := child.Text()
+			valID := fw.nid(child)
+			fw.emit("ObjectLiteralField", id, name, valID)
+			if decl, ok := fw.scope.Resolve(name, child); ok {
+				symID := SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
+				fw.emit("ExprMayRef", valID, symID)
+			}
+		case "Pair":
+			keyNode := childByField(child, "key")
+			valNode := childByField(child, "value")
+			if keyNode == nil || valNode == nil {
+				continue
+			}
+			// Skip computed keys and string/numeric literal keys — only
+			// PropertyIdentifier keys produce a stable named field.
+			if keyNode.Kind() != "PropertyIdentifier" && keyNode.Kind() != "Identifier" {
+				continue
+			}
+			name := keyNode.Text()
+			valID := fw.nid(valNode)
+			fw.emit("ObjectLiteralField", id, name, valID)
+		case "MethodDefinition":
+			// `{ foo() { ... } }` — method shorthand. Skip for v1; not
+			// load-bearing for context-alias tracking.
+			continue
+		case "SpreadElement":
+			// `{ ...rest }` — skipped for v1.
+			continue
+		}
+	}
 }
 
 // ---- Destructuring ----
