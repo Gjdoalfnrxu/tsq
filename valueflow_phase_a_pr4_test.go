@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Gjdoalfnrxu/tsq/extract/db"
 	extractrules "github.com/Gjdoalfnrxu/tsq/extract/rules"
-	"github.com/Gjdoalfnrxu/tsq/extract/schema"
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 	"github.com/Gjdoalfnrxu/tsq/ql/eval"
 	"github.com/Gjdoalfnrxu/tsq/ql/plan"
@@ -46,12 +44,13 @@ func TestValueflow_MultiHopFixture(t *testing.T) {
 		name string
 		path string
 	}{
+		{"base", "testdata/queries/v2/valueflow/branch_base.ql"},
 		{"var_init", "testdata/queries/v2/valueflow/branch_var_init.ql"},
 		{"assign", "testdata/queries/v2/valueflow/branch_assign.ql"},
 		{"param_bind", "testdata/queries/v2/valueflow/branch_param_bind.ql"},
 		{"field_read", "testdata/queries/v2/valueflow/branch_field_read.ql"},
 		{"object_field", "testdata/queries/v2/valueflow/branch_object_field.ql"},
-		{"base", "testdata/queries/v2/valueflow/branch_base.ql"},
+		{"jsx_wrap", "testdata/queries/v2/valueflow/branch_jsx_wrapped.ql"},
 	}
 
 	branchPairs := make(map[string]bool)
@@ -73,10 +72,12 @@ func TestValueflow_MultiHopFixture(t *testing.T) {
 		}
 	}
 
-	// The fixture is hand-crafted to exercise these three branches; if any
+	// The fixture is hand-crafted to exercise ALL seven branches; if any
 	// returns 0 the fixture has lost coverage of the cooperating shape and
-	// the joint property below is meaningless.
-	for _, required := range []string{"var_init", "param_bind", "object_field"} {
+	// the joint property below is meaningless. Each branch has a dedicated
+	// sink-call/use-site in multihop.tsx — see the file header for the
+	// branch-to-shape mapping.
+	for _, required := range []string{"base", "var_init", "assign", "param_bind", "field_read", "object_field", "jsx_wrap"} {
 		if branchCounts[required] == 0 {
 			t.Errorf("multi-hop fixture: branch %q returned 0 rows; "+
 				"fixture must exercise this branch for the joint property to hold",
@@ -135,8 +136,46 @@ func TestValueflow_BridgeThroughContextStillResolves(t *testing.T) {
 			"Either mayResolveToObjectExpr no longer resolves Provider value={X} " +
 			"or the JsxWrapped branch regressed.")
 	}
-	t.Logf("bridge through-context (r3 fixture): %d row(s) — Phase A vocabulary wired through end-to-end",
-		len(rs.Rows))
+
+	// Assert each of the three positive r3 source files produces ≥1 match.
+	// A bare `len > 0` hides regressions where one shape collapses to zero
+	// while the other two compensate — that's the exact failure mode the
+	// JsxWrapper amendment was meant to prevent. Mirrors the per-file
+	// accounting in TestSetStateUpdaterCallsOtherSetStateThroughContext_R3.
+	expected := map[string]int{
+		"IndirectValue.tsx": 0,
+		"SpreadValue.tsx":   0,
+		"ComputedKey.tsx":   0,
+	}
+	negative := "Negative_NonConstKey.tsx"
+	negCount := 0
+	for _, row := range rs.Rows {
+		matched := false
+		for _, cell := range row {
+			s := fmt.Sprintf("%v", cell)
+			for fname := range expected {
+				if !matched && strings.Contains(s, fname) {
+					expected[fname]++
+					matched = true
+				}
+			}
+			if strings.Contains(s, negative) {
+				negCount++
+				matched = true
+			}
+		}
+	}
+	for fname, n := range expected {
+		if n == 0 {
+			t.Errorf("bridge through-context (r3): expected ≥1 match in %s, got 0; "+
+				"Phase A vocabulary may have lost coverage of this shape", fname)
+		}
+	}
+	if negCount > 0 {
+		t.Errorf("bridge through-context (r3): negative fixture %s matched %d time(s) — over-approximation", negative, negCount)
+	}
+	t.Logf("bridge through-context (r3 fixture): total=%d Indirect=%d Spread=%d Computed=%d (negative=%d)",
+		len(rs.Rows), expected["IndirectValue.tsx"], expected["SpreadValue.tsx"], expected["ComputedKey.tsx"], negCount)
 }
 
 // --- Phase A measurement matrix -----------------------------------------
@@ -181,6 +220,15 @@ var edbMeasureRels = []string{
 // materialised by extract/rules/valueflow.go, not stored as EDB tuples,
 // so the EDB Relation lookup returns 0 even when rows exist. This helper
 // runs the system rules against the DB and counts the derived predicate.
+//
+// Cost note: each call re-loads base relations + plans + evaluates the
+// FULL system-rule program, only to project one head. This is fine for
+// the per-fixture measurement matrix (called once per fixture under
+// TSQ_PHASE_A_MEASURE=1, not in the normal CI path), but DO NOT call it
+// in a hot loop. If a future caller needs many derived-rel counts per DB,
+// hoist a single eval and project locally rather than calling this N
+// times. Currently exactly one call site: ParamBinding in
+// TestValueflow_MeasurementMatrix.
 func countDerivedRel(t *testing.T, factDB *db.DB, pred string, arity int) int {
 	t.Helper()
 	baseRels, err := eval.LoadBaseRelations(factDB)
@@ -213,9 +261,6 @@ func countDerivedRel(t *testing.T, factDB *db.DB, pred string, arity int) int {
 	}
 	return len(rs.Rows)
 }
-
-// silence unused-import warnings if the helper is removed in a future edit
-var _ = schema.Registry
 
 var idbMeasureBranches = []struct {
 	label string
@@ -349,9 +394,6 @@ func TestValueflow_MeasurementMatrix(t *testing.T) {
 			r.idbMillis["mayResolveToJsxWrapped"],
 			r.idbMillis["mayResolveTo (union)"]))
 	}
-
-	// Stable ordering for diff reproducibility.
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].fixture < rows[j].fixture })
 
 	output := out.String()
 	if dest := os.Getenv("TSQ_PHASE_A_MEASURE_OUT"); dest != "" {

@@ -659,11 +659,16 @@ relations and `mayResolveTo` (none of those existed at 9d08906); the
 useful comparison is **extraction wall time** (does Phase A slow the
 walker?) and **bridge query results** (does the migration regress).
 
-**Extraction wall time** is statistically indistinguishable between
-baseline and HEAD across all 15 fixtures (largest delta ≤ 4 ms; both
-sides spend single-digit ms per fixture). Phase A's three new emit
-sites (`ExprValueSource`, `AssignExpr`) add ≤ 1 % overhead — the
-post-pass cost lives in the system rule evaluation path, not extraction.
+**Extraction wall time** appears to be within run-to-run noise on these
+small fixtures (single-digit ms per fixture, no fixture observed at
+double-digit ms after the Phase A emit sites landed). **No formal
+baseline at commit `9d08906` was captured as part of PR4** — the
+matrix runs in-process at HEAD only, and a clean baseline comparison
+needs a separate harness with warmup discipline (Go runtime caches, OS
+page cache) and a tolerance choice that won't flake CI. Tracked as
+follow-up issue #179. The earlier draft of this section claimed a
+"< 4 ms delta vs baseline" — that number was inferable but unmeasured;
+withdrawn until #179 lands.
 
 **`mayResolveTo` aggregate row counts at HEAD** (small fixtures only —
 Mastodon measurement deferred until next bench cycle):
@@ -696,19 +701,20 @@ Derived from PR1–PR4 merge gates (§5), §3.3 quantified target, and
 | 6 | JSX-wrapper-tolerant branch resolves `<Provider value={X} />` to object-literal source | PASS | `TestValueflow_JsxWrappedBranch` (count + object-literal-source variant) |
 | 7 | Bridge through-context query still resolves on r3 fixture under Phase A vocabulary | PASS | `TestValueflow_BridgeThroughContextStillResolves`, `TestSetStateUpdaterCallsOtherSetStateThroughContext_R3` (3 rows, exact baseline) |
 | 8 | All round-1 → round-4 React regression tests pass unmodified | PASS | `setstate_*_test.go`, `compat_test.go`, `regression_*_test.go` all green at HEAD |
-| 9 | ≥ 30 LoC removed from `bridge/tsq_react.qll` (§3.3 floor) | **PARTIAL** | PR3 deleted 2 of the 5 plan-targeted predicates (Direct + VarD1); `objectLiteralFieldOwn` and the two contextProviderField variants were deferred to a follow-up because inlining `ObjectLiteralField` into the spread unions would break the `or`-of-calls #166 workaround. Net diff: -23 LoC across 41 ins / 23 del. Rationale captured in wiki PR3 note. |
-| 10 | Mastodon wall-time delta within ±10 % of pre-PR baseline | **DEFERRED** | Mastodon bench not run as part of PR4; small-fixture extraction wall time delta is < 1 % across 15 fixtures. To be re-measured in next bench cycle. |
+| 9 | ≥ 30 LoC removed from `bridge/tsq_react.qll` (§3.3 floor) | **PARTIAL** | PR3 deleted 2 of the 5 plan-targeted predicates (Direct + VarD1) but introduced the new `mayResolveToObjectExpr` helper and updated callers. Real diff for PR #176 on `bridge/tsq_react.qll`: **41 insertions / 23 deletions = +18 net LoC** (i.e. the file grew slightly, did not shrink). Phase A's §3.3 floor of "≥ 30 LoC removed" is NOT met by PR3 alone; the full deletion lands when the deferred predicates (`objectLiteralFieldOwn`, `contextProviderFieldR3DirectOwn`, `contextProviderFieldR3VarIndirectOwn`) migrate. Those three are gated on a separate `or`-of-calls-vs-`ObjectLiteralField` inlining decision that would otherwise break the #166 workaround at the `*ThroughSpread` unions. Tracked as follow-up issue #178. |
+| 10 | Mastodon wall-time delta within ±10 % of pre-PR baseline | **DEFERRED** | Mastodon bench not run as part of PR4. Small-fixture extraction time appears within run-to-run noise but no formal baseline at `9d08906` was captured (see follow-up issue #179). To be re-measured in the next bench cycle. |
 | 11 | No `mayResolveTo` rule body references `mayResolveTo` itself (§6 #1) | PASS | `bridge/tsq_valueflow.qll` audit: every branch body uses only EDB rels + `mayResolveToCore` (a single-call dispatch); no recursive back-edge |
 | 12 | Schema additive only — older readers ignore new rels (§7.2) | PASS | PR1 schema bump landed; existing `compat_test.go` cases pass unchanged |
 
-**Net status:** 10 PASS, 1 PARTIAL (criterion 9 — bridge LoC reduction
-fell short of plan §3.3 floor; tracked as follow-up), 1 DEFERRED
-(criterion 10 — Mastodon bench scheduled for next cycle).
+**Net status:** 10 PASS, 1 PARTIAL (criterion 9 — bridge LoC change is
++18 net, not the targeted -30 floor; tracked as follow-up #178), 1
+DEFERRED (criterion 10 — Mastodon bench scheduled for next cycle, and
+the small-fixture baseline capture tracked as #179).
 
 Phase A's **vocabulary** ships fully; the **bridge collapse** delivered
-2 of 5 targeted predicate deletions. The remaining 3 are blocked on a
-separate `or`-of-calls-vs-`ObjectLiteralField` inlining decision that
-belongs to its own PR rather than being forced into Phase A. Phase B
-(planner work for recursive-IDB sizing + magic-set propagation) and
-Phase C (recursive `mayResolveTo`) inherit a clean, sized,
-non-recursive base.
+2 of 5 targeted predicate deletions and grew the bridge file slightly
+on net. The remaining 3 deletions are blocked on a separate
+`or`-of-calls-vs-`ObjectLiteralField` inlining decision that belongs to
+its own PR rather than being forced into Phase A. Phase B (planner work
+for recursive-IDB sizing + magic-set propagation) and Phase C
+(recursive `mayResolveTo`) inherit a clean, sized, non-recursive base.
