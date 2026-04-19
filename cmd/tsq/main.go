@@ -1113,12 +1113,28 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// materialised class-extent name set and can ground vars sourced
 	// from those (now-stripped) extents in backward-demand inference.
 	matExtents := map[string]*eval.Relation{}
+	// Phase B PR3: load the EDB statistics sidecar (if present) and
+	// hand it to the recursive-IDB estimator. Load failures are
+	// non-fatal: the lookup degrades to default-stats mode, and the
+	// recursive estimator writes SaturatedSizeHint instead of leaving
+	// recursive IDBs at the default 1000 hint. See ql/stats/persist.go
+	// for the validation contract (hash mismatch / decode failure /
+	// missing file all return nil).
+	// Pass nil writer so a missing/stale sidecar is silent here —
+	// extraction-time warning already covered the user-visible
+	// invalidation path; a noisy "no sidecar at <path>" on every
+	// query invocation would dominate the stderr stream during
+	// iterative dev with --no-stats. The planner's behavioural
+	// fallback (SaturatedSizeHint for recursive IDBs) is the
+	// observable signal.
+	statsSchema, _ := stats.Load(dbFile, nil)
+	statsLookup := plan.SchemaStatsLookup(statsSchema)
 	execPlan, planErrs := plan.EstimateAndPlanWithExtentsCtx(
 		prog,
 		sizeHints,
 		maxBindingsPerRule,
 		nil, // estimator: covered by the materialising hook below.
-		eval.MakeMaterialisingEstimatorHook(baseRels, matExtents),
+		eval.MakeMaterialisingEstimatorHookWithStats(baseRels, matExtents, statsLookup),
 		planFn,
 	)
 	if len(planErrs) > 0 {
