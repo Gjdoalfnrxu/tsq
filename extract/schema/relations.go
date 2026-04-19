@@ -509,6 +509,22 @@ func init() {
 		{Name: "argExpr", Type: TypeEntityRef},
 	}})
 
+	// Value-flow Phase C PR2: intra-procedural value-flow step union.
+	// LocalFlowStep(from, to) holds when the runtime value of expression
+	// `from` may flow to expression `to` in a single intra-procedural step
+	// — assignment, var init, param binding, return-to-call, destructure,
+	// object-literal store/spread, field read/write, or await. PR2 ships
+	// path-erased (arity-2); PR5 widens to (from, to, path) for field
+	// sensitivity. Populated by extract/rules/localflowstep.go as the
+	// union of eleven `lfs*` per-kind IDB rules. PR3 adds the symmetric
+	// `InterFlowStep` for cross-call/module steps; PR4 closes the union
+	// into the recursive `MayResolveTo` predicate. See
+	// docs/design/valueflow-phase-c-plan.md §1.3.
+	RegisterRelation(RelationDef{Name: "LocalFlowStep", Version: 2, Columns: []ColumnDef{
+		{Name: "from", Type: TypeEntityRef},
+		{Name: "to", Type: TypeEntityRef},
+	}})
+
 	// C1: Template literal extraction
 	RegisterRelation(RelationDef{Name: "TemplateLiteral", Version: 2, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},

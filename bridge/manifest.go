@@ -124,6 +124,10 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ExprValueSource", Relation: "ExprValueSource", File: "tsq_expressions.qll"},
 			{Name: "AssignExpr", Relation: "AssignExpr", File: "tsq_variables.qll"},
 			{Name: "ParamBinding", Relation: "ParamBinding", File: "tsq_calls.qll"},
+			// v2 Phase C PR2 (value-flow): intra-procedural step union.
+			// Populated by extract/rules/localflowstep.go; QL consumer
+			// arrives in Phase C PR3/PR4 (`flowStep` / `mayResolveTo`).
+			{Name: "LocalFlowStep", Relation: "LocalFlowStep", File: "tsq_dataflow.qll"},
 			// v2 Phase F: framework models
 			{Name: "ExpressHandler", Relation: "ExpressHandler", File: "tsq_express.qll"},
 			// v2 Phase D: taint analysis
