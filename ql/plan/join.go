@@ -395,15 +395,65 @@ func selectVars(sel []datalog.Term) []string {
 	return out
 }
 
+// magicPredPrefix is the predicate-name prefix used by MagicSetTransform
+// for synthesised seed/propagation predicates. Anchoring literals with
+// this prefix to slot 0 (see pickMagicAnchor) is the disj2-round6 fix
+// for the unseeded-propagation cap-hit on `magic__disj_28` —
+// magic_<pred> literals are the seed-driven demand source and must
+// drive the join, never act as a tail-end filter against a base-only
+// cross product.
+const magicPredPrefix = "magic_"
+
+// isMagicLiteral reports whether lit is a positive atom whose predicate
+// name carries the `magic_` prefix. Comparisons, aggregates, and
+// negative literals are excluded — only positive atom drivers qualify
+// for the round-6 anchor.
+func isMagicLiteral(lit datalog.Literal) bool {
+	if !lit.Positive || lit.Cmp != nil || lit.Agg != nil {
+		return false
+	}
+	p := lit.Atom.Predicate
+	return len(p) > len(magicPredPrefix) && p[:len(magicPredPrefix)] == magicPredPrefix
+}
+
+// pickMagicAnchor returns the index of the next unplaced positive
+// literal whose predicate is a magic-set seed predicate (name prefixed
+// with `magic_`), or -1 if none qualifies. It runs BEFORE the
+// tiny-seed override and the standard greedy scorer in
+// orderJoins/orderJoinsWithDemandAndIDB. See `magicPredPrefix` for the
+// full rationale.
+//
+// Selection rule among multiple magic literals: the FIRST unplaced one
+// in body order wins. This is body-order-stable (matters for tests
+// that pin plans) and is the order MagicSetTransform itself uses when
+// constructing rewritten bodies (magic head-prereq first, then
+// preceding original body lits).
+//
+// Eligibility: positive atoms are always eligible (isEligible returns
+// true unconditionally), so this function only consults `placed`.
+func pickMagicAnchor(body []datalog.Literal, placed []bool) int {
+	for i, lit := range body {
+		if placed[i] {
+			continue
+		}
+		if isMagicLiteral(lit) {
+			return i
+		}
+	}
+	return -1
+}
+
 // orderJoins implements greedy join ordering for a rule body.
 //
 // Selection rule per slot:
-//  1. Among eligible candidates, prefer any "tiny seed" (see isTinySeed)
-//     — this is the issue #98 defensive heuristic against missing/wrong
-//     sizeHints. Among multiple tiny candidates, the one with the smaller
-//     known sizeHint wins (with constants tiebreaking over no-constants).
-//  2. Otherwise fall back to normal cost scoring: most-bound-first, then
-//     smallest-relation-first.
+//  1. Magic-anchor (disj2-round6): any unplaced `magic_<pred>` positive
+//     literal wins immediately. See pickMagicAnchor / magicPredPrefix.
+//  2. Otherwise, prefer any "tiny seed" (see isTinySeed) — issue #98
+//     defensive heuristic against missing/wrong sizeHints. Among
+//     multiple tiny candidates, the one with the smaller known
+//     sizeHint wins (with constants tiebreaking over no-constants).
+//  3. Otherwise fall back to normal cost scoring: most-bound-first,
+//     then smallest-relation-first.
 func orderJoins(body []datalog.Literal, sizeHints map[string]int) []JoinStep {
 	if len(body) == 0 {
 		return nil
@@ -418,9 +468,11 @@ func orderJoins(body []datalog.Literal, sizeHints map[string]int) []JoinStep {
 		bestNegBound := 0
 		bestSize := 0
 
-		// Pass 1 — tiny-seed override (issue #98 + #109). See pickTinySeed.
-		tinyIdx := pickTinySeed(body, placed, bound, sizeHints, defaultSizeHint)
-		if tinyIdx != -1 {
+		// Pass 0 — magic-anchor override (disj2-round6).
+		if magicIdx := pickMagicAnchor(body, placed); magicIdx != -1 {
+			bestIdx = magicIdx
+		} else if tinyIdx := pickTinySeed(body, placed, bound, sizeHints, defaultSizeHint); tinyIdx != -1 {
+			// Pass 1 — tiny-seed override (issue #98 + #109). See pickTinySeed.
 			bestIdx = tinyIdx
 		} else {
 			// Pass 2 — fallback to standard greedy scoring.
