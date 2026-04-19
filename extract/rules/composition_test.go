@@ -366,7 +366,8 @@ func TestAllSystemRulesCountWithComposition(t *testing.T) {
 	fw := FrameworkRules()
 	ho := HigherOrderRules()
 	vf := ValueFlowRules()
-	expected := len(cg) + len(lf) + len(sm) + len(co) + len(ta) + len(fw) + len(ho) + len(vf)
+	lfs := LocalFlowStepRules()
+	expected := len(cg) + len(lf) + len(sm) + len(co) + len(ta) + len(fw) + len(ho) + len(vf) + len(lfs)
 	if len(all) != expected {
 		t.Errorf("expected %d rules, got %d", expected, len(all))
 	}

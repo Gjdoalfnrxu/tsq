@@ -52,8 +52,9 @@ func TestAllRelationsRegistered(t *testing.T) {
 
 func TestRelationCount(t *testing.T) {
 	// Value-flow Phase C PR1: +1 CallTargetCrossModule = 100.
-	if len(Registry) != 100 {
-		t.Fatalf("expected 100 relations in registry, got %d", len(Registry))
+	// Value-flow Phase C PR2: +1 LocalFlowStep = 101.
+	if len(Registry) != 101 {
+		t.Fatalf("expected 101 relations in registry, got %d", len(Registry))
 	}
 }
 

@@ -120,6 +120,11 @@ var stdlibCoverageAllowlist = map[string]string{
 	// (`ifsRetToCall`).
 	"CallTargetCrossModule": "value-flow Phase C grounded base; QL consumer arrives in Phase C PR3",
 
+	// Value-flow Phase C PR2: intra-procedural step union. Populated as a
+	// system rule (extract/rules/localflowstep.go); QL consumer ships in
+	// Phase C PR3/PR4 (`flowStep` / `mayResolveTo`).
+	"LocalFlowStep": "value-flow Phase C step layer; QL consumer arrives in Phase C PR3/PR4",
+
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
 

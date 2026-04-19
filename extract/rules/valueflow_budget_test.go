@@ -88,6 +88,126 @@ func TestParamBindingBudget(t *testing.T) {
 	}
 }
 
+// TestLocalFlowStepKindsNonZero is the Phase C PR2 regression guard mirror
+// of TestCallTargetCrossModuleNonZero. Each new lfs* primitive must emit
+// non-zero rows on at least one real fixture, summed across the corpus.
+// Without this, a body-typo (wrong column name, wrong rel name, dropped
+// literal) could silently zero a kind out and CI would still pass — the
+// per-kind unit tests use synthetic IDs and don't catch that. The
+// equivalent gap was caught at PR1 review by removing this same form of
+// regression guard; see the wiki PR1 outcomes section.
+//
+// Floors are intentionally low. The bridge corpus does not exercise every
+// kind (`lfsAwait` notably has no async-heavy fixture beyond
+// async-patterns) — the floors must reflect what the corpus actually
+// contains, not theoretical maxima. A regression would zero out a kind
+// entirely on a fixture where the unit test confirms it should fire.
+func TestLocalFlowStepKindsNonZero(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	if repoRoot == "" {
+		t.Fatal("repo root not found from CWD; regression guard cannot run")
+	}
+
+	// Cover the same fixture set as TestParamBindingBudget plus the
+	// dedicated valueflow-* fixtures that exercise field-write and
+	// multi-hop shapes the React fixtures don't reach.
+	fixtures := []string{
+		"react-component",
+		"react-usestate",
+		"react-usestate-context-alias",
+		"react-usestate-context-alias-r3",
+		"react-usestate-prop-alias",
+		"async-patterns",
+		"destructuring",
+		"imports",
+		"full-ts-project",
+		"valueflow-base",
+		"valueflow-multihop",
+		"valueflow-negative",
+		"valueflow-fnref",
+	}
+
+	// Per-kind floors. Each value is ~50% of observed total — catches
+	// partial regressions while permitting legitimate fixture churn.
+	// (Floors of 1 only catch total-absence regressions; a rule that
+	// silently drops half its output would still pass.)
+	//
+	// Follow-up: PR3+ should bake the same posture in for ifs* kinds —
+	// set floors at ~50% of observed actuals, never default to 1.
+	floors := map[string]int{
+		"lfsAssign":             6,
+		"lfsVarInit":            70,
+		"lfsParamBind":          5,
+		"lfsReturnToCallSite":   6,
+		"lfsDestructureField":   10,
+		"lfsArrayDestructure":   38,
+		"lfsObjectLiteralStore": 28,
+		"lfsSpreadElement":      3,
+		"lfsFieldRead":          50,
+		"lfsFieldWrite":         4,
+		"lfsAwait":              3,
+	}
+
+	totals := map[string]int{}
+	present := 0
+	for _, name := range fixtures {
+		dir := filepath.Join(repoRoot, "testdata", "projects", name)
+		if _, err := os.Stat(dir); err != nil {
+			t.Logf("fixture not present: %s", dir)
+			continue
+		}
+		present++
+		baseRels := dbToRelations(extractDB(t, dir))
+		var b strings.Builder
+		b.WriteString(name)
+		b.WriteString(": ")
+		for kind := range floors {
+			c, err := evalCount(baseRels, kind, 2)
+			if err != nil {
+				t.Fatalf("eval %s on %s: %v", kind, name, err)
+			}
+			totals[kind] += c
+			b.WriteString(kind)
+			b.WriteString("=")
+			b.WriteString(itoa(c))
+			b.WriteString(" ")
+		}
+		// Also surface the union row count for context.
+		uc, err := evalCount(baseRels, "LocalFlowStep", 2)
+		if err != nil {
+			t.Fatalf("eval LocalFlowStep on %s: %v", name, err)
+		}
+		b.WriteString("LocalFlowStep=")
+		b.WriteString(itoa(uc))
+		t.Log(b.String())
+	}
+	if present == 0 {
+		t.Fatal("no fixtures present")
+	}
+
+	for kind, floor := range floors {
+		if totals[kind] < floor {
+			t.Errorf("regression guard: %s emitted %d rows across corpus, want >= %d",
+				kind, totals[kind], floor)
+		}
+	}
+}
+
+// extractDB runs the type-aware walker on a project and returns the raw
+// fact DB. Lifted out of extractAndCount so the per-kind regression guard
+// can re-use the conversion to eval relations.
+func extractDB(t *testing.T, projectDir string) *db.DB {
+	t.Helper()
+	database := db.NewDB()
+	walker := extract.NewTypeAwareWalker(database)
+	backend := &extract.TreeSitterBackend{}
+	if err := walker.Run(context.Background(), backend, extract.ProjectConfig{RootDir: projectDir}); err != nil {
+		t.Fatalf("walker.Run: %v", err)
+	}
+	backend.Close()
+	return database
+}
+
 // TestCallTargetCrossModuleNonZero is a regression guard for the Phase C PR1
 // CallTargetCrossModule rule. The budget test above only logs per-fixture
 // counts; if a future change broke the rule body or column semantics drifted,
