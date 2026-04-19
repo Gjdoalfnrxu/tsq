@@ -157,6 +157,15 @@ func (fw *FactWalker) enterNode(node ASTNode) (bool, error) {
 	if IsFunctionKind(kind) {
 		fw.emitFunction(node, id, kind)
 	}
+	// Value-flow Phase A: ExprValueSource(expr, expr) for value-producing literals.
+	// Identity row — the planner uses it as a grounded base predicate for
+	// non-recursive mayResolveTo. See docs/design/valueflow-phase-a-plan.md §1.2.
+	if IsValueSourceKind(kind) {
+		fw.emit("ExprValueSource", id, id)
+	} else if kind == "TemplateString" && !templateHasSubstitution(node) {
+		// Template literal with no ${...} substitutions — value is its own subtree.
+		fw.emit("ExprValueSource", id, id)
+	}
 	switch kind {
 	case "CallExpression":
 		fw.emitCall(node, id)
@@ -334,6 +343,13 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		paramID := fw.nid(param)
 		paramName, typeText, isRest, isOptional := fw.extractParamInfo(param, pKind)
 
+		// Detect destructured-pattern parameters. The walker still emits a
+		// single Parameter row (for arity bookkeeping), but flags the slot so
+		// downstream rules (ParamBinding) can exclude it — the synthesised
+		// "name" for a destructured pattern is the literal pattern source
+		// text and its symbol id is therefore not a real bound name.
+		isDestructured := isDestructuredParamKind(param, pKind)
+
 		var symID uint32
 		if paramName != "" {
 			symID = SymID(fw.filePath, paramName, param.StartLine(), param.StartCol())
@@ -342,7 +358,9 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		isFnType := strings.Contains(typeText, "=>")
 
 		fw.emit("Parameter", fnID, idx, paramName, paramID, symID, typeText)
-		if paramName != "" {
+		// Emit Symbol only for real bound identifiers — destructured patterns
+		// have no single bound name at this slot.
+		if paramName != "" && !isDestructured {
 			fw.emit("Symbol", symID, paramName, paramID, fw.fileID)
 		}
 		if isRest {
@@ -351,6 +369,9 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		if isOptional {
 			fw.emit("ParameterOptional", fnID, idx)
 		}
+		if isDestructured {
+			fw.emit("ParameterDestructured", fnID, idx)
+		}
 		if isFnType {
 			fw.emit("ParamIsFunctionType", fnID, idx)
 		}
@@ -358,6 +379,47 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 	}
 }
 
+// isDestructuredParamKind reports whether the parameter slot's pattern is
+// an ObjectPattern or ArrayPattern (including when wrapped inside a
+// RequiredParameter / OptionalParameter / AssignmentPattern).
+func isDestructuredParamKind(param ASTNode, pKind string) bool {
+	switch pKind {
+	case "ObjectPattern", "ArrayPattern":
+		return true
+	case "RequiredParameter", "OptionalParameter":
+		patNode := childByField(param, "pattern")
+		if patNode == nil {
+			patNode = childByField(param, "name")
+		}
+		if patNode != nil {
+			pk := patNode.Kind()
+			return pk == "ObjectPattern" || pk == "ArrayPattern"
+		}
+	case "AssignmentPattern":
+		if left := childByField(param, "left"); left != nil {
+			lk := left.Kind()
+			return lk == "ObjectPattern" || lk == "ArrayPattern"
+		}
+	}
+	return false
+}
+
+// extractParamInfo derives the bound-name, type text, and modifier flags for
+// a parameter slot.
+//
+// Deliberately unmodelled in Phase A (callers must not assume these are
+// captured anywhere — relevant relations stay empty for these shapes):
+//   - Getter / setter accessor parameters (`get x()` / `set x(v)`): emitted
+//     as Parameter rows when present, but accessor-specific binding semantics
+//     are not modelled — they go through Method/Get/SetAccessor relations.
+//   - The implicit `arguments` object inside non-arrow functions: not
+//     emitted as a parameter symbol; consumers must inspect ExprMayRef.
+//   - Decorator parameters (TypeScript decorator factories): treated as
+//     ordinary call args; the decorator binding chain is not modelled.
+//   - Destructured parameters (ObjectPattern / ArrayPattern): emitted as a
+//     single Parameter row with the pattern source text as the synthesised
+//     name and flagged via ParameterDestructured (above). Per-bound-name
+//     expansion is deferred to Phase C.
 func (fw *FactWalker) extractParamInfo(param ASTNode, pKind string) (name, typeText string, isRest, isOptional bool) {
 	switch pKind {
 	case "RequiredParameter":
@@ -536,6 +598,13 @@ func (fw *FactWalker) emitAssign(node ASTNode, id uint32) {
 	}
 
 	fw.emit("Assign", leftID, rightID, lhsSymID)
+
+	// Value-flow Phase A: AssignExpr(lhsSym, rhsExpr) — symmetric-to-VarDecl
+	// projection. Only emit when we have a resolved lhsSym; assigns to member
+	// expressions or unresolved identifiers go through other relations.
+	if lhsSymID != 0 && rightID != 0 {
+		fw.emit("AssignExpr", lhsSymID, rightID)
+	}
 
 	// FieldWrite if LHS is a member expression
 	if leftNode != nil && leftNode.Kind() == "MemberExpression" {
@@ -1051,6 +1120,24 @@ func (fw *FactWalker) emitJsxAttr(node ASTNode, elementID uint32) {
 }
 
 // ---- Template Literals ----
+
+// templateHasSubstitution reports whether a TemplateString node contains any
+// `${...}` substitution children. Used by ExprValueSource emission to decide
+// whether a template literal is itself a value-source (no substitutions ⇒
+// runtime value is determined by the literal subtree alone).
+func templateHasSubstitution(node ASTNode) bool {
+	count := node.ChildCount()
+	for i := 0; i < count; i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		if child.Kind() == "TemplateSubstitution" {
+			return true
+		}
+	}
+	return false
+}
 
 func (fw *FactWalker) emitTemplateLiteral(node ASTNode, id uint32, tagID uint32) {
 	fw.emit("TemplateLiteral", id, tagID)

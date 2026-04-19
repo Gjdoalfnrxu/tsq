@@ -44,27 +44,28 @@ var stdlibCoverageAllowlist = map[string]string{
 	"TypeParameter":        "generic type params; queried via GenericDecl.getTypeParameter()",
 
 	// Call/parameter detail relations — used implicitly by Function/Call.
-	"Parameter":           "accessed via Function.getAParameter(), not standalone",
-	"ParameterRest":       "parameter modifier; not queried directly",
-	"ParameterOptional":   "parameter modifier; not queried directly",
-	"ParamIsFunctionType": "parameter type info; not queried directly",
-	"CallArg":             "accessed via Call methods; not queried directly",
-	"CallArgSpread":       "call argument modifier; not queried directly",
-	"Call":                "implicit via compat bridges; coverage_probe.ql added",
-	"Assign":              "assignment relation; coverage_probe.ql added",
-	"FieldRead":           "field access; coverage_probe.ql added",
-	"FieldWrite":          "field write; coverage_probe.ql added",
-	"Await":               "await expression; coverage_probe.ql added",
-	"Cast":                "type cast; coverage_probe.ql added",
-	"DestructureField":    "destructuring; coverage_probe.ql added",
-	"ArrayDestructure":    "array destructuring; coverage_probe.ql added",
-	"DestructureRest":     "destructure rest; coverage_probe.ql added",
-	"ObjectLiteralField":  "object literal field; covered by react context-alias integration test (round-2)",
-	"ObjectLiteralSpread": "object literal spread element; covered by react context-alias integration test (round-3)",
-	"JsxElement":          "JSX; coverage_probe.ql added",
-	"JsxAttribute":        "JSX attribute; coverage_probe.ql added",
-	"ImportBinding":       "import binding; coverage_probe.ql added",
-	"ExportBinding":       "export binding; coverage_probe.ql added",
+	"Parameter":             "accessed via Function.getAParameter(), not standalone",
+	"ParameterRest":         "parameter modifier; not queried directly",
+	"ParameterOptional":     "parameter modifier; not queried directly",
+	"ParameterDestructured": "parameter modifier; ParamBinding carve-out flag; not queried directly",
+	"ParamIsFunctionType":   "parameter type info; not queried directly",
+	"CallArg":               "accessed via Call methods; not queried directly",
+	"CallArgSpread":         "call argument modifier; not queried directly",
+	"Call":                  "implicit via compat bridges; coverage_probe.ql added",
+	"Assign":                "assignment relation; coverage_probe.ql added",
+	"FieldRead":             "field access; coverage_probe.ql added",
+	"FieldWrite":            "field write; coverage_probe.ql added",
+	"Await":                 "await expression; coverage_probe.ql added",
+	"Cast":                  "type cast; coverage_probe.ql added",
+	"DestructureField":      "destructuring; coverage_probe.ql added",
+	"ArrayDestructure":      "array destructuring; coverage_probe.ql added",
+	"DestructureRest":       "destructure rest; coverage_probe.ql added",
+	"ObjectLiteralField":    "object literal field; covered by react context-alias integration test (round-2)",
+	"ObjectLiteralSpread":   "object literal spread element; covered by react context-alias integration test (round-3)",
+	"JsxElement":            "JSX; coverage_probe.ql added",
+	"JsxAttribute":          "JSX attribute; coverage_probe.ql added",
+	"ImportBinding":         "import binding; coverage_probe.ql added",
+	"ExportBinding":         "export binding; coverage_probe.ql added",
 
 	// Call graph relations — internal plumbing.
 	"CallCalleeSym":       "internal call graph edge",
@@ -106,6 +107,13 @@ var stdlibCoverageAllowlist = map[string]string{
 	// Composition relations — internal.
 	"InterFlow": "internal interprocedural composition",
 	"FlowStar":  "used in custom_config.ql but as bare predicate, not class reference",
+
+	// Value-flow Phase A grounded base relations — populated for the
+	// non-recursive mayResolveTo predicate added in Phase A PR3 (no QL
+	// consumers ship in PR1 / PR2).
+	"ExprValueSource": "value-flow Phase A grounded base; QL consumer arrives in PR3",
+	"AssignExpr":      "value-flow Phase A grounded base; QL consumer arrives in PR3",
+	"ParamBinding":    "value-flow Phase A grounded base; QL consumer arrives in PR3",
 
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",

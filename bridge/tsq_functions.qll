@@ -116,6 +116,28 @@ class ParameterOptional extends @parameter_optional {
 }
 
 /**
+ * Marks a parameter slot whose pattern is a destructuring pattern
+ * (ObjectPattern or ArrayPattern), e.g. `function f({a, b}, [x, y])`.
+ *
+ * Phase A does NOT model per-bound-name binding for destructured params; the
+ * Parameter row for the slot has the pattern source text as a synthesised
+ * "name" with a non-real symbol id. Consumers (notably `ParamBinding`)
+ * should exclude these slots until Phase C adds proper expansion.
+ *
+ * NOTE: `this` binds to col 0 (fn), not a unique id.
+ * Same entity-collapse caveat as Parameter.
+ */
+class ParameterDestructured extends @parameter_destructured {
+    ParameterDestructured() { ParameterDestructured(this, _) }
+
+    /** Gets the function. */
+    Function getFunction() { result = this }
+
+    /** Gets the parameter index. */
+    int getIndex() { ParameterDestructured(this, result) }
+}
+
+/**
  * Marks a parameter type as a function type.
  *
  * NOTE: `this` binds to col 0 (fn), not a unique id.

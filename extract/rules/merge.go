@@ -4,7 +4,7 @@ import (
 	"github.com/Gjdoalfnrxu/tsq/ql/datalog"
 )
 
-// AllSystemRules returns all system Datalog rules: call graph + local flow + summaries + composition + taint + frameworks + higher-order.
+// AllSystemRules returns all system Datalog rules: call graph + local flow + summaries + composition + taint + frameworks + higher-order + value-flow.
 func AllSystemRules() []datalog.Rule {
 	var all []datalog.Rule
 	all = append(all, CallGraphRules()...)
@@ -14,6 +14,7 @@ func AllSystemRules() []datalog.Rule {
 	all = append(all, TaintRules()...)
 	all = append(all, FrameworkRules()...)
 	all = append(all, HigherOrderRules()...)
+	all = append(all, ValueFlowRules()...)
 	return all
 }
 

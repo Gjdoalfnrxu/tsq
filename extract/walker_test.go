@@ -113,8 +113,8 @@ func TestEmitSchemaVersion(t *testing.T) {
 		t.Errorf("SchemaVersion: expected 1 tuple, got %d", r.Tuples())
 	}
 	v := getInt(t, r, 0, 0)
-	if v != 1 {
-		t.Errorf("SchemaVersion: expected version=1, got %d", v)
+	if v != int32(db.SchemaVersion) {
+		t.Errorf("SchemaVersion: expected version=%d, got %d", db.SchemaVersion, v)
 	}
 }
 
@@ -595,5 +595,198 @@ func TestGeneratorFunction(t *testing.T) {
 	r := rel(t, database, "Function")
 	if !hasIntInCol(r, 4, 1) {
 		t.Error("Function: expected isGenerator=1")
+	}
+}
+
+// ---- Value-flow Phase A PR1: ExprValueSource + AssignExpr emission ----
+
+// TestExprValueSource_ObjectLiteral verifies an object literal emits an
+// identity row in ExprValueSource (expr == sourceExpr).
+func TestExprValueSource_ObjectLiteral(t *testing.T) {
+	src := `const o = { x: 5 };`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "ExprValueSource")
+	if r.Tuples() < 2 {
+		t.Fatalf("ExprValueSource: expected at least 2 tuples (obj literal + number), got %d", r.Tuples())
+	}
+	// Each row must be (id, id) — identity.
+	for i := 0; i < r.Tuples(); i++ {
+		a := getInt(t, r, i, 0)
+		b := getInt(t, r, i, 1)
+		if a != b {
+			t.Errorf("ExprValueSource row %d: expected identity, got (%d, %d)", i, a, b)
+		}
+	}
+}
+
+// TestExprValueSource_ArrowFunction verifies arrow functions are value-source.
+func TestExprValueSource_ArrowFunction(t *testing.T) {
+	src := `const f = () => 1;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "ExprValueSource")
+	// Expect at least: arrow function + numeric literal.
+	if r.Tuples() < 2 {
+		t.Fatalf("ExprValueSource: expected >=2 tuples for arrow + literal, got %d", r.Tuples())
+	}
+}
+
+// TestExprValueSource_NotForCalls confirms calls and identifiers are NOT in ExprValueSource.
+func TestExprValueSource_NotForCalls(t *testing.T) {
+	src := `function g() { return 1; } const x = g(); const y = x;`
+	database := walkerTestDB(t, src)
+	rValueSrc := rel(t, database, "ExprValueSource")
+	rNode := rel(t, database, "Node")
+
+	// Build a kind lookup: NodeID -> kind.
+	kindOf := make(map[int32]string)
+	for i := 0; i < rNode.Tuples(); i++ {
+		id := getInt(t, rNode, i, 0)
+		k, err := rNode.GetString(database, i, 2)
+		if err != nil {
+			t.Fatalf("GetString kind: %v", err)
+		}
+		kindOf[id] = k
+	}
+
+	for i := 0; i < rValueSrc.Tuples(); i++ {
+		id := getInt(t, rValueSrc, i, 0)
+		k := kindOf[id]
+		switch k {
+		case "Identifier", "CallExpression", "MemberExpression",
+			"BinaryExpression", "AwaitExpression", "AsExpression",
+			"NonNullExpression", "ParenthesizedExpression",
+			"NewExpression", "YieldExpression":
+			t.Errorf("ExprValueSource row for %s (id=%d) — should NOT be a value-source", k, id)
+		}
+	}
+}
+
+// TestExprValueSource_TemplateLiteralWithSubstitution verifies that template
+// literals containing ${...} are NOT emitted as value-sources, while bare
+// template literals are.
+func TestExprValueSource_TemplateLiteralWithSubstitution(t *testing.T) {
+	src := "const a = `bare`; const b = `hi ${a}`;"
+	database := walkerTestDB(t, src)
+	rValueSrc := rel(t, database, "ExprValueSource")
+	rNode := rel(t, database, "Node")
+
+	// Find both template node ids.
+	var bareID, substID int32 = 0, 0
+	for i := 0; i < rNode.Tuples(); i++ {
+		k, _ := rNode.GetString(database, i, 2)
+		if k != "TemplateString" {
+			continue
+		}
+		startLine := getInt(t, rNode, i, 3)
+		id := getInt(t, rNode, i, 0)
+		// `bare` is on line 1 col 10ish; `hi ${a}` is on line 1 too.
+		// Discriminate by start col.
+		startCol := getInt(t, rNode, i, 4)
+		_ = startLine
+		if startCol < 25 {
+			bareID = id
+		} else {
+			substID = id
+		}
+	}
+	if bareID == 0 || substID == 0 {
+		t.Fatalf("expected to find both template nodes; bare=%d subst=%d", bareID, substID)
+	}
+	hasID := func(target int32) bool {
+		for i := 0; i < rValueSrc.Tuples(); i++ {
+			if getInt(t, rValueSrc, i, 0) == target {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasID(bareID) {
+		t.Error("bare template literal should be in ExprValueSource")
+	}
+	if hasID(substID) {
+		t.Error("template literal with substitution should NOT be in ExprValueSource")
+	}
+}
+
+// TestAssignExpr_Basic verifies AssignExpr is emitted for a simple identifier
+// reassignment.
+func TestAssignExpr_Basic(t *testing.T) {
+	src := `let x; x = 42;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	if r.Tuples() != 1 {
+		t.Fatalf("AssignExpr: expected 1 tuple, got %d", r.Tuples())
+	}
+	lhsSym := getInt(t, r, 0, 0)
+	rhs := getInt(t, r, 0, 1)
+	if lhsSym == 0 {
+		t.Error("AssignExpr: lhsSym should be non-zero (resolved symbol)")
+	}
+	if rhs == 0 {
+		t.Error("AssignExpr: rhsExpr should be non-zero")
+	}
+}
+
+// TestAssignExpr_NotForFieldWrite confirms that an assignment to a member
+// expression (`o.x = 1`) does NOT emit AssignExpr (those go through
+// FieldWrite).
+func TestAssignExpr_NotForFieldWrite(t *testing.T) {
+	src := `const o: any = {}; o.x = 1;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	// `o = ...` style assignments don't appear here; only `o.x = 1` which
+	// has a member-expression LHS — must NOT emit AssignExpr.
+	if r.Tuples() != 0 {
+		t.Errorf("AssignExpr: expected 0 tuples for member-LHS assignment, got %d", r.Tuples())
+	}
+}
+
+// TestAssignExpr_MultipleAssigns verifies multiple assignments to the same
+// symbol each emit a row (last-write-wins is NOT enforced).
+func TestAssignExpr_MultipleAssigns(t *testing.T) {
+	src := `let x; x = 1; x = 2; x = 3;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	if r.Tuples() != 3 {
+		t.Errorf("AssignExpr: expected 3 tuples for 3 assignments, got %d", r.Tuples())
+	}
+}
+
+// TestAssignExpr_CompoundAssignment documents the behaviour for compound
+// assignments (`x += 1`, `x -= 1`, etc). These are NOT modelled as
+// AssignExpr in Phase A — the rhs of `x += 1` is `1`, not the new value of
+// `x`, so emitting AssignExpr(x, 1) would be misleading for any
+// `mayResolveTo` consumer. Any compound-assign support belongs in Phase C
+// (likely as its own relation, not as AssignExpr). This test pins the
+// current behaviour so a regression is loud.
+func TestAssignExpr_CompoundAssignment(t *testing.T) {
+	src := `let x = 0; x += 1; x -= 2; x *= 3;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	if r.Tuples() != 0 {
+		t.Errorf("AssignExpr: expected 0 tuples for compound assignments (x += 1 etc), got %d", r.Tuples())
+	}
+}
+
+// TestAssignExpr_ChainedAssignment verifies chained assignment `a = b = 1`
+// emits one row per intermediate binding. Tree-sitter parses this as
+// `a = (b = 1)`, so the expected rows are AssignExpr(a, <inner>) and
+// AssignExpr(b, 1). At minimum: 2 rows, both with non-zero lhsSym.
+func TestAssignExpr_ChainedAssignment(t *testing.T) {
+	src := `let a, b; a = b = 1;`
+	database := walkerTestDB(t, src)
+	r := rel(t, database, "AssignExpr")
+	if r.Tuples() != 2 {
+		t.Fatalf("AssignExpr: expected 2 tuples for chained assignment a = b = 1, got %d", r.Tuples())
+	}
+	for i := 0; i < r.Tuples(); i++ {
+		lhsSym := getInt(t, r, i, 0)
+		rhs := getInt(t, r, i, 1)
+		if lhsSym == 0 {
+			t.Errorf("AssignExpr row %d: lhsSym should be non-zero", i)
+		}
+		if rhs == 0 {
+			t.Errorf("AssignExpr row %d: rhsExpr should be non-zero", i)
+		}
 	}
 }
