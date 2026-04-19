@@ -138,20 +138,36 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 		}
 	}
 
-	// Initialise: every IDB predicate starts "fully demanded" (all
-	// columns assumed bound). Intersection shrinks this over time.
-	// Sentinel nil slice means "unknown / top" — an unset name in the
-	// map means "no caller observed yet", which is distinct from
-	// "observed with zero bound cols". We use a sentinel map
-	// (initialised[name] = true) to distinguish.
-	demand := DemandMap{}
+	// Per-iteration recomputation. The original in-place intersect
+	// design had a soundness gap: when caller R's head demand grew
+	// LATER in the fixed point (e.g. because the query/grandparent
+	// pass had not yet observed R's own demand on iter 0), the early
+	// intersect of R's body literal demand with the empty initial
+	// observation became permanent — `intersect([], [0]) == []` and
+	// no subsequent iteration could grow it back.
+	//
+	// Concretely (Mastodon `_disj_2` failure mode): the rename rule
+	// `functionContainsStar :- _disj_2` was visited on iter 1 with
+	// `demand[functionContainsStar] = []` (still uninitialised from
+	// the rule passes the rename appears before in source order),
+	// observed `_disj_2 -> []` and initialised `demand[_disj_2]=[]`.
+	// Iter 2: setStateUpdaterCallsFn raised
+	// `demand[functionContainsStar]` to [0], the rename re-ran and
+	// now observed `_disj_2 -> [0]`, but `intersect([],[0]) = []`
+	// stuck. Result: `_disj_2` looked unbound to the magic-set
+	// rewrite even though there's a real rename-trampoline path.
+	//
+	// Fix: each pass computes a fresh `observation` map by walking
+	// every caller (query + every rule body) and intersecting their
+	// per-pass observed columns. Head context for each rule is taken
+	// from `prevDemand` (the previous iteration's result), so as
+	// prevDemand grows monotonically across iterations, observation
+	// grows monotonically too. We assign newDemand := observation
+	// directly (no cross-iteration intersect) — the all-callers
+	// intersect is fully captured WITHIN each pass.
+	prevDemand := DemandMap{}
 	initialised := map[string]bool{}
 
-	changed := true
-	// Bound iterations defensively: each pass only ever shrinks demand
-	// sets. With P positions summed across all IDBs, at most P+1
-	// passes before we stabilise. Add a buffer just in case of
-	// implementation slip.
 	maxIter := 1
 	for name := range idbArity {
 		maxIter += idbArity[name] + 1
@@ -160,28 +176,23 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 		maxIter = 8
 	}
 
-	iter := 0
-	for changed && iter < maxIter {
-		changed = false
-		iter++
-
-		// The query body is a first-class caller of any IDB it references.
-		// Treating it as such tightens the all-callers intersect: a column
-		// the rule callers happen to bind but the query does not is NOT
-		// safely demand-bound at planning time. Adversarial-review
-		// Finding 1 on PR #143.
-		//
-		// The query has no head, so headBoundVars is empty. We synthesise
-		// a Rule with an empty head and the query body so the same
-		// bodyContextGroundedVars / literalBoundCols / intersect path
-		// reused below applies uniformly.
-		if prog.Query != nil && len(prog.Query.Body) > 0 {
-			queryRule := datalog.Rule{
-				Head: datalog.Atom{},
-				Body: prog.Query.Body,
+	for iter := 0; iter < maxIter; iter++ {
+		observation := map[string][]int{}
+		observed := map[string]bool{}
+		recordObservation := func(pred string, cols []int) {
+			if !observed[pred] {
+				observation[pred] = append([]int(nil), cols...)
+				observed[pred] = true
+				return
 			}
-			queryHeadBound := map[string]bool{}
-			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, queryHeadBound)
+			observation[pred] = intersectSortedCols(observation[pred], cols)
+		}
+
+		// The query body is a first-class caller of any IDB it
+		// references. Adversarial-review Finding 1 on PR #143.
+		if prog.Query != nil && len(prog.Query.Body) > 0 {
+			queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
+			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{})
 			for _, lit := range prog.Query.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 					continue
@@ -193,27 +204,16 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 				if mixedArity[pred] {
 					continue
 				}
-				observed := literalBoundCols(lit, ctxBoundVars)
-				if !initialised[pred] {
-					demand[pred] = append([]int(nil), observed...)
-					initialised[pred] = true
-					changed = true
-					continue
-				}
-				prev := demand[pred]
-				next := intersectSortedCols(prev, observed)
-				if !sameCols(prev, next) {
-					demand[pred] = next
-					changed = true
-				}
+				recordObservation(pred, literalBoundCols(lit, ctxBoundVars))
 			}
 		}
 
 		for _, rule := range prog.Rules {
-			// Compute which of this rule's own head vars are demand-bound.
-			// On the first pass, treat them as unbound (nothing proven
-			// yet). On subsequent passes use the current demand map.
-			headDemandCols := demand[rule.Head.Predicate]
+			// Use PREVIOUS iteration's demand for head-context
+			// computation. As prevDemand grows monotonically,
+			// growing head demand re-flows through this rule's body
+			// observations on the next pass.
+			headDemandCols := prevDemand[rule.Head.Predicate]
 			headBoundVars := map[string]bool{}
 			for _, col := range headDemandCols {
 				if col < 0 || col >= len(rule.Head.Args) {
@@ -223,16 +223,6 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 					headBoundVars[v.Name] = true
 				}
 			}
-
-			// Walk the body and determine, for each positive-atom literal
-			// over an IDB predicate, which of its columns are bound by
-			// rule context. Then intersect into demand[pred].
-			//
-			// "Bound by context" here means: bound by constants in the
-			// atom itself, by `var = const` comparisons anywhere in the
-			// body, by a shared variable with a known-small positive
-			// atom (sizeHint <= SmallExtentThreshold), or by a shared
-			// variable with a head arg that is already demand-bound.
 			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars)
 
 			for _, lit := range rule.Body {
@@ -246,25 +236,43 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 				if mixedArity[pred] {
 					continue
 				}
-				observed := literalBoundCols(lit, ctxBoundVars)
-				if !initialised[pred] {
-					demand[pred] = append([]int(nil), observed...)
-					initialised[pred] = true
-					// Always flag changed on first initialisation: even if
-					// observed is empty, a downstream rule whose body
-					// references `pred` in a chain might now see a
-					// different head-demand propagation path. Conservative
-					// re-iteration beats missing a fixed-point update.
-					changed = true
-					continue
-				}
-				prev := demand[pred]
-				next := intersectSortedCols(prev, observed)
-				if !sameCols(prev, next) {
-					demand[pred] = next
-					changed = true
+				recordObservation(pred, literalBoundCols(lit, ctxBoundVars))
+			}
+		}
+
+		// newDemand := observation (no intersect with prevDemand —
+		// each pass's observation already contains the full
+		// all-callers intersect for this pass).
+		newDemand := DemandMap{}
+		newInitialised := map[string]bool{}
+		for pred, cols := range observation {
+			newDemand[pred] = cols
+			newInitialised[pred] = true
+		}
+		// Carry over previously-initialised preds that weren't
+		// observed this pass (defensive — shouldn't occur in
+		// practice since callers don't change between iterations).
+		for pred := range initialised {
+			if _, ok := newInitialised[pred]; !ok {
+				newDemand[pred] = prevDemand[pred]
+				newInitialised[pred] = true
+			}
+		}
+
+		converged := len(newInitialised) == len(initialised)
+		if converged {
+			for pred, cols := range newDemand {
+				if !sameCols(cols, prevDemand[pred]) {
+					converged = false
+					break
 				}
 			}
+		}
+
+		prevDemand = newDemand
+		initialised = newInitialised
+		if converged {
+			break
 		}
 	}
 
@@ -274,6 +282,12 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 	// from "demand is the empty set" (in map, zero cols) — the latter
 	// means "observed, but no column reliably bound", which is still
 	// useful signal to tests.
+	demand := DemandMap{}
+	for pred, cols := range prevDemand {
+		if initialised[pred] {
+			demand[pred] = cols
+		}
+	}
 	for name := range idbArity {
 		if !initialised[name] {
 			delete(demand, name)
