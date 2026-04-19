@@ -896,14 +896,14 @@ func buildProgram(src, file string, importLoader func(string) (*ast.Module, erro
 // EstimateAndPlanWithExtentsCtx. Stripped class extents on a real
 // codebase ground downstream synth-disj demand via the threaded set
 // instead of being silently dropped (the round-3 fix).
-func makeFuncWithClassExtents(opts buildOptions) plan.FuncWithClassExtents {
+func makeFuncWithClassExtents(opts buildOptions, lookup plan.StatsLookup) plan.FuncWithClassExtents {
 	if !opts.useMagicSets {
 		return func(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*plan.ExecutionPlan, []error) {
-			return plan.PlanWithClassExtents(prog, sizeHints, classExtentNames)
+			return plan.PlanWithStats(prog, sizeHints, classExtentNames, lookup)
 		}
 	}
 	return func(prog *datalog.Program, sizeHints map[string]int, classExtentNames map[string]bool) (*plan.ExecutionPlan, []error) {
-		ep, inf, errs := plan.WithMagicSetAutoOptsWithClassExtents(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict}, classExtentNames)
+		ep, inf, errs := plan.WithMagicSetAutoOptsWithStats(prog, sizeHints, plan.MagicSetOptions{Strict: opts.magicSetsStrict}, classExtentNames, lookup)
 		switch {
 		case inf.Fallback:
 			// Always surface a fallback warning to warnOut (not gated on
@@ -1099,11 +1099,6 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 		return nil, fmt.Errorf("load base relations: %w", err)
 	}
 
-	// Build the planner variant (plain or magic-set) as a Func and let
-	// EstimateAndPlan orchestrate: identify trivial IDBs → estimate →
-	// plan ONCE with the now-populated hints. The estimator hook honours
-	// maxBindingsPerRule (issue #130 / PR #132 — preserved end-to-end).
-	planFn := makeFuncWithClassExtents(opts)
 	// P2a: pre-materialise class extents so they're treated as base
 	// relations end-to-end. The sink map is populated by the
 	// materialising hook and handed to Evaluate via
@@ -1129,6 +1124,13 @@ func compileAndEval(ctx context.Context, queryFile, dbFile string, maxBindingsPe
 	// observable signal.
 	statsSchema, _ := stats.Load(dbFile, nil)
 	statsLookup := plan.SchemaStatsLookup(statsSchema)
+	// Build the planner variant (plain or magic-set) as a Func and let
+	// EstimateAndPlan orchestrate: identify trivial IDBs → estimate →
+	// plan ONCE with the now-populated hints. The estimator hook honours
+	// maxBindingsPerRule (issue #130 / PR #132 — preserved end-to-end).
+	// Phase B PR4: planFn captures the stats lookup so PlanWithStats /
+	// WithMagicSetAutoOptsWithStats can drive low-fanout grounding.
+	planFn := makeFuncWithClassExtents(opts, statsLookup)
 	execPlan, planErrs := plan.EstimateAndPlanWithExtentsCtx(
 		prog,
 		sizeHints,

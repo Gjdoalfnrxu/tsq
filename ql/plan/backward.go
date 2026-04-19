@@ -95,6 +95,28 @@ const SmallExtentThreshold = 5000
 // extents only; unknowable-size literals remain untreated.
 const LargeArityOneExtentThreshold = 1_000_000
 
+// LowFanoutThreshold is the upper bound on per-driver fan-out
+// (RowCount / NDV) for a column to qualify as a "low-fanout" join key
+// in stats-aware grounding (Phase B PR4). When a body literal binds a
+// low-fanout column — by a constant or by sharing a variable with the
+// already-bound prefix — probing that column yields a small set of
+// matches per driver tuple, which means the literal's remaining vars
+// can be treated as bound for backward-demand purposes even when the
+// relation as a whole is large (above SmallExtentThreshold).
+//
+// Set to 10: a per-probe lookup returning ≤ 10 matches is small enough
+// that any downstream literal sharing those bound vars sees a
+// per-driver workload comparable to grounding through a small extent.
+// Higher values would over-ground (start treating big fan-out columns
+// as grounders); lower values would miss the FK-shape case where a
+// child column has 1 parent (LocalFlow.dstSym → LocalFlow row count =
+// NDV ≈ row count).
+//
+// Plan §3.2: "isSmallExtent(pred, hints) || isLowFanoutCol(pred, col,
+// stats) where the latter fires when a literal binds a column whose
+// NDV/RowCount ratio means each driver tuple selects O(1) matches."
+const LowFanoutThreshold = 10
+
 // arity1BaseGroundedIDBs returns the set of IDB predicate names whose
 // every defining rule has a single head var (arity 1) and a body
 // composed entirely of non-IDB (base/extensional) positive atoms or
@@ -263,6 +285,25 @@ func InferBackwardDemand(prog *datalog.Program, sizeHints map[string]int) Demand
 	return InferBackwardDemandWithClassExtents(prog, sizeHints, nil)
 }
 
+// InferBackwardDemandWithStats is the Phase B PR4 entry point that
+// additionally honours an EDB statistics sidecar lookup. The stats
+// drive the low-fanout grounding heuristic
+// (bodyContextGroundedVars + isLowFanoutCol): a body literal that
+// binds a low-fanout column (per-driver fan-out ≤ LowFanoutThreshold)
+// grounds its remaining vars even when the relation is too large for
+// the SmallExtentThreshold or arity-1 paths.
+//
+// nil lookup degrades to InferBackwardDemandWithClassExtents
+// behaviour byte-identically (default-stats mode per plan §3.4).
+func InferBackwardDemandWithStats(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+	lookup StatsLookup,
+) DemandMap {
+	return inferBackwardDemand(prog, sizeHints, classExtentNames, lookup)
+}
+
 // InferBackwardDemandWithClassExtents is the disj2-round3 entry point
 // that additionally honours a caller-supplied set of materialised
 // class-extent base names. Those names are treated as grounders for any
@@ -276,6 +317,19 @@ func InferBackwardDemandWithClassExtents(
 	prog *datalog.Program,
 	sizeHints map[string]int,
 	classExtentNames map[string]bool,
+) DemandMap {
+	return inferBackwardDemand(prog, sizeHints, classExtentNames, nil)
+}
+
+// inferBackwardDemand is the unified implementation. The two public
+// wrappers (InferBackwardDemandWithClassExtents and
+// InferBackwardDemandWithStats) differ only in whether they pass a
+// non-nil StatsLookup.
+func inferBackwardDemand(
+	prog *datalog.Program,
+	sizeHints map[string]int,
+	classExtentNames map[string]bool,
+	lookup StatsLookup,
 ) DemandMap {
 	if prog == nil || len(prog.Rules) == 0 {
 		return DemandMap{}
@@ -358,7 +412,7 @@ func InferBackwardDemandWithClassExtents(
 		// references. Adversarial-review Finding 1 on PR #143.
 		if prog.Query != nil && len(prog.Query.Body) > 0 {
 			queryRule := datalog.Rule{Head: datalog.Atom{}, Body: prog.Query.Body}
-			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{}, largeArity1IDBs, classExtentNames)
+			ctxBoundVars := bodyContextGroundedVars(queryRule, sizeHints, map[string]bool{}, largeArity1IDBs, classExtentNames, lookup)
 			for _, lit := range prog.Query.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
 					continue
@@ -389,7 +443,7 @@ func InferBackwardDemandWithClassExtents(
 					headBoundVars[v.Name] = true
 				}
 			}
-			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars, largeArity1IDBs, classExtentNames)
+			ctxBoundVars := bodyContextGroundedVars(rule, sizeHints, headBoundVars, largeArity1IDBs, classExtentNames, lookup)
 
 			for _, lit := range rule.Body {
 				if lit.Cmp != nil || lit.Agg != nil || !lit.Positive {
@@ -487,6 +541,7 @@ func bodyContextGroundedVars(
 	headBoundVars map[string]bool,
 	largeArity1IDBs map[string]bool,
 	classExtentNames map[string]bool,
+	lookup StatsLookup,
 ) map[string]bool {
 	bound := map[string]bool{}
 	for v := range headBoundVars {
@@ -562,6 +617,36 @@ func bodyContextGroundedVars(
 							}
 						}
 					}
+					continue
+				}
+			}
+			// Phase B PR4: stats-aware low-fanout grounding. When the
+			// literal binds a low-fanout column (per-driver fan-out ≤
+			// LowFanoutThreshold per the EDB stats sidecar), the
+			// per-probe lookup yields O(1) matches and the literal's
+			// remaining vars can be treated as bound — even when the
+			// relation is too large for the SmallExtentThreshold or
+			// arity-1 paths above.
+			//
+			// "Binds" means: the column carries either a constant or a
+			// variable already in `bound`. We compute the set of bound
+			// columns per literal and check each against the stats
+			// lookup; if ANY bound column is low-fanout, the whole
+			// literal grounds.
+			//
+			// nil lookup degrades to no-op — preserving byte-identical
+			// behaviour when no sidecar is loaded (default-stats mode
+			// per plan §3.4).
+			if lookup != nil {
+				if anyBoundColIsLowFanout(lit, bound, lookup) {
+					for _, arg := range lit.Atom.Args {
+						if v, ok := arg.(datalog.Var); ok && v.Name != "_" {
+							if !bound[v.Name] {
+								bound[v.Name] = true
+								progress = true
+							}
+						}
+					}
 				}
 			}
 		}
@@ -570,6 +655,78 @@ func bodyContextGroundedVars(
 		}
 	}
 	return bound
+}
+
+// isLowFanoutCol returns true when the per-driver fan-out for `pred`'s
+// `col` (RowCount / NDV) is at most LowFanoutThreshold per the stats
+// sidecar. A nil lookup, missing relation, or missing column returns
+// false (default-stats mode — refuse to ground without evidence).
+//
+// Plan §3.2 rationale: "isSmallExtent(pred, hints) ||
+// isLowFanoutCol(pred, col, stats) where the latter fires when a
+// literal binds a column whose NDV/RowCount ratio means each driver
+// tuple selects O(1) matches." The fan-out RowCount/NDV is the inverse
+// of NDV/RowCount and the more direct quantity for "matches per
+// distinct join-key value."
+//
+// NDV == 0 on a non-empty relation is treated as absent (matches
+// SchemaStatsLookup.NDV semantics — the zero-value ColStats is
+// indistinguishable from "stats intentionally absent for this
+// column"). NDV >= RowCount is sound (fan-out ≤ 1, qualifies); the
+// inequality direction is the FK-shape case (e.g. Contains.child).
+func isLowFanoutCol(pred string, col int, lookup StatsLookup) bool {
+	if lookup == nil {
+		return false
+	}
+	rowCount, ok := lookup.RowCount(pred)
+	if !ok || rowCount <= 0 {
+		return false
+	}
+	ndv, ok := lookup.NDV(pred, col)
+	if !ok || ndv <= 0 {
+		return false
+	}
+	// fan-out = rowCount / ndv. Use integer arithmetic to avoid
+	// float boundary surprises at the threshold edge: rowCount <=
+	// ndv * LowFanoutThreshold is equivalent to rowCount/ndv <=
+	// LowFanoutThreshold for positive values.
+	return rowCount <= ndv*int64(LowFanoutThreshold)
+}
+
+// anyBoundColIsLowFanout reports whether ANY column position of
+// lit.Atom that carries a constant or an already-bound variable is
+// low-fanout per the stats lookup. This is the gate condition for the
+// stats-aware grounding path in bodyContextGroundedVars: a single
+// low-fanout bound column is enough to make the per-driver probe
+// O(1), which lets the planner treat the rest of the literal's vars
+// as bound for backward demand.
+//
+// Comparisons, aggregates, and negative literals are filtered by the
+// caller (this is only invoked on positive atoms).
+func anyBoundColIsLowFanout(lit datalog.Literal, bound map[string]bool, lookup StatsLookup) bool {
+	pred := lit.Atom.Predicate
+	if pred == "" {
+		return false
+	}
+	for i, arg := range lit.Atom.Args {
+		switch a := arg.(type) {
+		case datalog.IntConst, datalog.StringConst:
+			if isLowFanoutCol(pred, i, lookup) {
+				return true
+			}
+		case datalog.Var:
+			if a.Name == "_" {
+				continue
+			}
+			if !bound[a.Name] {
+				continue
+			}
+			if isLowFanoutCol(pred, i, lookup) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // literalBoundCols returns the sorted, deduplicated list of column
