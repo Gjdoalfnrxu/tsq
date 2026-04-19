@@ -20,13 +20,15 @@ import "sort"
 //     present but are spurious — distinguishable at readout because
 //     their `count - error` is small (often near zero).
 //
-// Readout filters by `count - error` (the lower bound of the true
-// frequency) so only entries we can defend as heavy survive. Without
-// the error field, an adversarial input order — long tail first,
-// heavy hitters last — can leave the heavies with tiny counts that
-// look indistinguishable from the spurious tail at readout. With the
-// error field the heavies surface because their `count - error` is
-// large even when their raw count is not.
+// Readout sorts by `count - err` (the lower bound on true frequency)
+// and drops entries with lower ≤ 1. Without the error field, an
+// adversarial input order — many tail values churning so individual
+// raw counts inflate via the +1-on-eviction step — can leave true
+// heavies tied with hundreds of spurious residents at the same raw
+// count, where the deterministic value-tiebreak then crowds the
+// heavies out of the top-K. Sort-by-lower-bound rescues them: tail
+// residents have lower=1 (filtered) while heavies retain a lower
+// bound equal to their organic post-entry hit count.
 //
 // Memory: 256 × (uint64 key + 2 × int64) ≈ ~6 KB per column in
 // flight; nothing on disk beyond the final top-32 itself.
@@ -94,9 +96,19 @@ func (s *SpaceSaving) Add(v uint64) {
 }
 
 // TopK returns the top-K entries sorted by descending lower-bound
-// count (count - err). Entries with a zero or negative lower bound are
-// dropped — they're spurious tail values that happened to occupy a
-// slot at end-of-stream and carry no defensible frequency claim.
+// count (count - err). Entries with lower bound ≤ 1 are dropped:
+// under this algorithm `lower` is always ≥ 1 (a fresh insert sets
+// count=1,err=0 → 1; a replacement sets count=old+1,err=old → 1), so
+// `lower == 1` is the spurious-tail signature — the slot was either
+// filled by a single occurrence we never re-saw, or filled by a
+// re-entry that inherited its predecessor's full count as error.
+// Either way the value's defensible minimum frequency is one, which
+// is not a "top" anything; with K=32 against ssCapacity=256, leaving
+// these in would let up to 27 such residents pad the user-facing
+// TopK once true heavies are exhausted. The tradeoff: a legitimate
+// single-occurrence value that happened to survive eviction is also
+// dropped — acceptable for top-K reporting, where the goal is to
+// surface frequent values, not enumerate every survivor.
 //
 // k is clamped to TopKLimit and to len(s.list). The reported
 // TopKEntry.Count is the lower bound (count - err), which is the
@@ -112,7 +124,7 @@ func (s *SpaceSaving) TopK(k int) []TopKEntry {
 	out := make([]TopKEntry, 0, len(s.list))
 	for _, e := range s.list {
 		lower := e.count - e.err
-		if lower <= 0 {
+		if lower <= 1 {
 			continue
 		}
 		out = append(out, TopKEntry{Value: e.value, Count: lower})
