@@ -785,48 +785,74 @@ func orderJoinsWithDemandAndIDB(
 		// before its bound vars are grounded, defeating the round4 fix.
 		// We pass placedView equal to placed but block IDB-demand-deferred
 		// candidates by marking them temporarily placed for this lookup.
-		var tinyMask []bool
-		if hasIDBDemand(body, idbDemand) {
-			tinyMask = make([]bool, len(body))
-			copy(tinyMask, placed)
-			for i, lit := range body {
-				if tinyMask[i] {
-					continue
+		// disj2-round6: magic-pred anchor. Any unplaced positive literal
+		// whose predicate carries the `magic_` prefix MUST win the next
+		// slot regardless of normal cost scoring (boundCount /
+		// sizeHint / tiny-seed). Magic predicates are the seed-driven
+		// demand source after `MagicSetTransform`: their extension is
+		// either empty (rule produces nothing — correct) or non-empty
+		// (the only values worth driving the join with — correct).
+		// Placing them late lets the planner cross-product the
+		// preceding base/IDB literals before pruning, which is the
+		// pathology behind the round-6 cap-hit on
+		// `magic__disj_28` (VarDecl ⋈ DestructureField on no shared
+		// vars, ~10M tuples, hits the 5M cap before
+		// `magic_contextDestructureBinding` ever filters).
+		//
+		// Eligibility: positive atoms are always eligible (isEligible
+		// returns true unconditionally for positive non-comparison
+		// literals), so the anchor pass need only check `placed`.
+		// Multiple magic literals in one body (rare but possible —
+		// e.g. a propagation rule built from a body where the
+		// preceding lits already include a magic prereq) are
+		// scheduled in body order; subsequent ones become filters once
+		// runtimeBound covers their args.
+		if magicIdx := pickMagicAnchor(body, placed); magicIdx != -1 {
+			bestIdx = magicIdx
+		} else {
+			var tinyMask []bool
+			if hasIDBDemand(body, idbDemand) {
+				tinyMask = make([]bool, len(body))
+				copy(tinyMask, placed)
+				for i, lit := range body {
+					if tinyMask[i] {
+						continue
+					}
+					if isIDBCallDeferred(lit, head.Predicate, idbDemand, runtimeBound, sizeHints) {
+						tinyMask[i] = true
+					}
 				}
-				if isIDBCallDeferred(lit, head.Predicate, idbDemand, runtimeBound, sizeHints) {
-					tinyMask[i] = true
+			} else {
+				tinyMask = placed
+			}
+			tinyIdx := pickTinySeed(body, tinyMask, runtimeBound, sizeHints, defaultSizeHint)
+			if tinyIdx != -1 && isEligible(body[tinyIdx], runtimeBound) {
+				bestIdx = tinyIdx
+			} else {
+				for i, lit := range body {
+					if placed[i] {
+						continue
+					}
+					if !isEligible(lit, runtimeBound) {
+						continue
+					}
+					negBound, size := scoreLiteral(lit, plannerBound, sizeHints)
+					// Round4: defer IDB literals whose demand requires
+					// positions not yet runtime-bound. Inflate their size to
+					// SaturatedSizeHint so any other eligible candidate wins;
+					// when a later step binds the required vars they regain
+					// their true cost and become competitive again.
+					if isIDBCallDeferred(lit, head.Predicate, idbDemand, runtimeBound, sizeHints) {
+						size = idbDeferredPenalty
+					}
+					if bestIdx == -1 || negBound < bestNegBound || (negBound == bestNegBound && size < bestSize) {
+						bestIdx = i
+						bestNegBound = negBound
+						bestSize = size
+					}
 				}
 			}
-		} else {
-			tinyMask = placed
-		}
-		tinyIdx := pickTinySeed(body, tinyMask, runtimeBound, sizeHints, defaultSizeHint)
-		if tinyIdx != -1 && isEligible(body[tinyIdx], runtimeBound) {
-			bestIdx = tinyIdx
-		} else {
-			for i, lit := range body {
-				if placed[i] {
-					continue
-				}
-				if !isEligible(lit, runtimeBound) {
-					continue
-				}
-				negBound, size := scoreLiteral(lit, plannerBound, sizeHints)
-				// Round4: defer IDB literals whose demand requires
-				// positions not yet runtime-bound. Inflate their size to
-				// SaturatedSizeHint so any other eligible candidate wins;
-				// when a later step binds the required vars they regain
-				// their true cost and become competitive again.
-				if isIDBCallDeferred(lit, head.Predicate, idbDemand, runtimeBound, sizeHints) {
-					size = idbDeferredPenalty
-				}
-				if bestIdx == -1 || negBound < bestNegBound || (negBound == bestNegBound && size < bestSize) {
-					bestIdx = i
-					bestNegBound = negBound
-					bestSize = size
-				}
-			}
-		}
+		} // end of magic-anchor else
 
 		if bestIdx == -1 {
 			for i, p := range placed {
