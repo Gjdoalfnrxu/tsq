@@ -134,6 +134,12 @@ func v2Manifest() *CapabilityManifest {
 			// `FlowStep` into the recursive `mayResolveTo` predicate.
 			{Name: "InterFlowStep", Relation: "InterFlowStep", File: "tsq_dataflow.qll"},
 			{Name: "FlowStep", Relation: "FlowStep", File: "tsq_dataflow.qll"},
+			// v2 Phase C PR4 (value-flow): recursive may-resolve-to closure
+			// over FlowStep. Populated by extract/rules/mayresolveto.go;
+			// QL consumer is `mayResolveToRec` in tsq_valueflow.qll.
+			// Bridge migration to swap R1–R4 shape predicates over to this
+			// recursive form is PR6.
+			{Name: "MayResolveTo", Relation: "MayResolveTo", File: "tsq_dataflow.qll"},
 			// v2 Phase F: framework models
 			{Name: "ExpressHandler", Relation: "ExpressHandler", File: "tsq_express.qll"},
 			// v2 Phase D: taint analysis

@@ -318,6 +318,101 @@ func TestInterFlowStepKindsNonZero(t *testing.T) {
 	}
 }
 
+// TestMayResolveToNonZero is the Phase C PR4 regression guard for the
+// recursive MayResolveTo closure. Mirrors the PR2 / PR3 discipline (rule
+// (a) non-zero on real fixtures, rule (b) per-kind floor at ~50% of
+// observed actuals).
+//
+// MayResolveTo is a single closure relation, not a multi-kind union, so
+// only one floor applies — but the same shape: catch a regression where
+// the closure silently drops half its rows. PR2/PR3's per-kind guards
+// already cover every step kind that feeds FlowStep, so this guard
+// specifically protects the *closure* (the recursive rule body, the
+// stratification, and the FlowStep ∪ ExprValueSource composition) from
+// regressing without one of the upstream guards firing first.
+//
+// Rule (c) — overlap audit with PR2/PR3 guards: the per-step-kind PR2
+// floors (lfsAssign, lfsVarInit, …) catch zeroing of any step kind; the
+// PR3 InterFlowStep / FlowStep floors catch wiring-loss of the unions.
+// Neither catches a closure-side bug (e.g. the recursive rule's edge
+// direction reversed — found and fixed during PR4 implementation, see
+// extract/rules/mayresolveto.go comment "Edge direction"). This guard
+// adds independent signal at the closure level.
+//
+// Rule (d) — no carve-out from the discipline. Floor is a real ~50% of
+// observed sum across the corpus, no structural-constraint exemption.
+func TestMayResolveToNonZero(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	if repoRoot == "" {
+		t.Fatal("repo root not found from CWD; regression guard cannot run")
+	}
+
+	// Same fixture set as TestInterFlowStepKindsNonZero so the closure
+	// guard sees the same input scope as the step-kind guards. A
+	// regression that zeroes the closure on, say, valueflow-multihop
+	// (the multi-step transitivity fixture) but not on valueflow-base
+	// would still bite the sum if the multi-hop fixture is the load-
+	// bearing one for the closure.
+	fixtures := []string{
+		"react-component",
+		"react-usestate",
+		"react-usestate-context-alias",
+		"react-usestate-context-alias-r3",
+		"react-usestate-prop-alias",
+		"async-patterns",
+		"destructuring",
+		"imports",
+		"full-ts-project",
+		"valueflow-base",
+		"valueflow-multihop",
+		"valueflow-negative",
+		"valueflow-fnref",
+		"valueflow-rta-dispatch",
+	}
+
+	// Observed sum across the present corpus during PR4 implementation:
+	// 19 + 39 + 45 + 89 + 38 + 11 + 28 + 18 + 116 + 87 + 84 + 67 + 4 + 8
+	// = 653. Floor at ~50% per the PR2/PR3 discipline = 326. Catches a
+	// regression where the closure silently drops half its rows; floor
+	// of 1 would only catch total-absence and is rejected per rule (b).
+	const mayResolveToFloor = 326
+
+	total := 0
+	present := 0
+	for _, name := range fixtures {
+		dir := filepath.Join(repoRoot, "testdata", "projects", name)
+		if _, err := os.Stat(dir); err != nil {
+			t.Logf("fixture not present: %s", dir)
+			continue
+		}
+		present++
+		baseRels := dbToRelations(extractDB(t, dir))
+		c, err := evalCount(baseRels, "MayResolveTo", 2)
+		if err != nil {
+			t.Fatalf("eval MayResolveTo on %s: %v", name, err)
+		}
+		// Also surface FlowStep + ExprValueSource for ratio sanity.
+		fs, err := evalCount(baseRels, "FlowStep", 2)
+		if err != nil {
+			t.Fatalf("eval FlowStep on %s: %v", name, err)
+		}
+		evs, err := evalCount(baseRels, "ExprValueSource", 2)
+		if err != nil {
+			t.Fatalf("eval ExprValueSource on %s: %v", name, err)
+		}
+		t.Logf("%s: MayResolveTo=%d (FlowStep=%d, ExprValueSource=%d)",
+			name, c, fs, evs)
+		total += c
+	}
+	if present == 0 {
+		t.Fatal("no fixtures present")
+	}
+	if total < mayResolveToFloor {
+		t.Errorf("regression guard: MayResolveTo emitted %d rows across corpus, want >= %d",
+			total, mayResolveToFloor)
+	}
+}
+
 // TestCallTargetCrossModuleNonZero is a regression guard for the Phase C PR1
 // CallTargetCrossModule rule. The budget test above only logs per-fixture
 // counts; if a future change broke the rule body or column semantics drifted,

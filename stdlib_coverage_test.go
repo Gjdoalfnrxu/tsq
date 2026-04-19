@@ -133,6 +133,12 @@ var stdlibCoverageAllowlist = map[string]string{
 	"InterFlowStep": "value-flow Phase C step layer; QL consumer arrives in Phase C PR4",
 	"FlowStep":      "value-flow Phase C step layer; QL consumer arrives in Phase C PR4",
 
+	// Value-flow Phase C PR4: recursive may-resolve-to closure over
+	// FlowStep. Populated as system rules (extract/rules/mayresolveto.go);
+	// QL consumer is `mayResolveToRec` in tsq_valueflow.qll. Bridge
+	// migration (tsq_react.qll consumers) lands in Phase C PR6.
+	"MayResolveTo": "value-flow Phase C recursive closure; bridge migration is PR6",
+
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
 
