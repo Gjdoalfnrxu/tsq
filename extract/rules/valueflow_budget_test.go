@@ -17,11 +17,20 @@ import (
 
 // TestParamBindingBudget enforces the value-flow Phase A row-count budget gate
 // from the plan §7.3 — ParamBinding must not exceed 5x CallArg row count on
-// representative fixtures. If this gate fires, the design choice is to drop
-// CallTargetRTA and document the precision loss (see plan §7.3 / §1.2 carve-outs).
+// representative fixtures.
 //
-// Also surfaces the per-fixture row counts for ExprValueSource and AssignExpr
-// so PR review can sanity-check the new EDB rels haven't blown up.
+// The gate exists specifically to catch RTA blow-up: ParamBinding's rule
+// consumes both CallTarget AND CallTargetRTA (one disjunct each in
+// valueflow.go), and CallTargetRTA can produce many candidate fns per call
+// site. Without the RTA disjunct the gate would be decorative — empirical
+// ratios on these fixtures all sit under 0.2x. With RTA wired in, the gate
+// is the design's load-bearing contract for the multiplicative cost.
+//
+// If the gate ever fires, the design choice is to drop CallTargetRTA from
+// the rule and document the precision loss (plan §7.3 / §1.2 carve-outs).
+//
+// Also surfaces per-fixture row counts for CallTargetRTA, ExprValueSource
+// and AssignExpr so PR review can sanity-check the new EDB rels.
 func TestParamBindingBudget(t *testing.T) {
 	// Pick a small set of representative fixtures from testdata/projects.
 	// Skip if the working directory isn't the repo root (in CI with -short the
@@ -29,7 +38,11 @@ func TestParamBindingBudget(t *testing.T) {
 	// dedicated cmd or a manual CLI run).
 	repoRoot := findRepoRoot(t)
 	if repoRoot == "" {
-		t.Skip("repo root not found from CWD; skipping budget gate")
+		// The budget gate is the only thing keeping ParamBinding's
+		// CallTarget ∪ CallTargetRTA blow-up honest. Silently skipping when
+		// run outside the repo root means CI could pass without the gate
+		// ever firing — make this a hard failure instead.
+		t.Fatal("repo root not found from CWD; budget gate cannot run")
 	}
 
 	fixtures := []string{
@@ -124,6 +137,12 @@ func extractAndCount(t *testing.T, projectDir string) map[string]int {
 		t.Fatalf("eval CallTarget: %v", err)
 	}
 	counts["CallTarget"] = ctCount
+
+	rtaCount, err := evalCount(baseRels, "CallTargetRTA", 2)
+	if err != nil {
+		t.Fatalf("eval CallTargetRTA: %v", err)
+	}
+	counts["CallTargetRTA"] = rtaCount
 	return counts
 }
 
@@ -178,7 +197,7 @@ func evalCount(baseRels map[string]*eval.Relation, pred string, arity int) (int,
 }
 
 func formatCounts(c map[string]int) string {
-	keys := []string{"Node", "CallArg", "Parameter", "CallTarget", "ParamBinding", "ExprValueSource", "AssignExpr", "Assign"}
+	keys := []string{"Node", "CallArg", "Parameter", "CallTarget", "CallTargetRTA", "ParamBinding", "ExprValueSource", "AssignExpr", "Assign"}
 	var b strings.Builder
 	for _, k := range keys {
 		b.WriteString(k)
