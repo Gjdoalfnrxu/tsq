@@ -1,0 +1,9 @@
+# Keep the summary artefacts (manifest, top-level CSVs) but drop the
+# large per-run scratch (compiled tsq binary, fact DBs, raw query
+# CSVs, logs). Summary CSVs alone are the long-term record.
+*/tsq
+*/tsq.exe
+*/*.db
+*/*.db.stats
+*/*.raw.csv
+*/*.log

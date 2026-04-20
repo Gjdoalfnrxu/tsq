@@ -1,0 +1,35 @@
+# Corpora for Phase D measurement harness.
+#
+# Each entry: name (unique, used as CSV/log filename stem), path
+# (local path OR user@host:path for SSH fetch), and notes.
+#
+# Paths with a ':' are treated as SSH remotes by bench_run.sh —
+# the script will rsync the corpus to a local scratch directory
+# under /tmp/tsq-bench-corpora/<name> before extracting. Local paths
+# are used in-place.
+#
+# To add a corpus: append an entry and commit. Keep notes honest —
+# flag cross-file density, framework stew, and known planner-stress
+# shapes so future readers know what each corpus is supposed to
+# probe.
+
+corpora:
+  - name: local_fixtures
+    path: testdata/projects
+    notes: >
+      In-tree fixtures. Fast, deterministic, small. The CI-style
+      gate — every PR should extract cleanly and produce non-zero
+      rows for at least the React bridge predicates. Order of
+      magnitude: seconds to extract, <1s per query.
+
+  - name: mastodon
+    path: audiograb@100.80.10.45:~/setstate-bench/corpus/mastodon
+    notes: >
+      React + cross-file imports + the historic planner-stress
+      reference. ~200MB. Primary corpus for the §4 keep-or-revert
+      criteria. Reachable on the Tailscale network from Planky's
+      VM. Extraction is minutes, not seconds; `bench_run.sh` will
+      rsync it into /tmp/tsq-bench-corpora/mastodon on first use.
+
+  # Additional corpora go here. jitsi and NAS-misc listed in the
+  # plan doc §3.2 are not yet wired — add when paths are confirmed.
