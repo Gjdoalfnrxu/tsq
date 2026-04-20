@@ -474,80 +474,142 @@ predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
 }
 
 /* -----------------------------------------------------------------------
- * Round-3: variable-indirect Provider value, spread fields, computed keys
+ * Round-3 → Phase C PR6: variable-indirect Provider value, spread fields,
+ * computed keys — now driven by the recursive value-flow closure.
  * -----------------------------------------------------------------------
  *
- * `resolveToObjectExpr(valueExpr, objExpr)` — true if `valueExpr` *is* or
- * *resolves to* an ObjectLiteral expression `objExpr`. Two shapes are
- * recognised at v1:
+ * The `resolveToObjectExpr*` family answers "does `valueExpr` reach an
+ * ObjectLiteral expression `objExpr`?" for JsxAttribute-value positions
+ * on `<Ctx.Provider value={...}>`. As of PR6 this is sourced from
+ * `mayResolveToRec` (PR4) — the transitive closure of `FlowStep`
+ * (PR2 `LocalFlowStep` ∪ PR3 `InterFlowStep`) seeded from
+ * `ExprValueSource`. The previous hand-enumerated two-shape version
+ * (Direct + single VarDecl) with its own depth-2 unrolling has been
+ * retired in favour of the closure.
  *
- *   1. Direct: `value={{ ... }}` — `valueExpr = objExpr` and `objExpr` has
- *      at least one ObjectLiteralField or ObjectLiteralSpread row.
- *   2. Single VarDecl indirection:
- *          const actions = { ... };
- *          <Ctx.Provider value={actions} />
- *      — `valueExpr` is an Identifier that may-refs a symbol bound by a
- *      `VarDecl` whose initialiser is an ObjectLiteral expression `objExpr`.
- *
- * Adversarial concerns (documented):
- *  - **Circular VarDecl chains** (`const a = b; const b = a;`). Hand-unrolled
- *    to depth 2 like the round-1/2 alias closures; circular chains terminate
- *    by depth, not by reasoning about the cycle. A closure of two non-object
- *    VarDecls cannot reach an ObjectLiteral so the result set is empty for
- *    pathological cycles — no infinite work.
- *  - **Aliasing through reassignment** (`let obj = {a}; obj = {b};
- *    <Provider value={obj}>`). Last-write semantics aren't modelled. The
- *    over-approximation is "union all RHS object literals reachable", which
- *    here means the depth-2 chain may surface either or both.
- *  - The depth-2 path uses two VarDecl hops: `valueExpr` may-refs sym1,
- *    sym1's init is an Identifier may-refing sym2, sym2's init is an
- *    ObjectLiteral. Covers `const obj = base; const base = {a};` patterns.
+ * See `mayResolveToObjectExpr` below for the full surviving contract,
+ * subsumption map, adversarial concerns, and a latent-overreach note
+ * that SUPERSEDES the earlier depth-2-specific prose.
  */
 /**
  * `mayResolveToObjectExpr(valueExpr, objExpr)` — the value-flow-driven
  * "valueExpr resolves to an object literal expression" predicate.
  *
- * Phase A PR3 collapses two former hand-rolled branches onto this:
- *   - `resolveToObjectExprDirect` (`valueExpr = objExpr`) is subsumed by
- *     the §2.1 base branch of `mayResolveTo`: every object-literal node
- *     emits `ExprValueSource(o, o)`, so `mayResolveToBase(o, o)` holds and
- *     the `isObjectLiteralExpr(o)` filter selects only literals.
- *   - `resolveToObjectExprVarD1` (identifier through a single VarDecl
- *     hop, JsxExpression-wrapper-tolerant) is subsumed by the §2.2
- *     var-init branch composed with PR3's `mayResolveToJsxWrapped`. The
- *     wrapper variant unwraps a JsxExpression layer and re-runs the
- *     six-branch core, so `<Provider value={X} />` where `X` is a
- *     VarDecl-bound object literal flows through.
+ * Phase C PR6: migrated off Phase A's non-recursive `mayResolveTo` onto
+ * the recursive `mayResolveToRec` closure (PR4). The closure is the
+ * transitive closure of `FlowStep` (PR2 `LocalFlowStep` ∪ PR3
+ * `InterFlowStep`) starting from `ExprValueSource`, which subsumes:
  *
- * The `isObjectLiteralExpr(objExpr)` filter narrows `mayResolveTo`'s
+ *   - Direct identity (`valueExpr = objExpr` for an object literal) via
+ *     `ExprValueSource(o, o)` for every `IsValueSourceKind` node.
+ *   - Depth-1 var indirection (`const X = {…}; value={X}`) via
+ *     `lfsVarInit`.
+ *   - Depth-N var indirection in general — the closure doesn't cap.
+ *     Retires the explicit `resolveToObjectExprVarD2` shape.
+ *   - Hook-return factory (`const actions = useActions(); value={actions}`
+ *     where `useActions` returns `{…}`) via `lfsVarInit` composed with
+ *     `lfsReturnToCallSite`. Cross-module hook via `ifsRetToCall` on
+ *     `CallTargetCrossModule`. Retires `resolveToObjectExprHookReturn*`
+ *     and the `hookFnInvokedByValueExpr` / `valueExprCallsHook` helpers.
+ *
+ * LATENT SEMANTIC OVERREACH (documented here, not a bug today):
+ * `FlowStep` includes forward-direction `lfs*` rules whose closure
+ * expansion means `mayResolveToRec(v, o)` is strictly broader than
+ * "`v` evaluates-to object literal `o`". Specifically:
+ *
+ *   - `lfsObjectLiteralStore(from, to)` :- ObjectLiteralField(to, _, from)
+ *       adds an edge from any field-VALUE expression to the enclosing
+ *       object literal. Closure reads this as "v is stored-into o" /
+ *       "v is a field-of o" — a "contained-by" relation.
+ *   - `lfsSpreadElement(from, to)` :- ObjectLiteralSpread(to, from)
+ *       adds the analogous "v is spread-into o" edge.
+ *   - `lfsFieldRead(from, to)` :- FieldRead(to, baseSym, _) ∧
+ *                                 ExprMayRef(from, baseSym)
+ *       adds "base-carrier → field-read node."
+ *
+ * These are useful forward steps for taint/source-to-sink analyses but
+ * do not match the `resolveToObjectExpr*` family's `"v ↦ o such that
+ * evaluating v yields o"` contract. `mayResolveToObjectExpr` therefore
+ * computes a strict superset of that contract.
+ *
+ * Why this is safe TODAY: every caller of `mayResolveToObjectExpr` is
+ * reachable only after pinning `valueExpr` to a `<Ctx.Provider value={X}>`
+ * JsxAttribute-value position via `Contains`/JsxAttribute joins (see
+ * `contextProviderField*` below). An expression pinned at a JsxAttribute
+ * value position cannot simultaneously be a field-value-of / spread-
+ * source-of / base-carrier-of some other object literal inside that
+ * same attribute's subtree in any shape the r3/r4 fixtures exercise,
+ * so the forward-edge extras never bind. A future consumer that does
+ * not pin `valueExpr` this tightly would see the overreach. Tightening
+ * tracked as a janky-style follow-up on Gjdoalfnrxu/tsq.
+ *
+ * `resolveToObjectExprWrapped` carve-out: `LocalFlowStep` has no
+ * `JsxExpression`-unwrap kind, and `JsxExpression` is not in
+ * `ValueSourceKinds`, so neither the base case
+ * (`ExprValueSource(jsxExpr, _)`) nor any step rule produces an edge
+ * between the JsxExpression wrapper and its direct ObjectLiteral child.
+ * Phase A's `mayResolveToJsxWrapped` handled it at the bridge layer via
+ * a direct `Contains(jsxExpr, inner)` unwrap; PR6 preserves that shape
+ * as a named carve-out branch of the top-level union. A future PR can
+ * promote this to an `lfsJsxExpressionUnwrap` step in
+ * `extract/rules/localflowstep.go`, at which point the carve-out
+ * retires.
+ *
+ * Adversarial concerns (still relevant under the closure):
+ *  - **Cycles** (`const a = b; const b = a;`): `mayResolveToRec` is
+ *    defined as a monotone transitive closure, so cycles terminate
+ *    naturally (fixpoint saturates) rather than via hand-unrolled
+ *    depth caps. No infinite work.
+ *  - **Aliasing through reassignment** (`let obj = {a}; obj = {b};`):
+ *    last-write semantics aren't modelled. Closure unions all RHS
+ *    object literals reachable.
+ *
+ * The `isObjectLiteralExpr(objExpr)` filter narrows `mayResolveToRec`'s
  * value-source space (which also includes arrows, primitives, JSX
  * elements, etc.) to object literals — matching the `resolveToObjectExpr*`
  * family's contract that the second column is always an ObjectLiteral.
  *
- * Subsumption note (PR body §1): `mayResolveTo` also includes the §2.5
- * field-read and §2.6 object-field branches, which can in principle
- * resolve `<Provider value={o.f}>` to the field's value when `o.f` is
- * itself an object literal. The R3/R4 fixtures don't exercise that shape,
- * so the parity gate empirically holds. If a real codebase surfaces such
- * a case, it's a precision gain over the deleted branches, not a
- * regression.
+ * Top-level shape: `mayResolveToObjectExpr` is the union of the direct
+ * recursive closure (`mayResolveToObjectExprDirect`) and the
+ * JsxExpression-wrapper-tolerant composition
+ * (`mayResolveToObjectExprJsxWrapped`). Two named branches so the union
+ * is `or`-of-calls — same discipline the `contextProviderField*` /
+ * `contextSymLink*` splits follow to stay away from disjunction-poisoning
+ * (#166).
+ *
+ * Retirement path: promote the unwrap to an `lfsJsxExpressionUnwrap`
+ * step rule in `extract/rules/localflowstep.go`; once shipped, the
+ * `JsxWrapped` branch collapses into `mayResolveToRec` and the wrapper
+ * composition retires. Follow-up tracked in the PR6 wiki section.
  */
-predicate mayResolveToObjectExpr(int valueExpr, int objExpr) {
-    mayResolveTo(valueExpr, objExpr) and
+predicate mayResolveToObjectExprDirect(int valueExpr, int objExpr) {
+    mayResolveToRec(valueExpr, objExpr) and
     isObjectLiteralExpr(objExpr)
 }
 
+predicate mayResolveToObjectExprJsxWrapped(int valueExpr, int objExpr) {
+    exists(int innerExpr |
+        Contains(valueExpr, innerExpr) and
+        valueExpr != innerExpr and
+        mayResolveToRec(innerExpr, objExpr) and
+        isObjectLiteralExpr(objExpr)
+    )
+}
+
+predicate mayResolveToObjectExpr(int valueExpr, int objExpr) {
+    mayResolveToObjectExprDirect(valueExpr, objExpr)
+    or
+    mayResolveToObjectExprJsxWrapped(valueExpr, objExpr)
+}
+
 /**
- * Holds when `valueExpr` is a JsxExpression-style wrapper that immediately
- * contains the ObjectLiteral expression `objExpr` — the canonical
- * `value={{ ... }}` shape where the JsxAttribute valueExpr column points
- * at the wrapper, not the inner Object.
- *
- * Plan-deferred (Phase C): kept verbatim because plan §3.1 only targets
- * Direct + VarD1 in PR3. The wrapped-literal case is empirically covered
- * by `mayResolveToObjectExpr` (mayResolveToJsxWrapped → mayResolveToBase
- * fires when the inner is a literal), but until the parity gate proves
- * subsumption on Mastodon-scale corpora we keep this branch explicit.
+ * Legacy shape: the direct `Contains(valueExpr, objExpr)` unwrap over
+ * a literal child. Subsumed by `mayResolveToObjectExprJsxWrapped`
+ * (which allows arbitrary closure between the wrapper's inner child
+ * and the eventual literal), but kept as its own predicate because the
+ * r3 link-predicate regression test measures it directly. Deletion
+ * would be an unnecessary test-harness churn for PR6; retire alongside
+ * the `lfsJsxExpressionUnwrap` follow-up.
  */
 predicate resolveToObjectExprWrapped(int valueExpr, int objExpr) {
     Contains(valueExpr, objExpr) and
@@ -556,121 +618,25 @@ predicate resolveToObjectExprWrapped(int valueExpr, int objExpr) {
 }
 
 /**
- * Depth-2 variable indirection: `const Y = { ... }; const X = Y; ... value={X}`.
- * Two-step VarDecl chain. Pathological circular chains terminate at depth 2
- * by construction (no infinite loops). Last-write semantics aren't modelled —
- * if a `let` is reassigned the analysis over-approximates by surfacing the
- * RHS reachable through this depth.
+ * `resolveToObjectExpr(valueExpr, objExpr)` — public "valueExpr
+ * resolves to an object literal" predicate consumed by
+ * `contextProviderFieldR3VarIndirect*`.
+ *
+ * PR6 collapses four former branches onto the recursive closure:
+ *   - direct + VarD1 (Phase A PR3 subsumption) — `mayResolveToObjectExprDirect`.
+ *   - VarD2 — transitive `lfsVarInit` inside `mayResolveToRec`.
+ *   - HookReturnDirect + HookReturnVar — `lfsReturnToCallSite` +
+ *     `lfsVarInit` inside `mayResolveToRec`; cross-module via
+ *     `ifsRetToCall` on `CallTargetCrossModule`.
+ *   - JsxExpression wrapper unwrap — `mayResolveToObjectExprJsxWrapped`,
+ *     strictly more permissive than the old
+ *     `resolveToObjectExprWrapped` (direct `Contains` to literal)
+ *     because the closure follows variable indirection past the wrapper
+ *     (`value={X}` where `X` VarDecl-binds a literal — the r3
+ *     IndirectValue shape).
  */
-predicate resolveToObjectExprVarD2(int valueExpr, int objExpr) {
-    exists(int identExpr, int sym1, int varDecl1, int midExpr, int sym2, int varDecl2 |
-        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
-        ExprMayRef(identExpr, sym1) and
-        VarDecl(varDecl1, sym1, midExpr, _) and
-        ExprMayRef(midExpr, sym2) and
-        VarDecl(varDecl2, sym2, objExpr, _) and
-        isObjectLiteralExpr(objExpr)
-    )
-}
-
-/**
- * Round-4: resolve through a function-call initialiser to the ObjectLiteral
- * expression in the called function's return statement (factory-hook pattern).
- *
- *   function useActions() {
- *     return { setX, setY };           // shape A: return IS the ObjectLiteral
- *   }
- *   const actions = useActions();
- *   <Ctx.Provider value={actions}>     // round-3 chain dies here; round-4 follows the call.
- *
- * Two return shapes are recognised, each as a named branch so the top-level
- * union is `or`-of-calls (#166 workaround discipline, same as round-3).
- *
- * Same-module path uses `FunctionSymbol(hookSym, hookFn)`; cross-module path
- * uses `importedFunctionSymbol(hookSym, hookFn)` — the same pair already used
- * by `useContextCallSiteResolvesContext` for hook-indirection callees.
- *
- * Conditional-return functions are over-approximated (any branch's
- * ObjectLiteral surfaces). Hand-bounded depth: shape B is one VarDecl hop
- * from the return expression to the ObjectLiteral; deeper indirection inside
- * the hook body is intentionally out of scope for v1.
- */
-
-// Caller-side seed: the value expression resolves to a CallExpression whose
-// callee symbol is `hookSym`. Shared across all four hook-return branches.
-// This is the SMALL end of the join — Provider value attributes that are
-// identifier-bound to a CallExpression are rare in real corpora.
-predicate valueExprCallsHook(int valueExpr, int hookSym) {
-    exists(int identExpr, int sym, int varDecl, int callExpr, int call |
-        (identExpr = valueExpr or Contains(valueExpr, identExpr)) and
-        ExprMayRef(identExpr, sym) and
-        VarDecl(varDecl, sym, callExpr, _) and
-        ExprIsCall(callExpr, call) and
-        CallCalleeSym(call, hookSym)
-    )
-}
-
-// Helper: `hookFn` is a function whose symbol is callable from
-// `valueExprCallsHook` (i.e. is the target of some Provider-value-side call).
-// Bridges the symbol layer once so the four resolveToObjectExprHookReturn*
-// branches share a single demand-seedable hookFn frontier rather than
-// re-walking the symbol table per return-shape.
-predicate hookFnInvokedByValueExpr(int valueExpr, int hookFn) {
-    exists(int hookSym |
-        valueExprCallsHook(valueExpr, hookSym) and
-        FunctionSymbol(hookSym, hookFn)
-    )
-    or
-    exists(int hookSym |
-        valueExprCallsHook(valueExpr, hookSym) and
-        importedFunctionSymbol(hookSym, hookFn)
-    )
-}
-
-// Shape A — return expression IS the ObjectLiteral. Seeded from the value
-// side (`hookFnInvokedByValueExpr` constrains hookFn to actually-called
-// hooks), then the cheap `ReturnStmt + isObjectLiteralExpr` gate. Avoids
-// the cap-hit observed when seeding from `isObjectLiteralExpr` (~50k on
-// mastodon) or unbounded `ReturnStmt` ⨝ `ExprMayRef`.
-predicate resolveToObjectExprHookReturnDirect(int valueExpr, int objExpr) {
-    exists(int hookFn |
-        hookFnInvokedByValueExpr(valueExpr, hookFn) and
-        ReturnStmt(hookFn, _, objExpr) and
-        isObjectLiteralExpr(objExpr)
-    )
-}
-
-// Shape B — return expression refs a sym whose VarDecl init IS the
-// ObjectLiteral. Same value-side seed; inner var-rebind hop is depth-1 only.
-predicate resolveToObjectExprHookReturnVar(int valueExpr, int objExpr) {
-    exists(int hookFn, int retExpr, int retSym, int innerVarDecl |
-        hookFnInvokedByValueExpr(valueExpr, hookFn) and
-        ReturnStmt(hookFn, _, retExpr) and
-        ExprMayRef(retExpr, retSym) and
-        VarDecl(innerVarDecl, retSym, objExpr, _) and
-        isObjectLiteralExpr(objExpr)
-    )
-}
-
-predicate resolveToObjectExprHookReturn(int valueExpr, int objExpr) {
-    resolveToObjectExprHookReturnDirect(valueExpr, objExpr)
-    or
-    resolveToObjectExprHookReturnVar(valueExpr, objExpr)
-}
-
 predicate resolveToObjectExpr(int valueExpr, int objExpr) {
-    // PR3: Direct + VarD1 collapsed onto the value-flow layer via
-    // `mayResolveToObjectExpr`. The mayResolveTo union (PR3 amended)
-    // includes the JsxExpression-wrapper-tolerant variant, so VarD1's
-    // `(identExpr = valueExpr or Contains(...))` idiom is no longer
-    // needed at this level.
     mayResolveToObjectExpr(valueExpr, objExpr)
-    or
-    resolveToObjectExprWrapped(valueExpr, objExpr)
-    or
-    resolveToObjectExprVarD2(valueExpr, objExpr)
-    or
-    resolveToObjectExprHookReturn(valueExpr, objExpr)
 }
 
 /**
