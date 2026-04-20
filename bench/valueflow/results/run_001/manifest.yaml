@@ -1,0 +1,11 @@
+run_id: run_001
+timestamp_utc: 2026-04-20T06:38:23Z
+git_sha: 506a7d555cc971e9f5625deb0f6d9e0c89fa8156
+git_describe: v1.0.0-173-g506a7d5
+corpora:
+  - name: local_fixtures
+    path_resolved: /tmp/tsq-vf-d-pr7/testdata/projects
+    extract_ms: 1959
+    csv: local_fixtures.csv
+    nonzero: 1
+sanity: OK

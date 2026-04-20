@@ -1,0 +1,5 @@
+predicate,fixture,row_count,wall_ms
+mayResolveToRec,local_fixtures,481,1889
+mayResolveTo_all,local_fixtures,695,2023
+mayResolveTo_dataflow,local_fixtures,481,755
+resolvesToFunctionDirect,local_fixtures,49,2072
