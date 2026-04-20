@@ -173,14 +173,46 @@ func TestR3_LinkPredicates(t *testing.T) {
 		{"isObjectLiteralExpr", common + "from int o where isObjectLiteralExpr(o) select o", 4, false},
 		// Phase C PR6: mayResolveToObjectExpr is now the
 		// {mayResolveToRec ∪ JsxExpression-wrapper-tolerant} composition.
-		// The recursive closure picks up 6 additional (v, o) pairs on r3
-		// that the Phase A shape-enumeration (4 Direct + 6 VarD1 + 3
-		// JsxWrapper = 13) missed: transitive `lfsVarInit` chains that
-		// reach literals through a second var hop, and JsxExpression-
-		// wrapped identifier paths that resolve through the closure rather
-		// than the direct-Contains Phase A branch. Pinned at 19 — silent
-		// growth would still mask over-approximation regressions, just
-		// against the new (post-PR6) surface area.
+		// The closure picks up 6 additional (v, o) pairs on r3 vs Phase
+		// A's shape-enumeration (4 Direct + 6 VarD1 + 3 JsxWrapper = 13).
+		//
+		// CORRECTION (post-review, vs earlier "transitive lfsVarInit"
+		// framing): the r3 fixtures have ZERO VarD2 chains — each positive
+		// fixture does one `const X = { ... }` hop at most. The real
+		// mechanism behind the +6 is the FORWARD `lfs*` edges folded into
+		// the recursive closure:
+		//
+		//   - `lfsObjectLiteralStore(from, to)` :- ObjectLiteralField(to, _, from)
+		//       — a field-VALUE expression gains an edge INTO the enclosing
+		//       object literal. Read as "v is a field-of o."
+		//   - `lfsSpreadElement(from, to)`     :- ObjectLiteralSpread(to, from)
+		//       — a spread source identifier gains an edge into the object
+		//       literal it's spread into. Read as "v is spread-into o."
+		//   - `lfsFieldRead(from, to)`         :- FieldRead(to, baseSym, _) ∧
+		//                                         ExprMayRef(from, baseSym)
+		//       — the base carrier gains an edge into the `obj.f` read node.
+		//
+		// Combined with `ExprValueSource` seeding every ObjectLiteral with
+		// `(o, o)` plus `lfsVarInit` for the `const X = {...}` hop, the
+		// closure admits pairs where `v` is a **contained-by / stored-into**
+		// relation w.r.t. `o` rather than the Phase A "evaluates-to"
+		// relation. That is a semantic direction shift, not just a depth
+		// extension.
+		//
+		// LATENT CONCERN (not a bug today, but filed as follow-up):
+		// `mayResolveToObjectExpr` therefore computes a strict SUPERSET
+		// of the Phase A "evaluates-to object literal" contract. All
+		// current callers in the bridge compose it with
+		// `Contains(provider, valueAttrExpr)` / JsxAttribute binding that
+		// pins `valueExpr` to a Provider `value={...}` attribute position,
+		// so the overreach cannot materialise through the existing caller
+		// discipline. A future consumer that binds `valueExpr` less
+		// tightly (e.g. any arbitrary expression, not a JsxAttribute
+		// value) would see the forward-edge noise. Tightening tracked as
+		// a follow-up on Gjdoalfnrxu/tsq (see PR6 wiki section).
+		//
+		// Pinned at 19 — silent growth would still mask over-approximation
+		// regressions, just against the new (post-PR6) surface area.
 		{"mayResolveToObjectExpr", common + "from int v, int o where mayResolveToObjectExpr(v, o) select v, o", 19, true},
 		{"resolveToObjectExprWrapped", common + "from int v, int o where resolveToObjectExprWrapped(v, o) select v, o", 1, false},
 		// resolveToObjectExpr should fire for at least Indirect (1), Computed (1).

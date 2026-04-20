@@ -474,34 +474,22 @@ predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
 }
 
 /* -----------------------------------------------------------------------
- * Round-3: variable-indirect Provider value, spread fields, computed keys
+ * Round-3 → Phase C PR6: variable-indirect Provider value, spread fields,
+ * computed keys — now driven by the recursive value-flow closure.
  * -----------------------------------------------------------------------
  *
- * `resolveToObjectExpr(valueExpr, objExpr)` — true if `valueExpr` *is* or
- * *resolves to* an ObjectLiteral expression `objExpr`. Two shapes are
- * recognised at v1:
+ * The `resolveToObjectExpr*` family answers "does `valueExpr` reach an
+ * ObjectLiteral expression `objExpr`?" for JsxAttribute-value positions
+ * on `<Ctx.Provider value={...}>`. As of PR6 this is sourced from
+ * `mayResolveToRec` (PR4) — the transitive closure of `FlowStep`
+ * (PR2 `LocalFlowStep` ∪ PR3 `InterFlowStep`) seeded from
+ * `ExprValueSource`. The previous hand-enumerated two-shape version
+ * (Direct + single VarDecl) with its own depth-2 unrolling has been
+ * retired in favour of the closure.
  *
- *   1. Direct: `value={{ ... }}` — `valueExpr = objExpr` and `objExpr` has
- *      at least one ObjectLiteralField or ObjectLiteralSpread row.
- *   2. Single VarDecl indirection:
- *          const actions = { ... };
- *          <Ctx.Provider value={actions} />
- *      — `valueExpr` is an Identifier that may-refs a symbol bound by a
- *      `VarDecl` whose initialiser is an ObjectLiteral expression `objExpr`.
- *
- * Adversarial concerns (documented):
- *  - **Circular VarDecl chains** (`const a = b; const b = a;`). Hand-unrolled
- *    to depth 2 like the round-1/2 alias closures; circular chains terminate
- *    by depth, not by reasoning about the cycle. A closure of two non-object
- *    VarDecls cannot reach an ObjectLiteral so the result set is empty for
- *    pathological cycles — no infinite work.
- *  - **Aliasing through reassignment** (`let obj = {a}; obj = {b};
- *    <Provider value={obj}>`). Last-write semantics aren't modelled. The
- *    over-approximation is "union all RHS object literals reachable", which
- *    here means the depth-2 chain may surface either or both.
- *  - The depth-2 path uses two VarDecl hops: `valueExpr` may-refs sym1,
- *    sym1's init is an Identifier may-refing sym2, sym2's init is an
- *    ObjectLiteral. Covers `const obj = base; const base = {a};` patterns.
+ * See `mayResolveToObjectExpr` below for the full surviving contract,
+ * subsumption map, adversarial concerns, and a latent-overreach note
+ * that SUPERSEDES the earlier depth-2-specific prose.
  */
 /**
  * `mayResolveToObjectExpr(valueExpr, objExpr)` — the value-flow-driven
@@ -516,46 +504,78 @@ predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
  *     `ExprValueSource(o, o)` for every `IsValueSourceKind` node.
  *   - Depth-1 var indirection (`const X = {…}; value={X}`) via
  *     `lfsVarInit`.
- *   - Depth-2 var indirection (`const Y = {…}; const X = Y; value={X}`)
- *     via transitive `lfsVarInit`. Retires `resolveToObjectExprVarD2`.
  *   - Depth-N var indirection in general — the closure doesn't cap.
+ *     Retires the explicit `resolveToObjectExprVarD2` shape.
  *   - Hook-return factory (`const actions = useActions(); value={actions}`
  *     where `useActions` returns `{…}`) via `lfsVarInit` composed with
  *     `lfsReturnToCallSite`. Cross-module hook via `ifsRetToCall` on
  *     `CallTargetCrossModule`. Retires `resolveToObjectExprHookReturn*`
  *     and the `hookFnInvokedByValueExpr` / `valueExprCallsHook` helpers.
  *
- * What the closure does NOT subsume — and why `resolveToObjectExprWrapped`
- * is kept as a carve-out: the `<Provider value={{…}} />` JsxExpression
- * wrapper. `LocalFlowStep` has no `JsxExpression`-unwrap kind, and
- * `JsxExpression` is not in `ValueSourceKinds`, so neither the base case
+ * LATENT SEMANTIC OVERREACH (documented here, not a bug today):
+ * `FlowStep` includes forward-direction `lfs*` rules whose closure
+ * expansion means `mayResolveToRec(v, o)` is strictly broader than
+ * "`v` evaluates-to object literal `o`". Specifically:
+ *
+ *   - `lfsObjectLiteralStore(from, to)` :- ObjectLiteralField(to, _, from)
+ *       adds an edge from any field-VALUE expression to the enclosing
+ *       object literal. Closure reads this as "v is stored-into o" /
+ *       "v is a field-of o" — a "contained-by" relation.
+ *   - `lfsSpreadElement(from, to)` :- ObjectLiteralSpread(to, from)
+ *       adds the analogous "v is spread-into o" edge.
+ *   - `lfsFieldRead(from, to)` :- FieldRead(to, baseSym, _) ∧
+ *                                 ExprMayRef(from, baseSym)
+ *       adds "base-carrier → field-read node."
+ *
+ * These are useful forward steps for taint/source-to-sink analyses but
+ * do not match the `resolveToObjectExpr*` family's `"v ↦ o such that
+ * evaluating v yields o"` contract. `mayResolveToObjectExpr` therefore
+ * computes a strict superset of that contract.
+ *
+ * Why this is safe TODAY: every caller of `mayResolveToObjectExpr` is
+ * reachable only after pinning `valueExpr` to a `<Ctx.Provider value={X}>`
+ * JsxAttribute-value position via `Contains`/JsxAttribute joins (see
+ * `contextProviderField*` below). An expression pinned at a JsxAttribute
+ * value position cannot simultaneously be a field-value-of / spread-
+ * source-of / base-carrier-of some other object literal inside that
+ * same attribute's subtree in any shape the r3/r4 fixtures exercise,
+ * so the forward-edge extras never bind. A future consumer that does
+ * not pin `valueExpr` this tightly would see the overreach. Tightening
+ * tracked as a janky-style follow-up on Gjdoalfnrxu/tsq.
+ *
+ * `resolveToObjectExprWrapped` carve-out: `LocalFlowStep` has no
+ * `JsxExpression`-unwrap kind, and `JsxExpression` is not in
+ * `ValueSourceKinds`, so neither the base case
  * (`ExprValueSource(jsxExpr, _)`) nor any step rule produces an edge
  * between the JsxExpression wrapper and its direct ObjectLiteral child.
  * Phase A's `mayResolveToJsxWrapped` handled it at the bridge layer via
- * a direct `Contains(jsxExpr, inner)` unwrap; PR6 preserves that shape as
- * a named carve-out branch of the top-level union. A future PR can
+ * a direct `Contains(jsxExpr, inner)` unwrap; PR6 preserves that shape
+ * as a named carve-out branch of the top-level union. A future PR can
  * promote this to an `lfsJsxExpressionUnwrap` step in
  * `extract/rules/localflowstep.go`, at which point the carve-out
  * retires.
+ *
+ * Adversarial concerns (still relevant under the closure):
+ *  - **Cycles** (`const a = b; const b = a;`): `mayResolveToRec` is
+ *    defined as a monotone transitive closure, so cycles terminate
+ *    naturally (fixpoint saturates) rather than via hand-unrolled
+ *    depth caps. No infinite work.
+ *  - **Aliasing through reassignment** (`let obj = {a}; obj = {b};`):
+ *    last-write semantics aren't modelled. Closure unions all RHS
+ *    object literals reachable.
  *
  * The `isObjectLiteralExpr(objExpr)` filter narrows `mayResolveToRec`'s
  * value-source space (which also includes arrows, primitives, JSX
  * elements, etc.) to object literals — matching the `resolveToObjectExpr*`
  * family's contract that the second column is always an ObjectLiteral.
- */
-/**
- * PR6 surface note: `mayResolveToObjectExpr` is the union of the direct
- * recursive closure and the JsxExpression-wrapper-tolerant composition.
- * `LocalFlowStep` has no `JsxExpression`-unwrap kind (JsxExpression
- * isn't a `ValueSourceKind` and none of the eleven `lfs*` rules emit
- * `(inner, jsxExpr)`), so without the bridge-side composition every
- * `<Provider value={X} />` consumer loses subsumption against the
- * Phase A `mayResolveToJsxWrapped` shape (r3 IndirectValue.tsx /
- * ComputedKey.tsx / r4 DirectReturn / Consumer regress to zero).
  *
- * Two named branches so the top-level union is `or`-of-calls — same
- * discipline the `contextProviderField*` / `contextSymLink*` splits
- * follow to stay away from disjunction-poisoning (#166).
+ * Top-level shape: `mayResolveToObjectExpr` is the union of the direct
+ * recursive closure (`mayResolveToObjectExprDirect`) and the
+ * JsxExpression-wrapper-tolerant composition
+ * (`mayResolveToObjectExprJsxWrapped`). Two named branches so the union
+ * is `or`-of-calls — same discipline the `contextProviderField*` /
+ * `contextSymLink*` splits follow to stay away from disjunction-poisoning
+ * (#166).
  *
  * Retirement path: promote the unwrap to an `lfsJsxExpressionUnwrap`
  * step rule in `extract/rules/localflowstep.go`; once shipped, the
