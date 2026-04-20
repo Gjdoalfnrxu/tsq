@@ -622,27 +622,17 @@ predicate resolveToObjectExprWrapped(int valueExpr, int objExpr) {
 }
 
 /**
- * `resolveToObjectExpr(valueExpr, objExpr)` — public "valueExpr
- * resolves to an object literal" predicate consumed by
- * `contextProviderFieldR3VarIndirect*`.
- *
- * PR6 collapses four former branches onto the recursive closure:
- *   - direct + VarD1 (Phase A PR3 subsumption) — `mayResolveToObjectExprDirect`.
- *   - VarD2 — transitive `lfsVarInit` inside `mayResolveToRec`.
- *   - HookReturnDirect + HookReturnVar — `lfsReturnToCallSite` +
- *     `lfsVarInit` inside `mayResolveToRec`; cross-module via
- *     `ifsRetToCall` on `CallTargetCrossModule`.
- *   - JsxExpression wrapper unwrap — `mayResolveToObjectExprJsxWrapped`,
- *     strictly more permissive than the old
- *     `resolveToObjectExprWrapped` (direct `Contains` to literal)
- *     because the closure follows variable indirection past the wrapper
- *     (`value={X}` where `X` VarDecl-binds a literal — the r3
- *     IndirectValue shape).
+ * Phase D PR6 (20 Apr 2026): the Phase A `resolveToObjectExpr` wrapper
+ * was deleted here. It had become a trivial one-line alias for
+ * `mayResolveToObjectExpr` after Phase C PR6's migration onto the
+ * recursive closure. In-file callers
+ * (`contextProviderFieldR3VarIndirect{Own,SpreadD1,SpreadD2}`) now call
+ * `mayResolveToObjectExpr` directly. The carve-out
+ * `resolveToObjectExprWrapped` below remains: it is a structurally
+ * distinct Contains-only unwrap, pinned by the r3 link-predicate
+ * regression test, and slated to retire alongside a future
+ * `lfsJsxExpressionUnwrap` step promotion.
  */
-predicate resolveToObjectExpr(int valueExpr, int objExpr) {
-    mayResolveToObjectExpr(valueExpr, objExpr)
-}
-
 /**
  * Holds if `objExpr` is the parent of at least one ObjectLiteralField or
  * ObjectLiteralSpread row — i.e. it is an object literal expression in the
@@ -839,7 +829,7 @@ predicate contextProviderFieldR2(int ctxSym, string fieldName, int valueSym) {
 
 /**
  * Round-3 variable-indirect path: the Provider's value attribute is an
- * Identifier resolving to an ObjectLiteral via `resolveToObjectExpr`.
+ * Identifier resolving to an ObjectLiteral via `mayResolveToObjectExpr`.
  * Spread + computed-string-key fields of the resolved object are visible.
  */
 predicate contextProviderFieldR3VarIndirectOwn(int ctxSym, string fieldName, int valueSym) {
@@ -847,7 +837,7 @@ predicate contextProviderFieldR3VarIndirectOwn(int ctxSym, string fieldName, int
         JsxElement(elem, tagNode, _) and
         FieldRead(tagNode, ctxSym, "Provider") and
         JsxAttribute(elem, "value", valueAttrExpr) and
-        resolveToObjectExpr(valueAttrExpr, objExpr) and
+        mayResolveToObjectExpr(valueAttrExpr, objExpr) and
         objectLiteralFieldOwn(objExpr, fieldName, valueExpr) and
         ExprMayRef(valueExpr, valueSym)
     )
@@ -858,7 +848,7 @@ predicate contextProviderFieldR3VarIndirectSpreadD1(int ctxSym, string fieldName
         JsxElement(elem, tagNode, _) and
         FieldRead(tagNode, ctxSym, "Provider") and
         JsxAttribute(elem, "value", valueAttrExpr) and
-        resolveToObjectExpr(valueAttrExpr, objExpr) and
+        mayResolveToObjectExpr(valueAttrExpr, objExpr) and
         objectLiteralFieldSpreadD1(objExpr, fieldName, valueExpr) and
         ExprMayRef(valueExpr, valueSym)
     )
@@ -869,7 +859,7 @@ predicate contextProviderFieldR3VarIndirectSpreadD2(int ctxSym, string fieldName
         JsxElement(elem, tagNode, _) and
         FieldRead(tagNode, ctxSym, "Provider") and
         JsxAttribute(elem, "value", valueAttrExpr) and
-        resolveToObjectExpr(valueAttrExpr, objExpr) and
+        mayResolveToObjectExpr(valueAttrExpr, objExpr) and
         objectLiteralFieldSpreadD2(objExpr, fieldName, valueExpr) and
         ExprMayRef(valueExpr, valueSym)
     )

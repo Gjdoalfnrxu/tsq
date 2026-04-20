@@ -154,10 +154,11 @@ func TestR3_LinkPredicates(t *testing.T) {
 	bridgeFiles := bridge.LoadBridge()
 	importLoader := makeBridgeImportLoader(bridgeFiles)
 
-	// PR3: tsq::valueflow added because tsq_react.qll's resolveToObjectExpr
-	// now calls into mayResolveToObjectExpr, which depends on mayResolveTo
-	// from tsq_valueflow.qll. Without this import the union silently
-	// returns only the surviving non-valueflow branches.
+	// PR3 / Phase D PR6: tsq::valueflow imported because
+	// `mayResolveToObjectExpr` (and `contextProviderFieldR3VarIndirect*`
+	// which calls it) depends on `mayResolveToRec` from tsq_valueflow.qll.
+	// Without this import the union silently returns only the surviving
+	// non-valueflow branches.
 	common := "import tsq::react\nimport tsq::valueflow\nimport tsq::base\nimport tsq::expressions\nimport tsq::functions\nimport tsq::calls\n"
 
 	type qcase struct {
@@ -215,8 +216,12 @@ func TestR3_LinkPredicates(t *testing.T) {
 		// regressions, just against the new (post-PR6) surface area.
 		{"mayResolveToObjectExpr", common + "from int v, int o where mayResolveToObjectExpr(v, o) select v, o", 19, true},
 		{"resolveToObjectExprWrapped", common + "from int v, int o where resolveToObjectExprWrapped(v, o) select v, o", 1, false},
-		// resolveToObjectExpr should fire for at least Indirect (1), Computed (1).
-		{"resolveToObjectExpr", common + "from int v, int o where resolveToObjectExpr(v, o) select v, o", 2, false},
+		// Phase D PR6 (20 Apr 2026): `resolveToObjectExpr` predicate deleted
+		// from tsq_react.qll. It had become a trivial one-line alias for
+		// `mayResolveToObjectExpr` after Phase C PR6. The exact-pinned
+		// `mayResolveToObjectExpr` row above (19 rows) is the canonical
+		// regression guard for the union; the old row here was a
+		// floor-of-2 that the 19-row union trivially subsumed.
 		// objectLiteralFieldThroughSpread: Indirect(2) + Spread(2 own + 1 spread) + Computed(2) + Negative(0) = 7
 		{"objectLiteralFieldOwn", common + "from int o, string f, int v where objectLiteralFieldOwn(o, f, v) select o, f, v", 5, false},
 		{"objectLiteralFieldSpreadD1", common + "from int o, string f, int v where objectLiteralFieldSpreadD1(o, f, v) select o, f, v", 1, false},
