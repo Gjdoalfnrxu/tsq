@@ -187,9 +187,23 @@ for line in "${SELECTED[@]}"; do
     tail -n +2 "${csv}" | LC_ALL=C sort -t, -k1,1 -k2,2
   } > "${csv}.sorted" && mv "${csv}.sorted" "${csv}"
 
+  # Emit a repo-relative path when the resolved location is under
+  # REPO_ROOT, so manifests committed from different worktrees /
+  # CI checkouts compare cleanly. path_resolved is kept for debug
+  # (it tells you the exact bytes that were scanned), but
+  # path_repo_relative is the stable one.
+  path_repo_relative=""
+  case "${local_path}" in
+    "${REPO_ROOT}"/*) path_repo_relative="${local_path#"${REPO_ROOT}"/}" ;;
+    "${REPO_ROOT}")   path_repo_relative="." ;;
+  esac
+
   {
     echo "  - name: ${name}"
     echo "    path_resolved: ${local_path}"
+    if [[ -n "${path_repo_relative}" ]]; then
+      echo "    path_repo_relative: ${path_repo_relative}"
+    fi
     echo "    extract_ms: ${extract_ms}"
     echo "    csv: ${name}.csv"
     echo "    nonzero: ${corpus_nonzero}"

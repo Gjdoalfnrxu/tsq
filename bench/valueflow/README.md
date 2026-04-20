@@ -108,7 +108,9 @@ claim coverage we don't have.
 
 Bridge queries are deterministic on a given extraction. Extraction
 is deterministic on a given tsq binary. CSV ordering is pinned via
-`sort -t, -k1,1 -k2,2 -k3,3n` after the raw output. If a run shows
+`sort -t, -k1,1 -k2,2` after the raw output (predicate, then
+fixture — row_count is not a sort key; ordering by magnitude is
+not semantically useful). If a run shows
 unexplained row-count jitter between two invocations at the same
 SHA, investigate the tsq extraction side before blaming the harness
 (see §12.3 in the plan doc).
@@ -132,6 +134,14 @@ subtle regressions. Subtlety is the reviewer's job.
 
 ## See also
 
+- **`valueflow_mastodon_bench_test.go`** (Phase C PR7, run with
+  `-tags=bench`) — complementary wall-time gate on a single
+  corpus. That one is a CI-style pass/fail on end-to-end wall
+  time; this harness is the rowcount-diff surface across multiple
+  corpora. Different questions:
+  - Go bench: "did this change make the Mastodon run slower?"
+  - This harness: "did this change silently shift row counts on
+    any corpus?"
 - `docs/design/valueflow-phase-d-plan.md` — the plan. §3–§5 specify
   the matrix and the harness contract; §4 the keep criteria.
 - `docs/design/valueflow-layer.md` — the parent value-flow design.

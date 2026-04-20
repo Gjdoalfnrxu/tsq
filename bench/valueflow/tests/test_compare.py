@@ -125,6 +125,70 @@ class TestCompare(unittest.TestCase):
         self.assertEqual(s["added"], 1)
         self.assertEqual(s["removed"], 1)
 
+    def test_zero_row_predicates_surfaced_in_summary(self):
+        # MINOR-2 fix: the module docstring promises zero-row
+        # predicates are flagged explicitly. Prior to the fix,
+        # summarise() didn't surface them anywhere.
+        a = _write_run(self.tmp, "a", {
+            "local": [("P1", 0, 10), ("P2", 5, 7)],
+        })
+        b = _write_run(self.tmp, "b", {
+            "local": [("P1", 0, 11), ("P2", 0, 8)],
+        })
+        delta = compare.compute_delta(compare.read_run(a), compare.read_run(b))
+        s = compare.summarise(delta)
+        self.assertIn("zero_row_predicates", s)
+        zeros = s["zero_row_predicates"]
+        # P1 is 0 in both runs -> two entries (A and B). P2 is 0
+        # only in B -> one entry.
+        self.assertEqual(len(zeros), 3)
+        self.assertIn(("P1", "local", "A"), zeros)
+        self.assertIn(("P1", "local", "B"), zeros)
+        self.assertIn(("P2", "local", "B"), zeros)
+        # And not when there are no zeros.
+        a2 = _write_run(self.tmp, "a2", {"local": [("P1", 5, 10)]})
+        b2 = _write_run(self.tmp, "b2", {"local": [("P1", 6, 10)]})
+        delta2 = compare.compute_delta(compare.read_run(a2), compare.read_run(b2))
+        s2 = compare.summarise(delta2)
+        self.assertEqual(s2["zero_row_predicates"], [])
+
+    def test_error_added_and_error_removed_statuses(self):
+        # MINOR-5 fix: when a key is unique to one side AND that
+        # side's row_count is None (ERROR), use error_added /
+        # error_removed rather than silently calling it added /
+        # removed with d_rows = None or d_rows = 0.
+        # Case 1: key only in B, and B is ERROR -> error_added
+        a = _write_run(self.tmp, "a", {"local": [("P1", 5, 10)]})
+        b = _write_run(self.tmp, "b", {
+            "local": [("P1", 5, 10), ("P2", "ERROR", 99)],
+        })
+        delta = compare.compute_delta(compare.read_run(a), compare.read_run(b))
+        by_pred = {r["predicate"]: r for r in delta}
+        self.assertEqual(by_pred["P2"]["status"], "error_added")
+        self.assertIsNone(by_pred["P2"]["d_rows"])
+        self.assertIsNone(by_pred["P2"]["a_rows"])
+        self.assertIsNone(by_pred["P2"]["b_rows"])
+
+        # Case 2: key only in A, and A is ERROR -> error_removed
+        a2 = _write_run(self.tmp, "a2", {
+            "local": [("P1", 5, 10), ("P2", "ERROR", 99)],
+        })
+        b2 = _write_run(self.tmp, "b2", {"local": [("P1", 5, 10)]})
+        delta2 = compare.compute_delta(compare.read_run(a2), compare.read_run(b2))
+        by_pred2 = {r["predicate"]: r for r in delta2}
+        self.assertEqual(by_pred2["P2"]["status"], "error_removed")
+        self.assertIsNone(by_pred2["P2"]["d_rows"])
+
+        # Regression guard: plain added / removed still work for
+        # non-ERROR one-sided keys.
+        self.assertEqual(by_pred["P1"]["status"], "unchanged")
+
+        # Summary picks up error_added / error_removed under errors.
+        s = compare.summarise(delta)
+        self.assertEqual(s["errors"], 1)
+        s2 = compare.summarise(delta2)
+        self.assertEqual(s2["errors"], 1)
+
     def test_multiple_corpora(self):
         a = _write_run(self.tmp, "a", {
             "local": [("P1", 5, 10)],

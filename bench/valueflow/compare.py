@@ -84,7 +84,16 @@ def compute_delta(a: Dict[Tuple[str, str], Row],
     A ∪ B. Never silently drops anything.
 
     Each record: predicate, fixture, a_rows, b_rows, d_rows, a_ms, b_ms,
-    ratio, status ∈ {"unchanged","changed","added","removed","error_a","error_b"}.
+    ratio, status ∈ {"unchanged","changed","added","removed","error_a",
+    "error_b","error_added","error_removed"}.
+
+    The error_added / error_removed statuses fire when a key exists on
+    only one side AND that side's row_count is None (tsq returned an
+    ERROR row in the summary CSV). Distinguishing these from plain
+    added / removed matters because the row count is unknown, not
+    zero — a refactor that silently starts erroring on a new
+    predicate is a different problem from one that adds a working
+    predicate.
     """
     keys = sorted(set(a.keys()) | set(b.keys()))
     out: List[dict] = []
@@ -100,11 +109,19 @@ def compute_delta(a: Dict[Tuple[str, str], Row],
             "b_ms": rb.wall_ms if rb else None,
         }
         if ra is None:
-            rec["status"] = "added"
-            rec["d_rows"] = rb.row_count
+            if rb.row_count is None:
+                rec["status"] = "error_added"
+                rec["d_rows"] = None
+            else:
+                rec["status"] = "added"
+                rec["d_rows"] = rb.row_count
         elif rb is None:
-            rec["status"] = "removed"
-            rec["d_rows"] = -(ra.row_count if ra.row_count is not None else 0)
+            if ra.row_count is None:
+                rec["status"] = "error_removed"
+                rec["d_rows"] = None
+            else:
+                rec["status"] = "removed"
+                rec["d_rows"] = -ra.row_count
         elif ra.row_count is None:
             rec["status"] = "error_a"
             rec["d_rows"] = None
@@ -158,13 +175,25 @@ def summarise(delta: List[dict]) -> dict:
     changed = [r for r in delta if r["status"] == "changed"]
     added = [r for r in delta if r["status"] == "added"]
     removed = [r for r in delta if r["status"] == "removed"]
-    errors = [r for r in delta if r["status"] in ("error_a", "error_b")]
+    errors = [r for r in delta
+              if r["status"] in ("error_a", "error_b",
+                                 "error_added", "error_removed")]
+    # Zero-row surfacing: every (predicate, fixture, run) where
+    # row_count == 0 — on either side. Promised by the module
+    # docstring; previously silent.
+    zero_rows: List[Tuple[str, str, str]] = []
+    for r in delta:
+        if r.get("a_rows") == 0:
+            zero_rows.append((r["predicate"], r["fixture"], "A"))
+        if r.get("b_rows") == 0:
+            zero_rows.append((r["predicate"], r["fixture"], "B"))
     return {
         "total": len(delta),
         "changed": len(changed),
         "added": len(added),
         "removed": len(removed),
         "errors": len(errors),
+        "zero_row_predicates": zero_rows,
     }
 
 
@@ -189,8 +218,19 @@ def main(argv: List[str]) -> int:
         return 0
 
     print(f"# bench compare: {a_dir} -> {b_dir}")
-    print(f"# summary: {summary}")
+    # Summary line without the full zero-row list (that gets its
+    # own section below so it stays readable).
+    summary_line = {k: v for k, v in summary.items()
+                    if k != "zero_row_predicates"}
+    summary_line["zero_rows"] = len(summary["zero_row_predicates"])
+    print(f"# summary: {summary_line}")
     print(format_table(delta))
+    zeros = summary["zero_row_predicates"]
+    if zeros:
+        print()
+        print("# zero-row predicates (predicate, fixture, run):")
+        for pred, fix, run in zeros:
+            print(f"  - {pred}, {fix}, run {run}")
     return 0
 
 
