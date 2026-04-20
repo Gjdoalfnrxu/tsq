@@ -55,8 +55,9 @@ func TestRelationCount(t *testing.T) {
 	// Value-flow Phase C PR2: +1 LocalFlowStep = 101.
 	// Value-flow Phase C PR3: +2 InterFlowStep + FlowStep = 103.
 	// Value-flow Phase C PR4: +1 MayResolveTo = 104.
-	if len(Registry) != 104 {
-		t.Fatalf("expected 104 relations in registry, got %d", len(Registry))
+	// Value-flow Phase C PR7: +1 MayResolveToCapHit = 105.
+	if len(Registry) != 105 {
+		t.Fatalf("expected 105 relations in registry, got %d", len(Registry))
 	}
 }
 

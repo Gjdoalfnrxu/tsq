@@ -139,6 +139,14 @@ var stdlibCoverageAllowlist = map[string]string{
 	// migration (tsq_react.qll consumers) lands in Phase C PR6.
 	"MayResolveTo": "value-flow Phase C recursive closure; bridge migration is PR6",
 
+	// Value-flow Phase C PR7: cap-hit diagnostic relation. Schema-only
+	// surface; populated manually by diagnostic queries / bench
+	// harnesses that re-run `MayResolveTo` under a synthetic low
+	// iteration cap. Automatic population from evaluator
+	// *IterationCapError events is a tracked follow-up (see
+	// extract/schema/relations.go for the scope-down note).
+	"MayResolveToCapHit": "value-flow Phase C PR7 cap-hit diagnostic; populated manually until evaluator wiring lands",
+
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
 

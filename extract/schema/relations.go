@@ -566,6 +566,41 @@ func init() {
 		{Name: "s", Type: TypeEntityRef},
 	}})
 
+	// Value-flow Phase C PR7: cap-hit diagnostic relation.
+	// MayResolveToCapHit(queryId, rulePred, lastDeltaSize) is emitted
+	// at most once per top-level query whose `MayResolveTo` stratum
+	// fails to converge under DefaultMaxIterations (ql/eval/seminaive.go).
+	// Bridge consumers filter on this relation to detect
+	// under-approximated results (truncate-don't-crash per plan §5.2).
+	//
+	// PR7 scope: schema-registered; no caller yet; no evaluator wiring.
+	// No emitter populates this relation in any code path shipped with
+	// PR7. The schema entry is a forward-declaration so the bridge
+	// manifest can carry the name and QL consumers can plan against
+	// its shape.
+	//
+	// Follow-ups:
+	//   - Evaluator wiring (emit on *IterationCapError before
+	//     truncation): Gjdoalfnrxu/tsq#201
+	//   - Behavioural test (forces cap-hit, asserts row materialises):
+	//     Gjdoalfnrxu/tsq#200
+	//
+	// Do NOT rely on read-back of rows from this relation until #201
+	// ships.
+	//
+	// Columns:
+	//   queryId       — synthetic id for the emitting top-level query
+	//                   (0 for global / unnamed)
+	//   rulePred      — predicate name whose stratum hit the cap
+	//                   (expected values: "MayResolveTo")
+	//   lastDeltaSize — the last-delta-size reported by
+	//                   *IterationCapError
+	RegisterRelation(RelationDef{Name: "MayResolveToCapHit", Version: 2, Columns: []ColumnDef{
+		{Name: "queryId", Type: TypeEntityRef},
+		{Name: "rulePred", Type: TypeString},
+		{Name: "lastDeltaSize", Type: TypeInt32},
+	}})
+
 	// C1: Template literal extraction
 	RegisterRelation(RelationDef{Name: "TemplateLiteral", Version: 2, Columns: []ColumnDef{
 		{Name: "id", Type: TypeEntityRef},

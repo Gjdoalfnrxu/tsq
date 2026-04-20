@@ -49,6 +49,35 @@ Analyse with `go tool pprof FILE`. The snapshot dir is most useful for catching
 eval-time memory blow-ups that complete (or OOM) before the final `--mem-profile`
 gets written — see #130 for the real-world OOM that motivated these flags.
 
+### Running Phase C perf gates (Mastodon, local/nightly)
+
+The Phase C value-flow rollout includes a Mastodon wall-time gate (plan
+§9.1 — +50% of pre-Phase-C baseline blocks merge). The corpus is NOT
+checked into the repo; the gate runs opt-in behind the `bench` build
+tag:
+
+```sh
+TSQ_MASTODON_CORPUS=/path/to/mastodon \
+TSQ_MASTODON_BASELINE_SECONDS=48 \
+go test -tags=bench -run TestBench_MastodonPerfGate -timeout 10m .
+```
+
+- `TSQ_MASTODON_CORPUS` — absolute path to the Mastodon corpus
+  directory (must contain extractable sources).
+- `TSQ_MASTODON_BASELINE_SECONDS` — pre-Phase-C baseline in seconds.
+  Defaults to 48 per plan §9.1 / wiki §Phase C PR4 outcomes. Re-baseline
+  without a code change by setting this env var.
+
+The gate uses a 1.5x multiplier (plan's "blocks-merge" threshold).
+Within +50% but > baseline prints as "flag-for-follow-up" and passes.
+
+On fungoid.xyz the corpus is at `~/benchmarks/mastodon`; the
+janky-bench workflow (`andryo@fungoid.xyz:~/janky-bench/`) drives the
+gate on a nightly/manual cadence. Default CI is unchanged — no Mastodon
+run on GitHub Actions (would bloat wall-time and introduce flakiness on
+shared runners). When a reliably-provisioned bench runner becomes
+available, wire this into a nightly-only workflow.
+
 ### Handover Documents
 
 When a phase completes, the implementing agent creates `HANDOVER-phase-N.md` at the repo root describing:
