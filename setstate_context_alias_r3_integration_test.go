@@ -171,14 +171,17 @@ func TestR3_LinkPredicates(t *testing.T) {
 		// + 1 in negative (setNN) = 7
 		{"useStateSetterSym", common + "from int s where useStateSetterSym(s) select s", 7, false},
 		{"isObjectLiteralExpr", common + "from int o where isObjectLiteralExpr(o) select o", 4, false},
-		// PR3: resolveToObjectExprDirect + resolveToObjectExprVarD1 deleted —
-		// subsumed by mayResolveToObjectExpr (tsq_react.qll) which composes
-		// the §2.1 base + §2.2 var-init + JsxExpression-wrapper-tolerant
-		// branches of mayResolveTo. The link probe exercises the new helper
-		// directly; pinned to exact 13 (4 Direct + 6 VarD1 + 3 JsxWrapper
-		// post-dedup on r3). Pinned because this is the migration's value-flow
-		// surface area — silent growth would mask over-approximation regressions.
-		{"mayResolveToObjectExpr", common + "from int v, int o where mayResolveToObjectExpr(v, o) select v, o", 13, true},
+		// Phase C PR6: mayResolveToObjectExpr is now the
+		// {mayResolveToRec ∪ JsxExpression-wrapper-tolerant} composition.
+		// The recursive closure picks up 6 additional (v, o) pairs on r3
+		// that the Phase A shape-enumeration (4 Direct + 6 VarD1 + 3
+		// JsxWrapper = 13) missed: transitive `lfsVarInit` chains that
+		// reach literals through a second var hop, and JsxExpression-
+		// wrapped identifier paths that resolve through the closure rather
+		// than the direct-Contains Phase A branch. Pinned at 19 — silent
+		// growth would still mask over-approximation regressions, just
+		// against the new (post-PR6) surface area.
+		{"mayResolveToObjectExpr", common + "from int v, int o where mayResolveToObjectExpr(v, o) select v, o", 19, true},
 		{"resolveToObjectExprWrapped", common + "from int v, int o where resolveToObjectExprWrapped(v, o) select v, o", 1, false},
 		// resolveToObjectExpr should fire for at least Indirect (1), Computed (1).
 		{"resolveToObjectExpr", common + "from int v, int o where resolveToObjectExpr(v, o) select v, o", 2, false},
