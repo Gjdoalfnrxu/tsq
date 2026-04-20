@@ -97,7 +97,7 @@ func TaintRules() []datalog.Rule {
 		//     ExprMayRef(rhsExpr, rhsSym), TaintedSym(rhsSym, kind).
 		rule("TaintedField",
 			[]datalog.Term{v("baseSym"), v("fieldName"), v("kind")},
-			pos("FieldWrite", w(), v("baseSym"), v("fieldName"), v("rhsExpr")),
+			pos("FieldWrite", w(), v("baseSym"), v("fieldName"), v("rhsExpr"), w()),
 			mustNamedLiteral("ExprMayRef", map[string]datalog.Term{
 				"expr": v("rhsExpr"),
 				"sym":  v("rhsSym"),
@@ -110,7 +110,7 @@ func TaintRules() []datalog.Rule {
 		//     ExprMayRef(expr, readSym), TaintedField(baseSym, fieldName, kind).
 		rule("TaintedSym",
 			[]datalog.Term{v("readSym"), v("kind")},
-			pos("FieldRead", v("expr"), v("baseSym"), v("fieldName")),
+			pos("FieldRead", v("expr"), v("baseSym"), v("fieldName"), w()),
 			mustNamedLiteral("ExprMayRef", map[string]datalog.Term{
 				"expr": v("expr"),
 				"sym":  v("readSym"),

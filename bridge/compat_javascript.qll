@@ -173,13 +173,13 @@ class AssignExpr extends @assign {
 
 /** A property access expression (e.g., `obj.prop`). */
 class PropAccess extends @field_read {
-    PropAccess() { FieldRead(this, _, _) }
+    PropAccess() { FieldRead(this, _, _, _) }
 
     /** Gets the base symbol. */
-    int getBaseSym() { FieldRead(this, result, _) }
+    int getBaseSym() { FieldRead(this, result, _, _) }
 
     /** Gets the property name. */
-    string getPropertyName() { FieldRead(this, _, result) }
+    string getPropertyName() { FieldRead(this, _, result, _) }
 
     /** Gets a textual representation. */
     string toString() { result = "." + this.getPropertyName() }
@@ -187,16 +187,16 @@ class PropAccess extends @field_read {
 
 /** A field write expression (e.g., `obj.field = value`). */
 class PropWrite extends @field_write {
-    PropWrite() { FieldWrite(this, _, _, _) }
+    PropWrite() { FieldWrite(this, _, _, _, _) }
 
     /** Gets the base symbol. */
-    int getBaseSym() { FieldWrite(this, result, _, _) }
+    int getBaseSym() { FieldWrite(this, result, _, _, _) }
 
     /** Gets the property name. */
-    string getPropertyName() { FieldWrite(this, _, result, _) }
+    string getPropertyName() { FieldWrite(this, _, result, _, _) }
 
     /** Gets the right-hand side expression. */
-    ASTNode getRhs() { FieldWrite(this, _, _, result) }
+    ASTNode getRhs() { FieldWrite(this, _, _, result, _) }
 
     /** Gets a textual representation. */
     string toString() { result = "." + this.getPropertyName() + " =" }

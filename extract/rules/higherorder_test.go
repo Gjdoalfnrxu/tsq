@@ -11,7 +11,7 @@ import (
 // higherOrderBaseRels returns the base relations needed for higher-order rules evaluation.
 func higherOrderBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relation {
 	base := taintBaseRels(nil)
-	base["FieldRead"] = eval.NewRelation("FieldRead", 3)
+	base["FieldRead"] = eval.NewRelation("FieldRead", 4)
 	base["Function"] = eval.NewRelation("Function", 6)
 	base["JsxElement"] = eval.NewRelation("JsxElement", 3)
 	base["JsxAttribute"] = eval.NewRelation("JsxAttribute", 3)

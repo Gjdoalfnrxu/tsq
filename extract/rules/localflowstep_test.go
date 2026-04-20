@@ -20,12 +20,15 @@ func localFlowStepBaseRels(overrides map[string]*eval.Relation) map[string]*eval
 	base["ExprMayRef"] = eval.NewRelation("ExprMayRef", 2)
 	base["ExprIsCall"] = eval.NewRelation("ExprIsCall", 2)
 	base["ReturnStmt"] = eval.NewRelation("ReturnStmt", 3)
-	base["DestructureField"] = eval.NewRelation("DestructureField", 5)
-	base["ArrayDestructure"] = eval.NewRelation("ArrayDestructure", 3)
-	base["ObjectLiteralField"] = eval.NewRelation("ObjectLiteralField", 3)
-	base["ObjectLiteralSpread"] = eval.NewRelation("ObjectLiteralSpread", 2)
-	base["FieldRead"] = eval.NewRelation("FieldRead", 3)
-	base["FieldWrite"] = eval.NewRelation("FieldWrite", 4)
+	// Phase E PR1 (#210): arities bumped by +1 for the new `path` column
+	// on the six path-bearing relations. Rules ignore the column (named-
+	// literal bindings); tests now seed it with a placeholder.
+	base["DestructureField"] = eval.NewRelation("DestructureField", 6)
+	base["ArrayDestructure"] = eval.NewRelation("ArrayDestructure", 4)
+	base["ObjectLiteralField"] = eval.NewRelation("ObjectLiteralField", 4)
+	base["ObjectLiteralSpread"] = eval.NewRelation("ObjectLiteralSpread", 3)
+	base["FieldRead"] = eval.NewRelation("FieldRead", 4)
+	base["FieldWrite"] = eval.NewRelation("FieldWrite", 5)
 	base["Await"] = eval.NewRelation("Await", 2)
 	// PR8 (#202 Gap A): lfsJsxPropBind EDB inputs.
 	base["JsxAttribute"] = eval.NewRelation("JsxAttribute", 3)
@@ -120,8 +123,8 @@ func TestLfsDestructureField(t *testing.T) {
 	// DestructureField(parent=400, srcField="foo", bindName="foo", bindSym=10, idx=0)
 	// use=500 references sym=10.
 	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
-		"DestructureField": makeRel("DestructureField", 5,
-			iv(400), sv("foo"), sv("foo"), iv(10), iv(0),
+		"DestructureField": makeRel("DestructureField", 6,
+			iv(400), sv("foo"), sv("foo"), iv(10), iv(0), sv(".foo"),
 		),
 		"ExprMayRef": makeRel("ExprMayRef", 2, iv(500), iv(10)),
 	})
@@ -134,7 +137,7 @@ func TestLfsDestructureField(t *testing.T) {
 // TestLfsArrayDestructure — `const [x, y] = arr; use(x);` flows arr→use.
 func TestLfsArrayDestructure(t *testing.T) {
 	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
-		"ArrayDestructure": makeRel("ArrayDestructure", 3, iv(400), iv(0), iv(10)),
+		"ArrayDestructure": makeRel("ArrayDestructure", 4, iv(400), iv(0), iv(10), sv(".[0]")),
 		"ExprMayRef":       makeRel("ExprMayRef", 2, iv(500), iv(10)),
 	})
 	rs := evalStep(t, baseRels, "lfsArrayDestructure")
@@ -147,8 +150,8 @@ func TestLfsArrayDestructure(t *testing.T) {
 func TestLfsObjectLiteralStore(t *testing.T) {
 	// ObjectLiteralField(parent=600, fieldName="foo", valueExpr=400)
 	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
-		"ObjectLiteralField": makeRel("ObjectLiteralField", 3,
-			iv(600), sv("foo"), iv(400),
+		"ObjectLiteralField": makeRel("ObjectLiteralField", 4,
+			iv(600), sv("foo"), iv(400), sv(".foo"),
 		),
 	})
 	rs := evalStep(t, baseRels, "lfsObjectLiteralStore")
@@ -160,7 +163,7 @@ func TestLfsObjectLiteralStore(t *testing.T) {
 // TestLfsSpreadElement — `{ ...rest }` flows rest into the object literal.
 func TestLfsSpreadElement(t *testing.T) {
 	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
-		"ObjectLiteralSpread": makeRel("ObjectLiteralSpread", 2, iv(600), iv(400)),
+		"ObjectLiteralSpread": makeRel("ObjectLiteralSpread", 3, iv(600), iv(400), sv(".{*}")),
 	})
 	rs := evalStep(t, baseRels, "lfsSpreadElement")
 	if len(rs.Rows) != 1 || !resultContains(rs, iv(400), iv(600)) {
@@ -174,7 +177,7 @@ func TestLfsSpreadElement(t *testing.T) {
 func TestLfsFieldRead(t *testing.T) {
 	// FieldRead(expr=600, baseSym=10, "foo"); ExprMayRef(from=400, sym=10).
 	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
-		"FieldRead":  makeRel("FieldRead", 3, iv(600), iv(10), sv("foo")),
+		"FieldRead":  makeRel("FieldRead", 4, iv(600), iv(10), sv("foo"), sv(".foo")),
 		"ExprMayRef": makeRel("ExprMayRef", 2, iv(400), iv(10)),
 	})
 	rs := evalStep(t, baseRels, "lfsFieldRead")
@@ -188,7 +191,7 @@ func TestLfsFieldRead(t *testing.T) {
 func TestLfsFieldWrite(t *testing.T) {
 	// FieldWrite(assignNode=700, baseSym=10, "foo", rhsExpr=400); ExprMayRef(to=500, sym=10).
 	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
-		"FieldWrite": makeRel("FieldWrite", 4, iv(700), iv(10), sv("foo"), iv(400)),
+		"FieldWrite": makeRel("FieldWrite", 5, iv(700), iv(10), sv("foo"), iv(400), sv(".foo")),
 		"ExprMayRef": makeRel("ExprMayRef", 2, iv(500), iv(10)),
 	})
 	rs := evalStep(t, baseRels, "lfsFieldWrite")
@@ -235,9 +238,9 @@ func TestLfsJsxPropBind(t *testing.T) {
 		"FunctionSymbol":          makeRel("FunctionSymbol", 2, iv(50), iv(1)),
 		"Parameter":               makeRel("Parameter", 6, iv(1), iv(0), sv("{ value, onClick }"), iv(80), iv(10), sv("")),
 		"ParamDestructurePattern": makeRel("ParamDestructurePattern", 2, iv(80), iv(85)),
-		"DestructureField": makeRel("DestructureField", 5,
-			iv(85), sv("value"), sv("value"), iv(20), iv(0),
-			iv(85), sv("onClick"), sv("onClick"), iv(30), iv(1),
+		"DestructureField": makeRel("DestructureField", 6,
+			iv(85), sv("value"), sv("value"), iv(20), iv(0), sv(".value"),
+			iv(85), sv("onClick"), sv("onClick"), iv(30), iv(1), sv(".onClick"),
 		),
 		"ExprMayRef": makeRel("ExprMayRef", 2,
 			iv(513), iv(20),
@@ -297,21 +300,21 @@ func TestLocalFlowStepUnion(t *testing.T) {
 		"ReturnStmt": makeRel("ReturnStmt", 3, iv(1), iv(81), iv(404)),
 		"ExprIsCall": makeRel("ExprIsCall", 2, iv(604), iv(303)),
 		// lfsDestructureField: parent=405, bindSym=15
-		"DestructureField": makeRel("DestructureField", 5,
-			iv(405), sv("k"), sv("k"), iv(15), iv(0),
+		"DestructureField": makeRel("DestructureField", 6,
+			iv(405), sv("k"), sv("k"), iv(15), iv(0), sv(".k"),
 		),
 		// lfsArrayDestructure: parent=406, bindSym=16
-		"ArrayDestructure": makeRel("ArrayDestructure", 3, iv(406), iv(0), iv(16)),
+		"ArrayDestructure": makeRel("ArrayDestructure", 4, iv(406), iv(0), iv(16), sv(".[0]")),
 		// lfsObjectLiteralStore: ObjectLiteralField(607, "f", 407)
-		"ObjectLiteralField": makeRel("ObjectLiteralField", 3,
-			iv(607), sv("f"), iv(407),
+		"ObjectLiteralField": makeRel("ObjectLiteralField", 4,
+			iv(607), sv("f"), iv(407), sv(".f"),
 		),
 		// lfsSpreadElement: ObjectLiteralSpread(608, 408)
-		"ObjectLiteralSpread": makeRel("ObjectLiteralSpread", 2, iv(608), iv(408)),
+		"ObjectLiteralSpread": makeRel("ObjectLiteralSpread", 3, iv(608), iv(408), sv(".{*}")),
 		// lfsFieldRead: FieldRead(609, 17, "f"), ExprMayRef(409, 17)
-		"FieldRead": makeRel("FieldRead", 3, iv(609), iv(17), sv("f")),
+		"FieldRead": makeRel("FieldRead", 4, iv(609), iv(17), sv("f"), sv(".f")),
 		// lfsFieldWrite: FieldWrite(_, 18, "f", 410), ExprMayRef(510, 18)
-		"FieldWrite": makeRel("FieldWrite", 4, iv(710), iv(18), sv("f"), iv(410)),
+		"FieldWrite": makeRel("FieldWrite", 5, iv(710), iv(18), sv("f"), iv(410), sv(".f")),
 		// lfsAwait: Await(611, 411)
 		"Await": makeRel("Await", 2, iv(611), iv(411)),
 		// ExprMayRef rows for the kinds that need them.

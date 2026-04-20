@@ -71,7 +71,7 @@ func expressRules() []datalog.Rule {
 	for _, field := range []string{"query", "params", "body"} {
 		rules = append(rules, rule("TaintSource",
 			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("FieldRead", v("expr"), v("reqSym"), s(field), w()),
 			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
 			pos("ExpressHandler", v("fn")),
 		))
@@ -128,7 +128,7 @@ func httpHandlerRules() []datalog.Rule {
 	for _, field := range []string{"url", "headers", "method"} {
 		rules = append(rules, rule("TaintSource",
 			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("FieldRead", v("expr"), v("reqSym"), s(field), w()),
 			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
 			pos("HttpHandler", v("fn")),
 		))
@@ -170,7 +170,7 @@ func koaRules() []datalog.Rule {
 
 	rules = append(rules, rule("TaintSource",
 		[]datalog.Term{v("expr"), s("http_input")},
-		pos("FieldRead", v("expr"), v("ctxSym"), s("query")),
+		pos("FieldRead", v("expr"), v("ctxSym"), s("query"), w()),
 		pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
 		pos("KoaHandler", v("fn")),
 	))
@@ -181,9 +181,9 @@ func koaRules() []datalog.Rule {
 	for _, field := range []string{"body", "query"} {
 		rules = append(rules, rule("TaintSource",
 			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("reqExpr"), v("ctxSym"), s("request")),
+			pos("FieldRead", v("reqExpr"), v("ctxSym"), s("request"), w()),
 			pos("ExprMayRef", v("reqExpr"), v("reqSym")),
-			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("FieldRead", v("expr"), v("reqSym"), s(field), w()),
 			pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
 			pos("KoaHandler", v("fn")),
 		))
@@ -191,7 +191,7 @@ func koaRules() []datalog.Rule {
 
 	rules = append(rules, rule("TaintSink",
 		[]datalog.Term{v("rhsExpr"), s("xss")},
-		pos("FieldWrite", w(), v("ctxSym"), s("body"), v("rhsExpr")),
+		pos("FieldWrite", w(), v("ctxSym"), s("body"), v("rhsExpr"), w()),
 		pos("Parameter", v("fn"), intc(0), w(), w(), v("ctxSym"), w()),
 		pos("KoaHandler", v("fn")),
 	))
@@ -220,7 +220,7 @@ func fastifyRules() []datalog.Rule {
 	for _, field := range []string{"body", "query", "params"} {
 		rules = append(rules, rule("TaintSource",
 			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("FieldRead", v("expr"), v("reqSym"), s(field), w()),
 			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
 			pos("FastifyHandler", v("fn")),
 		))
@@ -255,7 +255,7 @@ func lambdaRules() []datalog.Rule {
 
 	rules = append(rules, rule("TaintSource",
 		[]datalog.Term{v("expr"), s("http_input")},
-		pos("FieldRead", v("expr"), v("eventSym"), w()),
+		pos("FieldRead", v("expr"), v("eventSym"), w(), w()),
 		pos("Parameter", v("fn"), intc(0), w(), w(), v("eventSym"), w()),
 		pos("LambdaHandler", v("fn")),
 	))
@@ -277,7 +277,7 @@ func nextjsRules() []datalog.Rule {
 	for _, field := range []string{"query", "body"} {
 		rules = append(rules, rule("TaintSource",
 			[]datalog.Term{v("expr"), s("http_input")},
-			pos("FieldRead", v("expr"), v("reqSym"), s(field)),
+			pos("FieldRead", v("expr"), v("reqSym"), s(field), w()),
 			pos("Parameter", v("fn"), intc(0), w(), w(), v("reqSym"), w()),
 			pos("NextjsHandler", v("fn")),
 		))

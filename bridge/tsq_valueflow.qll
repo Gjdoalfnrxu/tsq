@@ -114,8 +114,8 @@ predicate mayResolveToParamBind(int valueExpr, int sourceExpr) {
  */
 predicate mayResolveToFieldRead(int valueExpr, int sourceExpr) {
     exists(int baseSym, string fld, int rhsExpr, int writeNode |
-        FieldRead(valueExpr, baseSym, fld) and
-        FieldWrite(writeNode, baseSym, fld, rhsExpr) and
+        FieldRead(valueExpr, baseSym, fld, _) and
+        FieldWrite(writeNode, baseSym, fld, rhsExpr, _) and
         ExprValueSource(rhsExpr, sourceExpr)
     )
 }
@@ -133,9 +133,9 @@ predicate mayResolveToFieldRead(int valueExpr, int sourceExpr) {
  */
 predicate mayResolveToObjectField(int valueExpr, int sourceExpr) {
     exists(int objExpr, string fld, int fieldValExpr, int baseSym, int varDecl |
-        FieldRead(valueExpr, baseSym, fld) and
+        FieldRead(valueExpr, baseSym, fld, _) and
         VarDecl(varDecl, baseSym, objExpr, _) and
-        ObjectLiteralField(objExpr, fld, fieldValExpr) and
+        ObjectLiteralField(objExpr, fld, fieldValExpr, _) and
         ExprValueSource(fieldValExpr, sourceExpr)
     )
 }

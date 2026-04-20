@@ -54,7 +54,7 @@ func SummaryRules() []datalog.Rule {
 			[]datalog.Term{v("fn"), v("paramIdx"), v("fieldName")},
 			pos("Parameter", v("fn"), v("paramIdx"), w(), w(), v("paramSym"), w()),
 			pos("FunctionContains", v("fn"), v("assignNode")),
-			pos("FieldWrite", v("assignNode"), w(), v("fieldName"), v("rhsExpr")),
+			pos("FieldWrite", v("assignNode"), w(), v("fieldName"), v("rhsExpr"), w()),
 			pos("ExprMayRef", v("rhsExpr"), v("rhsSym")),
 			pos("LocalFlowStar", v("fn"), v("paramSym"), v("rhsSym")),
 		),

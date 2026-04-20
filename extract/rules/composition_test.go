@@ -19,9 +19,9 @@ func compositionBaseRels(overrides map[string]*eval.Relation) map[string]*eval.R
 		"VarDecl":          eval.NewRelation("VarDecl", 4),
 		"ReturnStmt":       eval.NewRelation("ReturnStmt", 3),
 		"ReturnSym":        eval.NewRelation("ReturnSym", 2),
-		"DestructureField": eval.NewRelation("DestructureField", 5),
-		"FieldRead":        eval.NewRelation("FieldRead", 3),
-		"FieldWrite":       eval.NewRelation("FieldWrite", 4),
+		"DestructureField": eval.NewRelation("DestructureField", 6),
+		"FieldRead":        eval.NewRelation("FieldRead", 4),
+		"FieldWrite":       eval.NewRelation("FieldWrite", 5),
 		// Summary dependencies
 		"Parameter":        eval.NewRelation("Parameter", 6),
 		"FunctionContains": eval.NewRelation("FunctionContains", 2),

@@ -20,9 +20,9 @@ func taintBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relatio
 		"VarDecl":          eval.NewRelation("VarDecl", 4),
 		"ReturnStmt":       eval.NewRelation("ReturnStmt", 3),
 		"ReturnSym":        eval.NewRelation("ReturnSym", 2),
-		"DestructureField": eval.NewRelation("DestructureField", 5),
-		"FieldRead":        eval.NewRelation("FieldRead", 3),
-		"FieldWrite":       eval.NewRelation("FieldWrite", 4),
+		"DestructureField": eval.NewRelation("DestructureField", 6),
+		"FieldRead":        eval.NewRelation("FieldRead", 4),
+		"FieldWrite":       eval.NewRelation("FieldWrite", 5),
 		// Summary dependencies
 		"Parameter":        eval.NewRelation("Parameter", 6),
 		"FunctionContains": eval.NewRelation("FunctionContains", 2),
@@ -291,12 +291,12 @@ func TestTaintedField_WriteAndRead(t *testing.T) {
 			iv(300), iv(30), // read expr a → readSymA
 			iv(400), iv(40), // read expr b → readSymB
 		),
-		"FieldWrite": makeRel("FieldWrite", 4,
-			iv(200), iv(50), sv("a"), iv(150), // obj.a = tainted
+		"FieldWrite": makeRel("FieldWrite", 5,
+			iv(200), iv(50), sv("a"), iv(150), sv(".a"), // obj.a = tainted
 		),
-		"FieldRead": makeRel("FieldRead", 3,
-			iv(300), iv(50), sv("a"), // read obj.a
-			iv(400), iv(50), sv("b"), // read obj.b
+		"FieldRead": makeRel("FieldRead", 4,
+			iv(300), iv(50), sv("a"), sv(".a"), // read obj.a
+			iv(400), iv(50), sv("b"), sv(".b"), // read obj.b
 		),
 	})
 
