@@ -12,10 +12,13 @@
 import tsq::express
 import tsq::base
 
-from ASTNode use, int fn, int paramIdx
-where ExpressHandlerArgUse(use, fn, paramIdx)
+from ASTNode use, ASTNode fnNode, int fn, int paramIdx
+where
+  ExpressHandlerArgUse(use, fn, paramIdx) and
+  fnNode = fn
 select
   use.getFile().getPath() as "usePath",
   use.getStartLine() as "useLine",
   fn as "fn",
-  paramIdx as "paramIdx"
+  paramIdx as "paramIdx",
+  fnNode.getStartLine() as "fnLine"
