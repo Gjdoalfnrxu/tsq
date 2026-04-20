@@ -1,0 +1,5 @@
+run_id: run_e1_mastodon
+timestamp_utc: 2026-04-20T07:43:59Z
+git_sha: f6c7740873816e420a3c15dfff75116dc4796982
+git_describe: v1.0.0-174-gf6c7740-dirty
+corpora:

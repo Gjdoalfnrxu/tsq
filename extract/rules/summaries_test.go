@@ -19,9 +19,9 @@ func summaryBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relat
 		"VarDecl":          eval.NewRelation("VarDecl", 4),
 		"ReturnStmt":       eval.NewRelation("ReturnStmt", 3),
 		"ReturnSym":        eval.NewRelation("ReturnSym", 2),
-		"DestructureField": eval.NewRelation("DestructureField", 5),
-		"FieldRead":        eval.NewRelation("FieldRead", 3),
-		"FieldWrite":       eval.NewRelation("FieldWrite", 4),
+		"DestructureField": eval.NewRelation("DestructureField", 6),
+		"FieldRead":        eval.NewRelation("FieldRead", 4),
+		"FieldWrite":       eval.NewRelation("FieldWrite", 5),
 		// Summary-specific dependencies
 		"Parameter":        eval.NewRelation("Parameter", 6),
 		"FunctionContains": eval.NewRelation("FunctionContains", 2),
@@ -180,7 +180,7 @@ func TestParamToFieldWrite(t *testing.T) {
 			iv(1), iv(1), sv("val"), iv(51), iv(20), sv(""),
 		),
 		"FunctionContains": makeRel("FunctionContains", 2, iv(1), iv(300)),
-		"FieldWrite":       makeRel("FieldWrite", 4, iv(300), iv(10), sv("x"), iv(400)),
+		"FieldWrite":       makeRel("FieldWrite", 5, iv(300), iv(10), sv("x"), iv(400), sv(".x")),
 		"ExprMayRef": makeRel("ExprMayRef", 2,
 			iv(400), iv(25), // rhs references vSym
 			iv(600), iv(20), // initExpr references val param

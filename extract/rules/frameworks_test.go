@@ -13,8 +13,8 @@ import (
 func frameworkBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Relation {
 	base := taintBaseRels(nil)
 	// Add framework-specific base relations
-	base["FieldRead"] = eval.NewRelation("FieldRead", 3)
-	base["FieldWrite"] = eval.NewRelation("FieldWrite", 4)
+	base["FieldRead"] = eval.NewRelation("FieldRead", 4)
+	base["FieldWrite"] = eval.NewRelation("FieldWrite", 5)
 	base["Function"] = eval.NewRelation("Function", 6)
 	base["JsxElement"] = eval.NewRelation("JsxElement", 3)
 	base["JsxAttribute"] = eval.NewRelation("JsxAttribute", 3)
@@ -59,7 +59,7 @@ func TestExpressSource_ReqQuery(t *testing.T) {
 		"ExprMayRef":     makeRel("ExprMayRef", 2, iv(600), iv(60), iv(100), iv(10)),
 		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(60), iv(7)),
 		"Parameter":      makeRel("Parameter", 6, iv(7), iv(0), sv("req"), iv(80), iv(10), sv("")),
-		"FieldRead":      makeRel("FieldRead", 3, iv(100), iv(10), sv("query")),
+		"FieldRead":      makeRel("FieldRead", 4, iv(100), iv(10), sv("query"), sv(".query")),
 	})
 
 	query := &datalog.Query{
@@ -221,7 +221,7 @@ func TestHttpSource_ReqUrl(t *testing.T) {
 		"ExprMayRef":     makeRel("ExprMayRef", 2, iv(600), iv(60)),
 		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(60), iv(7)),
 		"Parameter":      makeRel("Parameter", 6, iv(7), iv(0), sv("req"), iv(80), iv(10), sv("")),
-		"FieldRead":      makeRel("FieldRead", 3, iv(100), iv(10), sv("url")),
+		"FieldRead":      makeRel("FieldRead", 4, iv(100), iv(10), sv("url"), sv(".url")),
 	})
 
 	query := &datalog.Query{
@@ -244,7 +244,7 @@ func TestKoaSource_CtxQuery(t *testing.T) {
 		"ExprMayRef":     makeRel("ExprMayRef", 2, iv(600), iv(60)),
 		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(60), iv(7)),
 		"Parameter":      makeRel("Parameter", 6, iv(7), iv(0), sv("ctx"), iv(80), iv(10), sv("")),
-		"FieldRead":      makeRel("FieldRead", 3, iv(100), iv(10), sv("query")),
+		"FieldRead":      makeRel("FieldRead", 4, iv(100), iv(10), sv("query"), sv(".query")),
 	})
 
 	query := &datalog.Query{
@@ -265,7 +265,7 @@ func TestKoaSink_CtxBodyAssign(t *testing.T) {
 		"ExprMayRef":     makeRel("ExprMayRef", 2, iv(600), iv(60)),
 		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(60), iv(7)),
 		"Parameter":      makeRel("Parameter", 6, iv(7), iv(0), sv("ctx"), iv(80), iv(10), sv("")),
-		"FieldWrite":     makeRel("FieldWrite", 4, iv(200), iv(10), sv("body"), iv(300)),
+		"FieldWrite":     makeRel("FieldWrite", 5, iv(200), iv(10), sv("body"), iv(300), sv(".body")),
 	})
 
 	query := &datalog.Query{
@@ -324,7 +324,7 @@ func TestLambdaSource_EventField(t *testing.T) {
 		"ExportBinding":  makeRel("ExportBinding", 3, sv("handler"), iv(50), iv(1)),
 		"FunctionSymbol": makeRel("FunctionSymbol", 2, iv(50), iv(7)),
 		"Parameter":      makeRel("Parameter", 6, iv(7), iv(0), sv("event"), iv(80), iv(10), sv("")),
-		"FieldRead":      makeRel("FieldRead", 3, iv(100), iv(10), sv("body")),
+		"FieldRead":      makeRel("FieldRead", 4, iv(100), iv(10), sv("body"), sv(".body")),
 	})
 
 	query := &datalog.Query{

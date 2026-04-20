@@ -142,16 +142,26 @@ func init() {
 		{Name: "expr", Type: TypeEntityRef},
 		{Name: "call", Type: TypeEntityRef},
 	}})
+	// Phase E PR1 (#210): FieldRead/FieldWrite gain a structured `path`
+	// discriminator column appended at the end. Encoding:
+	//   - Field access `.foo` → ".foo"
+	//   - Empty/unknown        → "" (sentinel, same row semantics as path-erased)
+	// The path is a simple string for E1; interning and int-keyed side
+	// relations are deferred to E2/E3 if bench shows cardinality issues.
+	// Existing named-literal consumers ignore the column; positional
+	// consumers have been updated with a trailing wildcard.
 	RegisterRelation(RelationDef{Name: "FieldRead", Version: 1, Columns: []ColumnDef{
 		{Name: "expr", Type: TypeEntityRef},
 		{Name: "baseSym", Type: TypeEntityRef},
 		{Name: "fieldName", Type: TypeString},
+		{Name: "path", Type: TypeString},
 	}})
 	RegisterRelation(RelationDef{Name: "FieldWrite", Version: 1, Columns: []ColumnDef{
 		{Name: "assignNode", Type: TypeEntityRef},
 		{Name: "baseSym", Type: TypeEntityRef},
 		{Name: "fieldName", Type: TypeString},
 		{Name: "rhsExpr", Type: TypeEntityRef},
+		{Name: "path", Type: TypeString},
 	}})
 	RegisterRelation(RelationDef{Name: "Await", Version: 1, Columns: []ColumnDef{
 		{Name: "expr", Type: TypeEntityRef},
@@ -162,17 +172,27 @@ func init() {
 		{Name: "innerExpr", Type: TypeEntityRef},
 	}})
 	// Destructuring
+	// Phase E PR1 (#210): destructure relations gain a structured `path`
+	// discriminator column. Encoding:
+	//   - Object-destructure of field `foo` → ".foo"
+	//   - Array-destructure at index `i`     → ".[i]"
+	// Downstream E2/E3 rules key on this column to distinguish
+	// `const [c, setC] = useState(0)` slot 0 from slot 1 without a
+	// predicate wrapper. Column is additive; existing named-literal
+	// consumers are unaffected.
 	RegisterRelation(RelationDef{Name: "DestructureField", Version: 1, Columns: []ColumnDef{
 		{Name: "parent", Type: TypeEntityRef},
 		{Name: "sourceField", Type: TypeString},
 		{Name: "bindName", Type: TypeString},
 		{Name: "bindSym", Type: TypeEntityRef},
 		{Name: "idx", Type: TypeInt32},
+		{Name: "path", Type: TypeString},
 	}})
 	RegisterRelation(RelationDef{Name: "ArrayDestructure", Version: 1, Columns: []ColumnDef{
 		{Name: "parent", Type: TypeEntityRef},
 		{Name: "idx", Type: TypeInt32},
 		{Name: "bindSym", Type: TypeEntityRef},
+		{Name: "path", Type: TypeString},
 	}})
 	RegisterRelation(RelationDef{Name: "DestructureRest", Version: 1, Columns: []ColumnDef{
 		{Name: "parent", Type: TypeEntityRef},
@@ -203,10 +223,17 @@ func init() {
 	// look up which symbol a Provider's value object exposes under a given
 	// field name. v1 limitations: spread elements (`{ ...rest }`) and
 	// computed-key properties are skipped silently.
+	// Phase E PR1 (#210): `path` discriminator column appended. Encoding:
+	//   - Named field `foo` → ".foo"
+	// For E1 the discriminator echoes `fieldName`; its purpose is to give
+	// E2/E3 a uniform `path` key across field-bearing relations (ObjectLiteralField,
+	// DestructureField, FieldRead, FieldWrite) so path composition can be
+	// expressed without per-relation plumbing.
 	RegisterRelation(RelationDef{Name: "ObjectLiteralField", Version: 1, Columns: []ColumnDef{
 		{Name: "parent", Type: TypeEntityRef},
 		{Name: "fieldName", Type: TypeString},
 		{Name: "valueExpr", Type: TypeEntityRef},
+		{Name: "path", Type: TypeString},
 	}})
 	// ObjectLiteralSpread: a `...expr` element of an object literal.
 	// `parent` is the enclosing object expression node id; `valueExpr` is
@@ -214,9 +241,14 @@ func init() {
 	// Round-3 of the React context-alias work uses this together with a
 	// VarDecl-to-ObjectExpression resolution to compute the union of own
 	// fields and spread-contributed fields of a Provider value object.
+	// Phase E PR1 (#210): `path` discriminator column appended. Spread
+	// elements contribute to ALL of the parent object's field slots, so
+	// the path is the wildcard sentinel ".{*}". E2/E3's `PathCompose`
+	// collapses any composition involving this wildcard to the wildcard.
 	RegisterRelation(RelationDef{Name: "ObjectLiteralSpread", Version: 1, Columns: []ColumnDef{
 		{Name: "parent", Type: TypeEntityRef},
 		{Name: "valueExpr", Type: TypeEntityRef},
+		{Name: "path", Type: TypeString},
 	}})
 	// JSX
 	RegisterRelation(RelationDef{Name: "JsxElement", Version: 1, Columns: []ColumnDef{

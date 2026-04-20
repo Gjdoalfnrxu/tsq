@@ -67,7 +67,7 @@ func LocalFlowRules() []datalog.Rule {
 		//   SymInFunction(parentSym, fn).
 		rule("LocalFlow",
 			[]datalog.Term{v("fn"), v("parentSym"), v("bindSym")},
-			pos("DestructureField", v("parent"), w(), w(), v("bindSym"), w()),
+			pos("DestructureField", v("parent"), w(), w(), v("bindSym"), w(), w()),
 			pos("VarDecl", v("parent"), w(), v("initExpr"), w()),
 			pos("ExprMayRef", v("initExpr"), v("parentSym")),
 			pos("SymInFunction", v("bindSym"), v("fn")),
@@ -82,7 +82,7 @@ func LocalFlowRules() []datalog.Rule {
 		//   SymInFunction(exprSym, fn).
 		rule("LocalFlow",
 			[]datalog.Term{v("fn"), v("baseSym"), v("exprSym")},
-			pos("FieldRead", v("expr"), v("baseSym"), w()),
+			pos("FieldRead", v("expr"), v("baseSym"), w(), w()),
 			pos("ExprMayRef", v("expr"), v("exprSym")),
 			pos("SymInFunction", v("baseSym"), v("fn")),
 			pos("SymInFunction", v("exprSym"), v("fn")),
@@ -96,7 +96,7 @@ func LocalFlowRules() []datalog.Rule {
 		//   SymInFunction(rhsSym, fn).
 		rule("LocalFlow",
 			[]datalog.Term{v("fn"), v("rhsSym"), v("baseSym")},
-			pos("FieldWrite", w(), v("baseSym"), w(), v("rhsExpr")),
+			pos("FieldWrite", w(), v("baseSym"), w(), v("rhsExpr"), w()),
 			pos("ExprMayRef", v("rhsExpr"), v("rhsSym")),
 			pos("SymInFunction", v("baseSym"), v("fn")),
 			pos("SymInFunction", v("rhsSym"), v("fn")),

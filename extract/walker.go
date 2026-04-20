@@ -218,6 +218,37 @@ func (fw *FactWalker) emit(rel string, vals ...interface{}) {
 	_ = r.AddTuple(fw.db, vals...)
 }
 
+// Phase E PR1 (#210) access-path encoding helpers.
+//
+// These produce the `path` column value for the six path-bearing
+// relations (FieldRead, FieldWrite, DestructureField, ArrayDestructure,
+// ObjectLiteralField, ObjectLiteralSpread). Encoding is a structured
+// discriminator string that E2/E3 will key on:
+//
+//   - Named field `foo`       → ".foo"
+//   - Array index `i`         → ".[i]"
+//   - Spread (all-fields)     → ".{*}" (wildcard sentinel)
+//   - Unknown / missing name  → ""     (empty-path sentinel; same
+//     row semantics as path-erased)
+//
+// The encoding is a simple string for E1; interning and side-relation
+// (AccessPath/AccessPathIndex/AccessPathField) are deferred to E2/E3
+// if bench shows cardinality blow-up.
+func fieldPath(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "." + name
+}
+
+func indexPath(idx int32) string {
+	return fmt.Sprintf(".[%d]", idx)
+}
+
+func spreadPath() string {
+	return ".{*}"
+}
+
 func (fw *FactWalker) emitExtractError(fileID uint32, line int, phase, msg string) {
 	_ = fw.db.Relation("ExtractError").AddTuple(fw.db, fileID, int32(line), phase, msg)
 }
@@ -688,7 +719,7 @@ func (fw *FactWalker) emitFieldRead(node ASTNode, id uint32) {
 		}
 	}
 
-	fw.emit("FieldRead", id, baseSymID, propNode.Text())
+	fw.emit("FieldRead", id, baseSymID, propNode.Text(), fieldPath(propNode.Text()))
 }
 
 func (fw *FactWalker) emitFieldWrite(memberNode ASTNode, assignID uint32, rhsID uint32) {
@@ -705,7 +736,7 @@ func (fw *FactWalker) emitFieldWrite(memberNode ASTNode, assignID uint32, rhsID 
 		}
 	}
 
-	fw.emit("FieldWrite", assignID, baseSymID, propNode.Text(), rhsID)
+	fw.emit("FieldWrite", assignID, baseSymID, propNode.Text(), rhsID, fieldPath(propNode.Text()))
 }
 
 // ---- Await ----
@@ -780,7 +811,7 @@ func (fw *FactWalker) emitObjectLiteral(node ASTNode, id uint32) {
 			// resolve the shorthand binding back to its declaration.
 			name := child.Text()
 			valID := fw.nid(child)
-			fw.emit("ObjectLiteralField", id, name, valID)
+			fw.emit("ObjectLiteralField", id, name, valID, fieldPath(name))
 			if decl, ok := fw.scope.Resolve(name, child); ok {
 				symID := SymID(decl.FilePath, decl.Name, decl.StartLine, decl.StartCol)
 				fw.emit("ExprMayRef", valID, symID)
@@ -795,13 +826,13 @@ func (fw *FactWalker) emitObjectLiteral(node ASTNode, id uint32) {
 			case "PropertyIdentifier", "Identifier":
 				name := keyNode.Text()
 				valID := fw.nid(valNode)
-				fw.emit("ObjectLiteralField", id, name, valID)
+				fw.emit("ObjectLiteralField", id, name, valID, fieldPath(name))
 			case "String":
 				// String-literal key, e.g. `{ "setX": foo }`. Treat as a
 				// stable named field equal to the string's content.
 				if name, ok := stripStringLiteralQuotes(keyNode.Text()); ok {
 					valID := fw.nid(valNode)
-					fw.emit("ObjectLiteralField", id, name, valID)
+					fw.emit("ObjectLiteralField", id, name, valID, fieldPath(name))
 				}
 			case "ComputedPropertyName":
 				// Round-3: `{ [KEY]: foo }` — resolve at extraction time when
@@ -824,7 +855,7 @@ func (fw *FactWalker) emitObjectLiteral(node ASTNode, id uint32) {
 				}
 				if ok {
 					valID := fw.nid(valNode)
-					fw.emit("ObjectLiteralField", id, name, valID)
+					fw.emit("ObjectLiteralField", id, name, valID, fieldPath(name))
 				}
 			default:
 				// numeric keys, template-literal keys, etc. — skip.
@@ -844,7 +875,7 @@ func (fw *FactWalker) emitObjectLiteral(node ASTNode, id uint32) {
 				continue
 			}
 			innerID := fw.nid(inner)
-			fw.emit("ObjectLiteralSpread", id, innerID)
+			fw.emit("ObjectLiteralSpread", id, innerID, spreadPath())
 		}
 	}
 }
@@ -865,7 +896,7 @@ func (fw *FactWalker) emitDestructureObject(node ASTNode, id uint32) {
 		case "ShorthandPropertyIdentifierPattern", "ShorthandPropertyIdentifier":
 			name := child.Text()
 			symID := SymID(fw.filePath, name, child.StartLine(), child.StartCol())
-			fw.emit("DestructureField", id, name, name, symID, idx)
+			fw.emit("DestructureField", id, name, name, symID, idx, fieldPath(name))
 			idx++
 		case "Pair", "PairPattern":
 			keyNode := childByField(child, "key")
@@ -880,7 +911,7 @@ func (fw *FactWalker) emitDestructureObject(node ASTNode, id uint32) {
 				bindName = valNode.Text()
 				bindSymID = SymID(fw.filePath, bindName, valNode.StartLine(), valNode.StartCol())
 			}
-			fw.emit("DestructureField", id, sourceField, bindName, bindSymID, idx)
+			fw.emit("DestructureField", id, sourceField, bindName, bindSymID, idx, fieldPath(sourceField))
 			idx++
 		case "RestPattern":
 			inner := childByKind(child, "Identifier")
@@ -894,7 +925,7 @@ func (fw *FactWalker) emitDestructureObject(node ASTNode, id uint32) {
 			if left != nil {
 				name := left.Text()
 				symID := SymID(fw.filePath, name, left.StartLine(), left.StartCol())
-				fw.emit("DestructureField", id, name, name, symID, idx)
+				fw.emit("DestructureField", id, name, name, symID, idx, fieldPath(name))
 				idx++
 			}
 		}
@@ -925,7 +956,7 @@ func (fw *FactWalker) emitDestructureArray(node ASTNode, id uint32) {
 			if name != "" {
 				symID = SymID(fw.filePath, name, child.StartLine(), child.StartCol())
 			}
-			fw.emit("ArrayDestructure", id, idx, symID)
+			fw.emit("ArrayDestructure", id, idx, symID, indexPath(idx))
 			idx++
 		}
 	}

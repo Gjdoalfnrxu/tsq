@@ -72,7 +72,7 @@ predicate functionContainsStar(int fn, int node) {
  */
 predicate isUseStateSetterSym(int sym) {
     exists(int parent, int varDecl, int initExpr, int useStateSym |
-        ArrayDestructure(parent, 1, sym) and
+        ArrayDestructure(parent, 1, sym, _) and
         Contains(varDecl, parent) and
         VarDecl(varDecl, _, initExpr, _) and
         CallCalleeSym(initExpr, useStateSym) and
@@ -110,7 +110,7 @@ class UseStateSetterCall extends @call {
     UseStateSetterCall() {
         exists(int sym, int parent, int varDecl, int initExpr, int useStateSym |
             CallCalleeSym(this, sym) and
-            ArrayDestructure(parent, 1, sym) and
+            ArrayDestructure(parent, 1, sym, _) and
             Contains(varDecl, parent) and
             VarDecl(varDecl, _, initExpr, _) and
             CallCalleeSym(initExpr, useStateSym) and
@@ -222,7 +222,7 @@ predicate setStateUpdaterCallsOtherSetState(UseStateSetterCall c, int line) {
  */
 predicate useStateSetterSym(int sym) {
     exists(int parent, int varDecl, int initExpr, int useStateSym |
-        ArrayDestructure(parent, 1, sym) and
+        ArrayDestructure(parent, 1, sym, _) and
         Contains(varDecl, parent) and
         VarDecl(varDecl, _, initExpr, _) and
         CallCalleeSym(initExpr, useStateSym) and
@@ -265,7 +265,7 @@ predicate jsxPropPassesIdentifier(int elem, string attrName, int valueSym) {
 predicate componentDestructuredProp(int componentFn, string propName, int paramSym) {
     exists(int paramNode |
         Parameter(componentFn, 0, _, paramNode, _, _) and
-        DestructureField(paramNode, propName, _, paramSym, _)
+        DestructureField(paramNode, propName, _, paramSym, _, _)
     )
 }
 
@@ -642,11 +642,11 @@ predicate resolveToObjectExprWrapped(int valueExpr, int objExpr) {
  * downstream predicates anyway.
  */
 predicate isObjectLiteralExprOwnField(int objExpr) {
-    ObjectLiteralField(objExpr, _, _)
+    ObjectLiteralField(objExpr, _, _, _)
 }
 
 predicate isObjectLiteralExprSpread(int objExpr) {
-    ObjectLiteralSpread(objExpr, _)
+    ObjectLiteralSpread(objExpr, _, _)
 }
 
 predicate isObjectLiteralExpr(int objExpr) {
@@ -678,7 +678,7 @@ predicate isObjectLiteralExpr(int objExpr) {
  * `resolveToObjectExpr`, `contextSetterAliasStep`, and `contextSymLink`.
  */
 predicate objectLiteralFieldOwn(int objExpr, string fieldName, int valueExpr) {
-    ObjectLiteralField(objExpr, fieldName, valueExpr)
+    ObjectLiteralField(objExpr, fieldName, valueExpr, _)
 }
 
 /**
@@ -688,17 +688,17 @@ predicate objectLiteralFieldOwn(int objExpr, string fieldName, int valueExpr) {
  */
 predicate objectLiteralFieldSpreadD1Direct(int objExpr, string fieldName, int valueExpr) {
     exists(int spreadValueExpr |
-        ObjectLiteralSpread(objExpr, spreadValueExpr) and
-        ObjectLiteralField(spreadValueExpr, fieldName, valueExpr)
+        ObjectLiteralSpread(objExpr, spreadValueExpr, _) and
+        ObjectLiteralField(spreadValueExpr, fieldName, valueExpr, _)
     )
 }
 
 predicate objectLiteralFieldSpreadD1Var(int objExpr, string fieldName, int valueExpr) {
     exists(int spreadValueExpr, int spreadObj, int sym, int varDecl |
-        ObjectLiteralSpread(objExpr, spreadValueExpr) and
+        ObjectLiteralSpread(objExpr, spreadValueExpr, _) and
         ExprMayRef(spreadValueExpr, sym) and
         VarDecl(varDecl, sym, spreadObj, _) and
-        ObjectLiteralField(spreadObj, fieldName, valueExpr)
+        ObjectLiteralField(spreadObj, fieldName, valueExpr, _)
     )
 }
 
@@ -715,42 +715,42 @@ predicate objectLiteralFieldSpreadD1(int objExpr, string fieldName, int valueExp
  */
 predicate objectLiteralFieldSpreadD2DirectDirect(int objExpr, string fieldName, int valueExpr) {
     exists(int spreadValueExpr1, int spreadValueExpr2 |
-        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
-        ObjectLiteralSpread(spreadValueExpr1, spreadValueExpr2) and
-        ObjectLiteralField(spreadValueExpr2, fieldName, valueExpr)
+        ObjectLiteralSpread(objExpr, spreadValueExpr1, _) and
+        ObjectLiteralSpread(spreadValueExpr1, spreadValueExpr2, _) and
+        ObjectLiteralField(spreadValueExpr2, fieldName, valueExpr, _)
     )
 }
 
 predicate objectLiteralFieldSpreadD2DirectVar(int objExpr, string fieldName, int valueExpr) {
     exists(int spreadValueExpr1, int spreadValueExpr2, int sym, int varDecl, int spreadObj2 |
-        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
-        ObjectLiteralSpread(spreadValueExpr1, spreadValueExpr2) and
+        ObjectLiteralSpread(objExpr, spreadValueExpr1, _) and
+        ObjectLiteralSpread(spreadValueExpr1, spreadValueExpr2, _) and
         ExprMayRef(spreadValueExpr2, sym) and
         VarDecl(varDecl, sym, spreadObj2, _) and
-        ObjectLiteralField(spreadObj2, fieldName, valueExpr)
+        ObjectLiteralField(spreadObj2, fieldName, valueExpr, _)
     )
 }
 
 predicate objectLiteralFieldSpreadD2VarDirect(int objExpr, string fieldName, int valueExpr) {
     exists(int spreadValueExpr1, int spreadObj1, int sym1, int varDecl1, int spreadValueExpr2 |
-        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
+        ObjectLiteralSpread(objExpr, spreadValueExpr1, _) and
         ExprMayRef(spreadValueExpr1, sym1) and
         VarDecl(varDecl1, sym1, spreadObj1, _) and
-        ObjectLiteralSpread(spreadObj1, spreadValueExpr2) and
-        ObjectLiteralField(spreadValueExpr2, fieldName, valueExpr)
+        ObjectLiteralSpread(spreadObj1, spreadValueExpr2, _) and
+        ObjectLiteralField(spreadValueExpr2, fieldName, valueExpr, _)
     )
 }
 
 predicate objectLiteralFieldSpreadD2VarVar(int objExpr, string fieldName, int valueExpr) {
     exists(int spreadValueExpr1, int spreadObj1, int sym1, int varDecl1,
            int spreadValueExpr2, int spreadObj2, int sym2, int varDecl2 |
-        ObjectLiteralSpread(objExpr, spreadValueExpr1) and
+        ObjectLiteralSpread(objExpr, spreadValueExpr1, _) and
         ExprMayRef(spreadValueExpr1, sym1) and
         VarDecl(varDecl1, sym1, spreadObj1, _) and
-        ObjectLiteralSpread(spreadObj1, spreadValueExpr2) and
+        ObjectLiteralSpread(spreadObj1, spreadValueExpr2, _) and
         ExprMayRef(spreadValueExpr2, sym2) and
         VarDecl(varDecl2, sym2, spreadObj2, _) and
-        ObjectLiteralField(spreadObj2, fieldName, valueExpr)
+        ObjectLiteralField(spreadObj2, fieldName, valueExpr, _)
     )
 }
 
@@ -791,10 +791,10 @@ predicate objectLiteralFieldThroughSpread(int objExpr, string fieldName, int val
 predicate contextProviderValueObject(int ctxSym, int objExpr) {
     exists(int elem, int tagNode, int valueAttrExpr |
         JsxElement(elem, tagNode, _) and
-        FieldRead(tagNode, ctxSym, "Provider") and
+        FieldRead(tagNode, ctxSym, "Provider", _) and
         JsxAttribute(elem, "value", valueAttrExpr) and
         jsxAttrValueObject(valueAttrExpr, objExpr) and
-        ObjectLiteralField(objExpr, _, _)
+        ObjectLiteralField(objExpr, _, _, _)
     )
 }
 
@@ -822,7 +822,7 @@ predicate contextProviderValueObject(int ctxSym, int objExpr) {
 predicate contextProviderFieldR2(int ctxSym, string fieldName, int valueSym) {
     exists(int objExpr, int valueExpr |
         contextProviderValueObject(ctxSym, objExpr) and
-        ObjectLiteralField(objExpr, fieldName, valueExpr) and
+        ObjectLiteralField(objExpr, fieldName, valueExpr, _) and
         ExprMayRef(valueExpr, valueSym)
     )
 }
@@ -835,7 +835,7 @@ predicate contextProviderFieldR2(int ctxSym, string fieldName, int valueSym) {
 predicate contextProviderFieldR3VarIndirectOwn(int ctxSym, string fieldName, int valueSym) {
     exists(int elem, int tagNode, int valueAttrExpr, int objExpr, int valueExpr |
         JsxElement(elem, tagNode, _) and
-        FieldRead(tagNode, ctxSym, "Provider") and
+        FieldRead(tagNode, ctxSym, "Provider", _) and
         JsxAttribute(elem, "value", valueAttrExpr) and
         mayResolveToObjectExpr(valueAttrExpr, objExpr) and
         objectLiteralFieldOwn(objExpr, fieldName, valueExpr) and
@@ -846,7 +846,7 @@ predicate contextProviderFieldR3VarIndirectOwn(int ctxSym, string fieldName, int
 predicate contextProviderFieldR3VarIndirectSpreadD1(int ctxSym, string fieldName, int valueSym) {
     exists(int elem, int tagNode, int valueAttrExpr, int objExpr, int valueExpr |
         JsxElement(elem, tagNode, _) and
-        FieldRead(tagNode, ctxSym, "Provider") and
+        FieldRead(tagNode, ctxSym, "Provider", _) and
         JsxAttribute(elem, "value", valueAttrExpr) and
         mayResolveToObjectExpr(valueAttrExpr, objExpr) and
         objectLiteralFieldSpreadD1(objExpr, fieldName, valueExpr) and
@@ -857,7 +857,7 @@ predicate contextProviderFieldR3VarIndirectSpreadD1(int ctxSym, string fieldName
 predicate contextProviderFieldR3VarIndirectSpreadD2(int ctxSym, string fieldName, int valueSym) {
     exists(int elem, int tagNode, int valueAttrExpr, int objExpr, int valueExpr |
         JsxElement(elem, tagNode, _) and
-        FieldRead(tagNode, ctxSym, "Provider") and
+        FieldRead(tagNode, ctxSym, "Provider", _) and
         JsxAttribute(elem, "value", valueAttrExpr) and
         mayResolveToObjectExpr(valueAttrExpr, objExpr) and
         objectLiteralFieldSpreadD2(objExpr, fieldName, valueExpr) and
@@ -1035,7 +1035,7 @@ predicate contextDestructureBinding(int ctxSym, string fieldName, int paramSym) 
     exists(int varDecl, int parent, int initExpr, int callExpr, int call |
         VarDecl(varDecl, _, initExpr, _) and
         Contains(varDecl, parent) and
-        DestructureField(parent, fieldName, _, paramSym, _) and
+        DestructureField(parent, fieldName, _, paramSym, _, _) and
         // initExpr resolves to a useContextCallSite call, possibly via a
         // single non-null assertion / cast hop.
         (

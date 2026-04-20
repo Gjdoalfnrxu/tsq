@@ -33,12 +33,12 @@ module DOM {
      */
     class InnerHtmlWrite extends @field_write {
         InnerHtmlWrite() {
-            FieldWrite(this, _, "innerHTML", _) or
-            FieldWrite(this, _, "outerHTML", _)
+            FieldWrite(this, _, "innerHTML", _, _) or
+            FieldWrite(this, _, "outerHTML", _, _)
         }
 
         /** Gets the right-hand side expression being written. */
-        int getRhs() { FieldWrite(this, _, _, result) }
+        int getRhs() { FieldWrite(this, _, _, result, _) }
 
         /** Gets a textual representation. */
         string toString() { result = "DOM::InnerHtmlWrite" }
@@ -67,16 +67,16 @@ module DOM {
      * Backed by FieldWrite relation on DOM element symbols.
      */
     class AttributeWrite extends @field_write {
-        AttributeWrite() { FieldWrite(this, _, _, _) }
+        AttributeWrite() { FieldWrite(this, _, _, _, _) }
 
         /** Gets the base symbol. */
-        int getBaseSym() { FieldWrite(this, result, _, _) }
+        int getBaseSym() { FieldWrite(this, result, _, _, _) }
 
         /** Gets the property name. */
-        string getPropertyName() { FieldWrite(this, _, result, _) }
+        string getPropertyName() { FieldWrite(this, _, result, _, _) }
 
         /** Gets the right-hand side expression. */
-        int getRhs() { FieldWrite(this, _, _, result) }
+        int getRhs() { FieldWrite(this, _, _, result, _) }
 
         /** Gets a textual representation. */
         string toString() { result = "DOM::AttributeWrite" }

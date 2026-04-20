@@ -18,9 +18,9 @@ func localFlowBaseRels(overrides map[string]*eval.Relation) map[string]*eval.Rel
 		"VarDecl":          eval.NewRelation("VarDecl", 4),
 		"ReturnStmt":       eval.NewRelation("ReturnStmt", 3),
 		"ReturnSym":        eval.NewRelation("ReturnSym", 2),
-		"DestructureField": eval.NewRelation("DestructureField", 5),
-		"FieldRead":        eval.NewRelation("FieldRead", 3),
-		"FieldWrite":       eval.NewRelation("FieldWrite", 4),
+		"DestructureField": eval.NewRelation("DestructureField", 6),
+		"FieldRead":        eval.NewRelation("FieldRead", 4),
+		"FieldWrite":       eval.NewRelation("FieldWrite", 5),
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -192,7 +192,7 @@ func TestSelfAssignment(t *testing.T) {
 func TestFieldWriteFlow(t *testing.T) {
 	// fn=1, sym_obj=10, sym_x=20, assignNode=100, rhsExpr=200
 	baseRels := localFlowBaseRels(map[string]*eval.Relation{
-		"FieldWrite":    makeRel("FieldWrite", 4, iv(100), iv(10), sv("f"), iv(200)),
+		"FieldWrite":    makeRel("FieldWrite", 5, iv(100), iv(10), sv("f"), iv(200), sv(".f")),
 		"ExprMayRef":    makeRel("ExprMayRef", 2, iv(200), iv(20)),
 		"SymInFunction": makeRel("SymInFunction", 2, iv(10), iv(1), iv(20), iv(1)),
 	})
@@ -217,7 +217,7 @@ func TestFieldReadFlow(t *testing.T) {
 	// FieldRead(expr=300, baseSym=10, fieldName="f")
 	// ExprMayRef(expr=300, exprSym=20) — the read expression refers to sym_y
 	baseRels := localFlowBaseRels(map[string]*eval.Relation{
-		"FieldRead":     makeRel("FieldRead", 3, iv(300), iv(10), sv("f")),
+		"FieldRead":     makeRel("FieldRead", 4, iv(300), iv(10), sv("f"), sv(".f")),
 		"ExprMayRef":    makeRel("ExprMayRef", 2, iv(300), iv(20)),
 		"SymInFunction": makeRel("SymInFunction", 2, iv(10), iv(1), iv(20), iv(1)),
 	})
@@ -376,8 +376,8 @@ func TestFunctionScoping(t *testing.T) {
 func TestDestructuringFlow(t *testing.T) {
 	// fn=1, sym_obj=10, sym_a=20, parent(VarDecl)=100, initExpr=200
 	baseRels := localFlowBaseRels(map[string]*eval.Relation{
-		"DestructureField": makeRel("DestructureField", 5,
-			iv(100), sv("a"), sv("a"), iv(20), iv(0)),
+		"DestructureField": makeRel("DestructureField", 6,
+			iv(100), sv("a"), sv("a"), iv(20), iv(0), sv(".a")),
 		"VarDecl":       makeRel("VarDecl", 4, iv(100), iv(99), iv(200), iv(1)),
 		"ExprMayRef":    makeRel("ExprMayRef", 2, iv(200), iv(10)),
 		"SymInFunction": makeRel("SymInFunction", 2, iv(10), iv(1), iv(20), iv(1)),

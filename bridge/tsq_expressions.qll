@@ -34,16 +34,19 @@ class ExprIsCall extends @expr_is_call {
 
 /** A field read access (e.g. obj.field). */
 class FieldRead extends @field_read {
-    FieldRead() { FieldRead(this, _, _) }
+    FieldRead() { FieldRead(this, _, _, _) }
 
     /** Gets the expression node. */
     ASTNode getExpr() { result = this }
 
     /** Gets the base symbol. */
-    int getBaseSym() { FieldRead(this, result, _) }
+    int getBaseSym() { FieldRead(this, result, _, _) }
 
     /** Gets the field name. */
-    string getFieldName() { FieldRead(this, _, result) }
+    string getFieldName() { FieldRead(this, _, result, _) }
+
+    /** Gets the structured access path (e.g. ".foo"). Phase E PR1 (#210). */
+    string getPath() { FieldRead(this, _, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = "." + this.getFieldName() }
@@ -51,19 +54,22 @@ class FieldRead extends @field_read {
 
 /** A field write access (e.g. obj.field = value). */
 class FieldWrite extends @field_write {
-    FieldWrite() { FieldWrite(this, _, _, _) }
+    FieldWrite() { FieldWrite(this, _, _, _, _) }
 
     /** Gets the assignment node. */
     ASTNode getAssignNode() { result = this }
 
     /** Gets the base symbol. */
-    int getBaseSym() { FieldWrite(this, result, _, _) }
+    int getBaseSym() { FieldWrite(this, result, _, _, _) }
 
     /** Gets the field name. */
-    string getFieldName() { FieldWrite(this, _, result, _) }
+    string getFieldName() { FieldWrite(this, _, result, _, _) }
 
     /** Gets the right-hand side expression. */
-    ASTNode getRhsExpr() { FieldWrite(this, _, _, result) }
+    ASTNode getRhsExpr() { FieldWrite(this, _, _, result, _) }
+
+    /** Gets the structured access path (e.g. ".foo"). Phase E PR1 (#210). */
+    string getPath() { FieldWrite(this, _, _, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = "." + this.getFieldName() + " =" }
@@ -111,16 +117,19 @@ class Cast extends @cast {
  * causing entity collapse. Same v1 limitation as DestructureField.
  */
 class ObjectLiteralField extends @object_literal_field {
-    ObjectLiteralField() { ObjectLiteralField(this, _, _) }
+    ObjectLiteralField() { ObjectLiteralField(this, _, _, _) }
 
     /** Gets the parent object-literal node. */
     ASTNode getParent() { result = this }
 
     /** Gets the field name (shorthand binding name OR source key). */
-    string getFieldName() { ObjectLiteralField(this, result, _) }
+    string getFieldName() { ObjectLiteralField(this, result, _, _) }
 
     /** Gets the value-position expression node. */
-    ASTNode getValueExpr() { ObjectLiteralField(this, _, result) }
+    ASTNode getValueExpr() { ObjectLiteralField(this, _, result, _) }
+
+    /** Gets the structured access path (e.g. ".foo"). Phase E PR1 (#210). */
+    string getPath() { ObjectLiteralField(this, _, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = this.getFieldName() }
@@ -134,22 +143,25 @@ class ObjectLiteralField extends @object_literal_field {
  * causing entity collapse.  Known v1 limitation.
  */
 class DestructureField extends @destructure_field {
-    DestructureField() { DestructureField(this, _, _, _, _) }
+    DestructureField() { DestructureField(this, _, _, _, _, _) }
 
     /** Gets the parent pattern node. */
     ASTNode getParent() { result = this }
 
     /** Gets the source field name. */
-    string getSourceField() { DestructureField(this, result, _, _, _) }
+    string getSourceField() { DestructureField(this, result, _, _, _, _) }
 
     /** Gets the binding name. */
-    string getBindName() { DestructureField(this, _, result, _, _) }
+    string getBindName() { DestructureField(this, _, result, _, _, _) }
 
     /** Gets the binding symbol. */
-    int getBindSym() { DestructureField(this, _, _, result, _) }
+    int getBindSym() { DestructureField(this, _, _, result, _, _) }
 
     /** Gets the field index. */
-    int getIndex() { DestructureField(this, _, _, _, result) }
+    int getIndex() { DestructureField(this, _, _, _, result, _) }
+
+    /** Gets the structured access path (e.g. ".foo"). Phase E PR1 (#210). */
+    string getPath() { DestructureField(this, _, _, _, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = this.getSourceField() + ": " + this.getBindName() }
@@ -162,16 +174,19 @@ class DestructureField extends @destructure_field {
  * Same entity-collapse caveat as DestructureField.
  */
 class ArrayDestructure extends @array_destructure {
-    ArrayDestructure() { ArrayDestructure(this, _, _) }
+    ArrayDestructure() { ArrayDestructure(this, _, _, _) }
 
     /** Gets the parent pattern node. */
     ASTNode getParent() { result = this }
 
     /** Gets the element index. */
-    int getIndex() { ArrayDestructure(this, result, _) }
+    int getIndex() { ArrayDestructure(this, result, _, _) }
 
     /** Gets the binding symbol. */
-    int getBindSym() { ArrayDestructure(this, _, result) }
+    int getBindSym() { ArrayDestructure(this, _, result, _) }
+
+    /** Gets the structured access path (e.g. ".[1]"). Phase E PR1 (#210). */
+    string getPath() { ArrayDestructure(this, _, _, result) }
 
     /** Gets a textual representation. */
     string toString() { result = "array_destructure" }
