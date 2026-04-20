@@ -27,6 +27,11 @@ func localFlowStepBaseRels(overrides map[string]*eval.Relation) map[string]*eval
 	base["FieldRead"] = eval.NewRelation("FieldRead", 3)
 	base["FieldWrite"] = eval.NewRelation("FieldWrite", 4)
 	base["Await"] = eval.NewRelation("Await", 2)
+	// PR8 (#202 Gap A): lfsJsxPropBind EDB inputs.
+	base["JsxAttribute"] = eval.NewRelation("JsxAttribute", 3)
+	base["JsxElement"] = eval.NewRelation("JsxElement", 3)
+	base["ParamDestructurePattern"] = eval.NewRelation("ParamDestructurePattern", 2)
+	base["JsxExpressionInner"] = eval.NewRelation("JsxExpressionInner", 2)
 	for k, v := range overrides {
 		base[k] = v
 	}
@@ -200,6 +205,37 @@ func TestLfsAwait(t *testing.T) {
 	rs := evalStep(t, baseRels, "lfsAwait")
 	if len(rs.Rows) != 1 || !resultContains(rs, iv(400), iv(600)) {
 		t.Fatalf("expected lfsAwait(400, 600), got %v", rs.Rows)
+	}
+}
+
+// TestLfsJsxPropBind — `<Inner value={cfg} />` flows `cfg` to in-body
+// references of the `value` destructured binding of Inner. See #202
+// Gap A.
+func TestLfsJsxPropBind(t *testing.T) {
+	// JSX site: elem=700, JsxExpression wrapper=412, inner cfg identifier=413,
+	// tagSym=50, fn=1. Component: Parameter(fn=1, idx=0, paramNode=80,
+	// paramSym=10). Destructure: ParamDestructurePattern(paramNode=80,
+	// patternNode=85), DestructureField(patternNode=85, "value", "value",
+	// bindSym=20, 0). In-body use: ExprMayRef(useExpr=513, bindSym=20).
+	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
+		"JsxAttribute":            makeRel("JsxAttribute", 3, iv(700), sv("value"), iv(412)),
+		"JsxExpressionInner":      makeRel("JsxExpressionInner", 2, iv(412), iv(413)),
+		"JsxElement":              makeRel("JsxElement", 3, iv(700), iv(701), iv(50)),
+		"FunctionSymbol":          makeRel("FunctionSymbol", 2, iv(50), iv(1)),
+		"Parameter":               makeRel("Parameter", 6, iv(1), iv(0), sv("{ value }"), iv(80), iv(10), sv("")),
+		"ParamDestructurePattern": makeRel("ParamDestructurePattern", 2, iv(80), iv(85)),
+		"DestructureField": makeRel("DestructureField", 5,
+			iv(85), sv("value"), sv("value"), iv(20), iv(0),
+		),
+		"ExprMayRef": makeRel("ExprMayRef", 2, iv(513), iv(20)),
+	})
+	rs := evalStep(t, baseRels, "lfsJsxPropBind")
+	if len(rs.Rows) != 1 || !resultContains(rs, iv(413), iv(513)) {
+		t.Fatalf("expected lfsJsxPropBind(413, 513), got %v", rs.Rows)
+	}
+	rsUnion := evalStep(t, baseRels, "LocalFlowStep")
+	if !resultContains(rsUnion, iv(413), iv(513)) {
+		t.Errorf("LocalFlowStep should contain (413, 513), got %v", rsUnion.Rows)
 	}
 }
 

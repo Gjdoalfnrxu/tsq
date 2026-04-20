@@ -334,25 +334,29 @@ func allClosureExpectations() []closureExpectation {
 	// observed count changes.
 	return []closureExpectation{
 		{
-			// Direct prop pass (R1). Fixture advertises "lfsVarInit +
-			// lfsParamBind composed" but under the current PR6 closure
-			// the param-path row (Inner's `value` at line 20) does NOT
-			// appear. Pins below are identity-only — see follow-up
-			// issue #202 for closing the composition gap.
-			// Observed 4 rows: 17→17, 24→24, 25→24, 25→25.
+			// Direct prop pass (R1). Exercises the full
+			// "lfsVarInit + lfsJsxPropBind composed" path — cfg literal
+			// at line 28 reaches the destructured `value` use inside
+			// Inner at line 24. Closed by PR8 / #202 Gap A.
+			// Observed 5 rows: 21→21, 24→28, 28→28, 29→28, 29→29.
 			name:       "direct_prop",
 			projectDir: "testdata/projects/valueflow-closure-direct-prop",
 			pins: []locRow{
 				// base: cfg object literal resolves to itself (line 28)
 				{valueSuffix: "DirectProp.tsx", valueLine: 28,
 					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
-				// JSX expr (line 29) reaches cfg literal — non-identity
-				// forward edge (lfsObjectLiteralStore composition).
+				// JSX prop (line 29) reaches cfg literal — composition
+				// of lfsVarInit through the inner JSX-expr identifier.
 				{valueSuffix: "DirectProp.tsx", valueLine: 29,
 					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
+				// lfsJsxPropBind load-bearing edge: the `value` use
+				// inside Inner (line 24) reaches the cfg literal
+				// (line 28) — this is the #202 Gap A composition.
+				{valueSuffix: "DirectProp.tsx", valueLine: 24,
+					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
 			},
-			minTotal: 2,  // ~50% of observed 4
-			maxTotal: 12, // ~3× observed — catches Cartesian blow-up
+			minTotal: 3,  // ~50% of observed 5 (rounded up to cover the 3 pins)
+			maxTotal: 15, // ~3× observed — catches Cartesian blow-up
 		},
 		{
 			// Context provider with own-fields (R2). Fixture advertises
@@ -740,6 +744,14 @@ func TestClosure_ManifestFileFieldsGreppable(t *testing.T) {
 		// deferred (follow-up #201). Consumer file will be
 		// tsq_valueflow.qll once emission lands.
 		"MayResolveToCapHit": "follow-up #201",
+
+		// Phase C PR8 (#202 Gap A): walker-populated helper relations
+		// consumed by `lfsJsxPropBind` in the datalog layer. The QL
+		// bridge classes for both are scheduled for the Phase D
+		// react-final bridge rollout — listing them here as ratchet
+		// entries keeps the manifest grep honest until then.
+		"ParamDestructurePattern": "Phase D react-final bridge",
+		"JsxExpressionInner":      "Phase D react-final bridge",
 
 		// Pre-PR7 baseline: manifest entries whose File field points
 		// at a planned consumer surface that does not yet reference

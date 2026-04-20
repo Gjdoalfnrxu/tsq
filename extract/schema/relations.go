@@ -68,9 +68,35 @@ func init() {
 		{Name: "fn", Type: TypeEntityRef},
 		{Name: "idx", Type: TypeInt32},
 	}})
+	// ParamDestructurePattern(paramNode, patternNode) — links a destructured
+	// parameter slot to the ObjectPattern/ArrayPattern that does the binding.
+	// `paramNode` is the Parameter row's paramNode id (which may be a
+	// RequiredParameter/OptionalParameter/AssignmentPattern wrapper or, for an
+	// unwrapped arrow `({value}) =>`, the pattern itself); `patternNode` is the
+	// ObjectPattern/ArrayPattern id that owns the DestructureField rows.
+	// Emitted by the walker alongside the ParameterDestructured flag; Phase C
+	// PR8 (#202 Gap A) consumes it from `lfsJsxPropBind` to bridge a JSX
+	// prop's value-expression to the destructured-param use site inside the
+	// component body.
+	RegisterRelation(RelationDef{Name: "ParamDestructurePattern", Version: 1, Columns: []ColumnDef{
+		{Name: "paramNode", Type: TypeEntityRef},
+		{Name: "patternNode", Type: TypeEntityRef},
+	}})
 	RegisterRelation(RelationDef{Name: "ParamIsFunctionType", Version: 1, Columns: []ColumnDef{
 		{Name: "fn", Type: TypeEntityRef},
 		{Name: "idx", Type: TypeInt32},
+	}})
+	// JsxExpressionInner(wrapperNode, innerNode) — bridges a `{…}` JSX
+	// expression punctuation wrapper to its inner semantic expression.
+	// Phase C PR8 (#202 Gap A) uses this from `lfsJsxPropBind` so the
+	// value-flow layer can compose across the wrapper without forcing the
+	// whole bridge stack to relearn it — `JsxAttribute.valueExpr`
+	// continues to point at the JsxExpression wrapper so existing
+	// consumers (notably `tsq_react.qll`'s Provider-value path, which
+	// relies on `Contains` descent) stay untouched.
+	RegisterRelation(RelationDef{Name: "JsxExpressionInner", Version: 1, Columns: []ColumnDef{
+		{Name: "wrapperNode", Type: TypeEntityRef},
+		{Name: "innerNode", Type: TypeEntityRef},
 	}})
 	// Calls
 	RegisterRelation(RelationDef{Name: "Call", Version: 1, Columns: []ColumnDef{
