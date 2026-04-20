@@ -5,16 +5,16 @@
 // object. Closure composition: lfsReturnToCallSite + lfsVarInit (on the
 // destructure) + object-field read.
 //
-// Hand-computed expected reachability set:
+// Observed reachability set (mayResolveToRec; see
+// mayResolveTo.expected.csv):
 //
-//   sourceExpr line 16 (object literal `{ doIt: ... }`) reaches:
-//     - line 16 itself                        (base)
-//     - line 22 (return value of useFactory)  (lfsReturnToCallSite)
-//     - line 23 `const { doIt } = ...`        (lfsVarInit on destructure
-//                                              — extractor-dependent
-//                                              modelling; pinned as an
-//                                              observed reachability,
-//                                              not a proof)
+//   FactoryHook.tsx:19 → :19   (useFactory function declaration base)
+//   FactoryHook.tsx:20 → :20   (object literal `{ doIt: () => 42 }` base)
+//   FactoryHook.tsx:21 → :20   (return expr reaches literal — lfsReturnExpr)
+//   FactoryHook.tsx:24 → :24   (Consumer function base)
+//   FactoryHook.tsx:25 → :20   (destructure `const { doIt }` reaches literal
+//                                — lfsReturnToCallSite ∘ lfsVarInit,
+//                                load-bearing R4 composition)
 
 export function useFactory(): { doIt: () => number } {
   const api = { doIt: () => 42 };

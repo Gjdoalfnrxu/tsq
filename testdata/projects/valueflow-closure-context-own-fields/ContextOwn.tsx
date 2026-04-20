@@ -1,18 +1,20 @@
 // Whole-closure integration fixture — Phase C PR7 §7/§8.
 //
-// SHAPE: Context provider with own-fields (R2 analogue). The object
-// literal's own-field value flows through FieldRead in the consumer.
+// SHAPE: Context provider with own-fields (R2 analogue). Designed to
+// exercise "inc FieldRead reaches Provider arrow" via lfsVarInit +
+// object-field read.
 //
-// Hand-computed expected reachability set:
+// PR7 note: under the current PR6 closure this composition does NOT
+// fire — no row on line 29 (`inc()` call) reaches the default-literal
+// arrow (line 21) or the Provider's inline value literal (line 24).
+// Observed rows are identity-only. See follow-up issue #202.
 //
-//   sourceExpr line 17 (arrow `() => {}`) reaches:
-//     - line 17 itself              (base)
-//     - line 24 `inc` FieldRead     (via lfsVarInit + object-field branch
-//                                    of mayResolveToRec: ctx.inc through
-//                                    the Provider's value literal)
+// Observed reachability set (mayResolveToRec; see
+// mayResolveTo.expected.csv):
 //
-// The consumer destructures `{ inc }` out of the context; the closure
-// must follow the field.
+//   ContextOwn.tsx:19 → ContextOwn.tsx:19   (import stmt base)
+//   ContextOwn.tsx:21 → ContextOwn.tsx:21   (Ctx createContext default literal)
+//   ContextOwn.tsx:24 → ContextOwn.tsx:24   (Provider value literal base)
 
 import { createContext, useContext, ReactNode } from 'react';
 

@@ -4,14 +4,15 @@
 // re-exported from module B and consumed in the entry module. The
 // closure must walk ifsImportExport twice (A → B → index).
 //
-// Hand-computed expected reachability set:
+// Observed reachability set (mayResolveToRec; see
+// mayResolveTo.expected.csv):
 //
-//   sourceExpr in module_a.ts line 4 (arrow `() => 1`) reaches:
-//     - module_a.ts line 4 itself            (base)
-//     - module_a.ts line 5 `svc` VarDecl init (lfsVarInit forward)
-//     - module_b.ts line 2 re-exported symbol (ifsImportExport hop 1)
-//     - index.ts   line 2 imported `svc`      (ifsImportExport hop 2)
-//     - index.ts   line 4 callee of svc()     (lfsVarInit forward)
+//   module_a.ts:4  → module_a.ts:4    (arrow `() => 1` base)
+//   module_b.ts:4  → module_b.ts:4    (re-export base)
+//   index.ts:17    → index.ts:17      (import stmt base)
+//   index.ts:17    → module_a.ts:4    (import reaches source — ifsImportExport chain)
+//   index.ts:19    → index.ts:19      (run function base)
+//   index.ts:20    → module_a.ts:4    (callee `svc()` reaches source, load-bearing multi-hop)
 
 import { svc } from './module_b';
 

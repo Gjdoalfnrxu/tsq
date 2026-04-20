@@ -1,18 +1,22 @@
 // Whole-closure integration fixture — Phase C PR7 §7/§8.
 //
-// SHAPE: direct prop pass (R1 analogue). The canonical "value-source
-// flows through a JSX-prop parameter binding into a use site" closure
-// case — exercises lfsVarInit + lfsParamBind composed.
+// SHAPE: direct prop pass (R1 analogue). Designed to exercise
+// "lfsVarInit + lfsParamBind composed" — value-source through a
+// JSX prop into a parameter binding.
 //
-// Hand-computed expected reachability set (mayResolveToRec(v, s), keyed
-// by file-suffix + line for both endpoints):
+// PR7 note: under the current PR6 closure the advertised
+// lfsVarInit+lfsParamBind composition does NOT fire — no row lands
+// on Inner's `value` parameter (line 23). See follow-up issue #202.
+// The pins in valueflow_closure_integration_test.go assert only
+// identity-observed reachability until that gap is closed.
 //
-//   sourceExpr line 13 (literal object `{ tag: 'src' }`) reaches:
-//     - line 13 itself              (base: ExprValueSource identity)
-//     - line 18 `value` param use   (lfsParamBind into Inner)
+// Observed reachability set (mayResolveToRec; see
+// mayResolveTo.expected.csv for the machine-readable form):
 //
-// The fixture is designed so no OTHER value-source flows to those use
-// sites — any additional row indicates an over-bridging regression.
+//   DirectProp.tsx:21 → DirectProp.tsx:21   (import stmt base)
+//   DirectProp.tsx:28 → DirectProp.tsx:28   (cfg object literal base)
+//   DirectProp.tsx:29 → DirectProp.tsx:28   (JSX expr → cfg literal)
+//   DirectProp.tsx:29 → DirectProp.tsx:29   (JSX expr base)
 
 import { ReactNode } from 'react';
 

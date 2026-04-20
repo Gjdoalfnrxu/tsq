@@ -573,15 +573,20 @@ func init() {
 	// Bridge consumers filter on this relation to detect
 	// under-approximated results (truncate-don't-crash per plan §5.2).
 	//
-	// PR7 scope (per plan §7 caveat): this entry REGISTERS the relation
-	// in the schema surface. Automatic population from evaluator cap-hit
-	// events is deferred — currently populated manually by diagnostic
-	// queries / bench harnesses that re-run with a synthetic low cap
-	// to surface the signal. Full evaluator wiring (emit on
-	// *IterationCapError before truncation) is tracked as follow-up
-	// Gjdoalfnrxu/tsq#PR7-followup; until that ships, the relation is
-	// available for QL authors to populate explicitly and for tests to
-	// assert against.
+	// PR7 scope: schema-registered; no caller yet; no evaluator wiring.
+	// No emitter populates this relation in any code path shipped with
+	// PR7. The schema entry is a forward-declaration so the bridge
+	// manifest can carry the name and QL consumers can plan against
+	// its shape.
+	//
+	// Follow-ups:
+	//   - Evaluator wiring (emit on *IterationCapError before
+	//     truncation): Gjdoalfnrxu/tsq#201
+	//   - Behavioural test (forces cap-hit, asserts row materialises):
+	//     Gjdoalfnrxu/tsq#200
+	//
+	// Do NOT rely on read-back of rows from this relation until #201
+	// ships.
 	//
 	// Columns:
 	//   queryId       — synthetic id for the emitting top-level query

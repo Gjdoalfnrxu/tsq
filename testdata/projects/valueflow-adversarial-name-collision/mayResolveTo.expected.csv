@@ -1,0 +1,9 @@
+valueFile,valueLine,sourceFile,sourceLine
+consumer.ts,5,consumer.ts,5
+consumer.ts,5,mod_alpha.ts,13
+consumer.ts,5,mod_beta.ts,3
+consumer.ts,7,consumer.ts,7
+consumer.ts,8,mod_alpha.ts,13
+consumer.ts,8,mod_beta.ts,3
+mod_alpha.ts,13,mod_alpha.ts,13
+mod_beta.ts,3,mod_beta.ts,3

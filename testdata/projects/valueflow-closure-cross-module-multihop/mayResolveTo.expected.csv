@@ -1,0 +1,7 @@
+valueFile,valueLine,sourceFile,sourceLine
+index.ts,17,index.ts,17
+index.ts,17,module_a.ts,4
+index.ts,19,index.ts,19
+index.ts,20,module_a.ts,4
+module_a.ts,4,module_a.ts,4
+module_b.ts,4,module_b.ts,4

@@ -1,10 +1,13 @@
 package integration_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +190,106 @@ func dumpRows(rows []locRow) string {
 	return b.String()
 }
 
+// loadExpectedCSV reads a `mayResolveTo.expected.csv` reference file
+// from a fixture directory. Columns: valueFile,valueLine,sourceFile,sourceLine.
+// Returns (rows, true) if the file exists and parses cleanly;
+// (nil, false) if the file is absent (callers should treat missing
+// CSV as "no reference; skip set-equality check").
+func loadExpectedCSV(t *testing.T, fixtureDir string) ([]locRow, bool) {
+	t.Helper()
+	path := filepath.Join(fixtureDir, "mayResolveTo.expected.csv")
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false
+		}
+		t.Fatalf("open expected csv %s: %v", path, err)
+	}
+	defer f.Close()
+
+	var out []locRow
+	scan := bufio.NewScanner(f)
+	lineNo := 0
+	for scan.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scan.Text())
+		if line == "" {
+			continue
+		}
+		// Skip header.
+		if lineNo == 1 && strings.HasPrefix(line, "valueFile") {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) != 4 {
+			t.Fatalf("%s:%d: expected 4 CSV cols, got %d: %q", path, lineNo, len(parts), line)
+		}
+		vl, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil {
+			t.Fatalf("%s:%d: parse valueLine: %v", path, lineNo, err)
+		}
+		sl, err := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64)
+		if err != nil {
+			t.Fatalf("%s:%d: parse sourceLine: %v", path, lineNo, err)
+		}
+		out = append(out, locRow{
+			valueSuffix:  strings.TrimSpace(parts[0]),
+			valueLine:    vl,
+			sourceSuffix: strings.TrimSpace(parts[2]),
+			sourceLine:   sl,
+		})
+	}
+	if err := scan.Err(); err != nil {
+		t.Fatalf("scan expected csv %s: %v", path, err)
+	}
+	return out, true
+}
+
+// assertRowSetMatchesCSV compares the observed row set to the CSV
+// reference if present. Reports set-equality diffs as test errors.
+// When the CSV is absent this is a no-op (new fixtures can be added
+// without a reference — the floor/pins still catch regressions).
+func assertRowSetMatchesCSV(t *testing.T, fixtureDir string, observed []locRow) {
+	t.Helper()
+	expected, ok := loadExpectedCSV(t, fixtureDir)
+	if !ok {
+		return
+	}
+	// Set equality.
+	key := func(r locRow) string {
+		return fmt.Sprintf("%s:%d→%s:%d", r.valueSuffix, r.valueLine, r.sourceSuffix, r.sourceLine)
+	}
+	obsSet := make(map[string]struct{}, len(observed))
+	for _, r := range observed {
+		obsSet[key(r)] = struct{}{}
+	}
+	expSet := make(map[string]struct{}, len(expected))
+	for _, r := range expected {
+		expSet[key(r)] = struct{}{}
+	}
+	var missing, extra []string
+	for k := range expSet {
+		if _, ok := obsSet[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	for k := range obsSet {
+		if _, ok := expSet[k]; !ok {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("mayResolveTo.expected.csv set-equality mismatch in %s:\n"+
+			"  missing (in CSV, not in observed): %v\n"+
+			"  extra   (in observed, not in CSV): %v\n"+
+			"If the drift is intentional (e.g. a forward-edge rule was added), "+
+			"regenerate the CSV to ratchet.",
+			fixtureDir, missing, extra)
+	}
+}
+
 // closureExpectation captures the hand-computed reference for one
 // fixture. `pins` is a set of (valueSuffix:line → sourceSuffix:line)
 // pairs that MUST appear in mayResolveToRec; `minTotal` is a floor on
@@ -223,67 +326,79 @@ func containsLocRow(rows []locRow, pin locRow) bool {
 // catch drift; pins catch regressions of the specific composition
 // under test.
 func allClosureExpectations() []closureExpectation {
+	// Ceiling asymmetry note: floors catch "silently tightened" closure
+	// regressions; ceilings only catch Cartesian blow-up. Floors are
+	// ~50% of observed (tight). Ceilings are ~3× observed (loose, by
+	// design — a 3× overshoot is already a smoking-gun blow-up, more
+	// generous room would defeat the purpose). Update both when the
+	// observed count changes.
 	return []closureExpectation{
 		{
-			// Direct prop pass (R1). `cfg = { tag: 'src' }` object
-			// literal at line 25 flows through <Inner value={cfg} />
-			// into the `value` param reference inside Inner. Observed
-			// closure (4 rows): line-17 arrow base, line-24 cfg ref
-			// base, line-25 literal base, and line-25→line-24 back-
-			// edge (object-literal-store). Per rule (b), floor at 2.
+			// Direct prop pass (R1). Fixture advertises "lfsVarInit +
+			// lfsParamBind composed" but under the current PR6 closure
+			// the param-path row (Inner's `value` at line 20) does NOT
+			// appear. Pins below are identity-only — see follow-up
+			// issue #202 for closing the composition gap.
+			// Observed 4 rows: 17→17, 24→24, 25→24, 25→25.
 			name:       "direct_prop",
 			projectDir: "testdata/projects/valueflow-closure-direct-prop",
 			pins: []locRow{
-				// base: object literal resolves to itself
-				{valueSuffix: "DirectProp.tsx", valueLine: 25,
-					sourceSuffix: "DirectProp.tsx", sourceLine: 25},
+				// base: cfg object literal resolves to itself (line 28)
+				{valueSuffix: "DirectProp.tsx", valueLine: 28,
+					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
+				// JSX expr (line 29) reaches cfg literal — non-identity
+				// forward edge (lfsObjectLiteralStore composition).
+				{valueSuffix: "DirectProp.tsx", valueLine: 29,
+					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
 			},
 			minTotal: 2,  // ~50% of observed 4
-			maxTotal: 60, // generous blow-up ceiling
+			maxTotal: 12, // ~3× observed — catches Cartesian blow-up
 		},
 		{
-			// Context provider with own-fields (R2). Observed closure
-			// (3 rows): the `createContext({ inc: () => {} })` default
-			// literal at line 17, Provider's inline value literal at
-			// line 19, and the `inc()` call at line 22 (base). Per
-			// rule (b), floor at 2 (~50% of observed 3).
+			// Context provider with own-fields (R2). Fixture advertises
+			// "inc FieldRead reaches arrow" via lfsVarInit + object-
+			// field read but under the current PR6 closure the
+			// line-22 → line-17/19 edges do NOT fire. Pins are
+			// identity-only — see follow-up issue #202.
+			// Observed 3 rows: 17→17, 19→19, 22→22.
 			name:       "context_own_fields",
 			projectDir: "testdata/projects/valueflow-closure-context-own-fields",
 			pins: []locRow{
-				// Provider's value literal resolves to itself (base).
-				{valueSuffix: "ContextOwn.tsx", valueLine: 19,
-					sourceSuffix: "ContextOwn.tsx", sourceLine: 19},
+				// Provider's value literal resolves to itself (base) — line 24.
+				{valueSuffix: "ContextOwn.tsx", valueLine: 24,
+					sourceSuffix: "ContextOwn.tsx", sourceLine: 24},
 			},
-			minTotal: 2,
-			maxTotal: 200,
+			minTotal: 2, // ~50% of observed 3
+			maxTotal: 9, // ~3× observed
 		},
 		{
 			// Context with spread + computed key (R3). Observed 8
-			// rows including the load-bearing back-edges at line 29
-			// (spread-composed literal) → line 24 (base) and
-			// line 29 → line 27 (spread element). Pinned set checks
-			// the spread-composition row (line 29 → line 24) that
+			// rows including the load-bearing back-edges at line 38
+			// (spread-composed literal) → line 33 (base) and
+			// line 38 → line 36 (spread element). Pinned set checks
+			// the spread-composition row (line 38 → line 33) that
 			// the forward-edge rules introduced in PR6 — a regression
 			// that tightened `mayResolveToRec` to exclude it would
 			// trip.
 			name:       "context_spread_computed",
 			projectDir: "testdata/projects/valueflow-closure-context-spread-computed",
 			pins: []locRow{
-				// Spread-composed literal resolves to itself (base).
-				{valueSuffix: "ContextSpread.tsx", valueLine: 29,
-					sourceSuffix: "ContextSpread.tsx", sourceLine: 29},
-				// Forward-edge: line 29 spread-literal reaches the
-				// base-arrow literal on line 24 via lfsSpreadElement.
-				{valueSuffix: "ContextSpread.tsx", valueLine: 29,
-					sourceSuffix: "ContextSpread.tsx", sourceLine: 24},
+				// Spread-composed literal (line 38) resolves to itself (base).
+				{valueSuffix: "ContextSpread.tsx", valueLine: 38,
+					sourceSuffix: "ContextSpread.tsx", sourceLine: 38},
+				// Forward-edge: line 38 spread-literal reaches the
+				// base `{ ping: ... }` literal on line 33 via lfsSpreadElement.
+				{valueSuffix: "ContextSpread.tsx", valueLine: 38,
+					sourceSuffix: "ContextSpread.tsx", sourceLine: 33},
 			},
-			minTotal: 4, // ~50% of observed 8
-			maxTotal: 200,
+			minTotal: 4,  // ~50% of observed 8
+			maxTotal: 24, // ~3× observed
 		},
 		{
 			// Factory hook return (R4). Observed 5 rows: line 20
-			// (factory literal base), line 21 VarDecl forward to 20,
-			// line 25 (destructure) reaches line 20 source.
+			// (factory literal base, `const api = { doIt: ... }`),
+			// line 21 return-expr forward to 20, line 25 destructure
+			// reaches line 20 source (R4 composition).
 			name:       "factory_hook",
 			projectDir: "testdata/projects/valueflow-closure-factory-hook",
 			pins: []locRow{
@@ -297,29 +412,29 @@ func allClosureExpectations() []closureExpectation {
 				{valueSuffix: "FactoryHook.tsx", valueLine: 25,
 					sourceSuffix: "FactoryHook.tsx", sourceLine: 20},
 			},
-			minTotal: 3, // ~50% of observed 5
-			maxTotal: 200,
+			minTotal: 3,  // ~50% of observed 5
+			maxTotal: 15, // ~3× observed
 		},
 		{
 			// Higher-order (§3.3 makeIncrementer). Observed 8 rows —
-			// base rows on line 20/21/24/25/26 plus three forward
-			// edges (21→25, 25→21, 26→21) that wire the returned
+			// base rows on lines 25/26/29/30/31 plus three forward
+			// edges (26→30, 30→26, 31→26) that wire the returned
 			// arrow through the VarDecl init of inc5 into its use
-			// site. Pin the load-bearing 26→21 edge: callee
+			// site. Pin the load-bearing 31→26 edge: callee
 			// reference reaches the returned arrow.
 			name:       "higher_order",
 			projectDir: "testdata/projects/valueflow-closure-higher-order",
 			pins: []locRow{
-				// Returned arrow on line 21 resolves to itself.
-				{valueSuffix: "Higher.ts", valueLine: 21,
-					sourceSuffix: "Higher.ts", sourceLine: 21},
-				// Callee at line 26 reaches returned-arrow line 21
-				// — the HOF composition under test.
+				// Returned arrow on line 26 resolves to itself.
 				{valueSuffix: "Higher.ts", valueLine: 26,
-					sourceSuffix: "Higher.ts", sourceLine: 21},
+					sourceSuffix: "Higher.ts", sourceLine: 26},
+				// Callee at line 31 reaches returned-arrow line 26
+				// — the HOF composition under test.
+				{valueSuffix: "Higher.ts", valueLine: 31,
+					sourceSuffix: "Higher.ts", sourceLine: 26},
 			},
-			minTotal: 4, // ~50% of observed 8
-			maxTotal: 200,
+			minTotal: 4,  // ~50% of observed 8
+			maxTotal: 24, // ~3× observed
 		},
 		{
 			// Recursive — cycle termination. Observed 2 rows: two
@@ -333,12 +448,12 @@ func allClosureExpectations() []closureExpectation {
 			projectDir: "testdata/projects/valueflow-closure-recursive-cycle",
 			pins:       nil,
 			minTotal:   1, // rule (a) — non-zero on real fixture
-			maxTotal:   200,
+			maxTotal:   6, // ~3× observed 2
 		},
 		{
 			// Multi-hop cross-module import. Observed 6 rows including
-			// the load-bearing ifsImportExport chain: index.ts:16 and
-			// index.ts:19 each reach module_a.ts:4. Pin that pair to
+			// the load-bearing ifsImportExport chain: index.ts:17 and
+			// index.ts:20 each reach module_a.ts:4. Pin that pair to
 			// assert the cross-module chain resolves end-to-end.
 			name:       "cross_module_multihop",
 			projectDir: "testdata/projects/valueflow-closure-cross-module-multihop",
@@ -346,14 +461,14 @@ func allClosureExpectations() []closureExpectation {
 				// Arrow `() => 1` resolves to itself.
 				{valueSuffix: "module_a.ts", valueLine: 4,
 					sourceSuffix: "module_a.ts", sourceLine: 4},
-				// Cross-module reachability: index.ts:19 (callee in
+				// Cross-module reachability: index.ts:20 (callee in
 				// `svc()`) reaches module_a.ts:4. This is the closure's
 				// load-bearing multi-hop composition.
-				{valueSuffix: "index.ts", valueLine: 19,
+				{valueSuffix: "index.ts", valueLine: 20,
 					sourceSuffix: "module_a.ts", sourceLine: 4},
 			},
-			minTotal: 3, // ~50% of observed 6
-			maxTotal: 200,
+			minTotal: 3,  // ~50% of observed 6
+			maxTotal: 18, // ~3× observed
 		},
 	}
 }
@@ -413,14 +528,25 @@ func TestClosure_WholeClosureIntegration(t *testing.T) {
 						pin.sourceSuffix, pin.sourceLine, dumpRows(rows))
 				}
 			}
+			// Set-equality ratchet against the hand-computed CSV
+			// reference. If the CSV is missing the check is a no-op;
+			// if it's present, any drift (missing or extra rows)
+			// fails the test until the CSV is regenerated.
+			assertRowSetMatchesCSV(t, exp.projectDir, rows)
 		})
 	}
 }
 
-// TestClosure_RecursiveCycleTerminates asserts the recursive-function
-// fixture does not hang or blow the planner cap. This is the AST
-// analogue of the synthetic TestMayResolveToCycleTerminates unit test.
-func TestClosure_RecursiveCycleTerminates(t *testing.T) {
+// TestClosure_RecursiveFunctionDoesNotHang asserts the recursive-
+// function fixture does not hang or blow the planner cap. The closure
+// terminates / produces some rows on a recursive function declaration.
+//
+// NOTE: this test does NOT exercise a true FlowStep-level cycle — the
+// fixture currently emits only 2 base identities, no cycle edge. A
+// real closure-level cycle fixture is tracked as follow-up issue #198.
+// Renamed from `TestClosure_RecursiveCycleTerminates` to match what
+// it actually asserts.
+func TestClosure_RecursiveFunctionDoesNotHang(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping extraction-heavy integration test in short mode")
 	}
@@ -432,21 +558,23 @@ func TestClosure_RecursiveCycleTerminates(t *testing.T) {
 		"testdata/projects/valueflow-closure-recursive-cycle")
 	rows := projectLocatedRows(t, rs)
 	t.Logf("recursive-cycle fixture terminated with %d rows", len(rows))
-	const ceiling = 500
+	const ceiling = 6 // ~3× observed 2
 	if len(rows) > ceiling {
 		t.Errorf("recursive-cycle fixture emitted %d rows > ceiling %d; "+
 			"(v, s) tuple finiteness should bound the closure — a blow-up "+
 			"indicates the cycle-termination argument has a hole.",
 			len(rows), ceiling)
 	}
+	assertRowSetMatchesCSV(t, "testdata/projects/valueflow-closure-recursive-cycle", rows)
 }
 
-// TestClosure_DeepSpreadDepthCap exercises a 4-level deep spread chain.
-// The closure must terminate under the DefaultMaxIterations=100 global
-// cap. Documented behaviour: forward-edge spread rules compose, so the
-// deep-nested literal is reachable from the use site; this fixture
-// pins that composition and asserts bounded row count.
-func TestClosure_DeepSpreadDepthCap(t *testing.T) {
+// TestClosure_DeepSpreadDoesNotBlowUp asserts the 4-level spread
+// fixture terminates under the iteration cap and produces a bounded
+// row count. It does NOT exercise the cap itself (the fixture is
+// 4 levels vs cap=100) — a true depth-cap fixture is tracked as
+// follow-up issue #199. Renamed from `TestClosure_DeepSpreadDepthCap`
+// to match what it actually asserts.
+func TestClosure_DeepSpreadDoesNotBlowUp(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping extraction-heavy integration test in short mode")
 	}
@@ -460,12 +588,14 @@ func TestClosure_DeepSpreadDepthCap(t *testing.T) {
 		t.Fatal("deep-spread fixture produced 0 rows; the base case " +
 			"(object-literal identity) should fire at minimum.")
 	}
-	const ceiling = 300
+	const ceiling = 45 // ~3× observed 15 — catches Cartesian blow-up
 	if len(rows) > ceiling {
 		t.Errorf("deep-spread fixture emitted %d rows > ceiling %d — "+
 			"depth-cap or spread-rule composition regressed; full row set:\n%s",
 			len(rows), ceiling, dumpRows(rows))
 	}
+	// CSV ratchet — reference lives in fixture dir.
+	assertRowSetMatchesCSV(t, "testdata/projects/valueflow-adversarial-deep-spread", rows)
 	// Base case pin: at least one identity (v == s) row must exist.
 	// The exact literal lines depend on where the extractor emits
 	// ExprValueSource on the nested spread chain; rather than guess,
@@ -485,17 +615,18 @@ func TestClosure_DeepSpreadDepthCap(t *testing.T) {
 	}
 }
 
-// TestClosure_NameCollisionOverBridging asserts the documented
-// over-bridging behaviour in plan §3.2 / §4.1: ifsImportExport keys
-// on symbol name rather than (module, name), so two modules exporting
-// the same name cross-bridge.
+// TestClosure_NameCollisionOverBridging_Informational documents the
+// current over-bridging behaviour from plan §3.2 / §4.1 — ifsImportExport
+// keys on symbol name rather than (module, name). This test is
+// INFORMATIONAL ONLY: it logs the observed state and passes regardless.
+// It does NOT guard the over-bridging (if a future change silently
+// tightens the rule to 1 source, the test still passes — that's the
+// point: the name reflects documentation, not regression coverage).
 //
-// The test asserts the fixture produces > 1 distinct source line for
-// the `action` name on the consumer side (i.e., both mod_alpha's arrow
-// and mod_beta's arrow are reachable from the consumer's call site).
-// A "fix" that silently tightens the rule would regress to a single
-// source line and trip this test.
-func TestClosure_NameCollisionOverBridging(t *testing.T) {
+// If you want a regression guard for the tightened vs loose behaviour,
+// add a dedicated test with an explicit assertion; don't rely on this
+// one.
+func TestClosure_NameCollisionOverBridging_Informational(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping extraction-heavy integration test in short mode")
 	}
@@ -521,17 +652,17 @@ func TestClosure_NameCollisionOverBridging(t *testing.T) {
 		}
 	}
 	t.Logf("distinct (mod_*.ts, line) source positions: %d — %v", len(sources), keysOf(sources))
-	// Documented behaviour: the closure's ifsImportExport joins by name,
-	// so consumer.ts's `action` reaches arrows in BOTH modules. If this
-	// ever collapses to 1, the over-bridging was silently fixed — flag
-	// as design change, not a regression.
+	// Emit to stdout as well so the informational signal is visible
+	// in non-verbose CI output (t.Logf is swallowed unless -v).
+	fmt.Printf("[informational] name-collision over-bridging: %d distinct source positions — %v\n",
+		len(sources), keysOf(sources))
 	if len(sources) < 2 {
-		t.Logf("NOTE: name-collision over-bridging is no longer observable " +
-			"via mod_alpha/mod_beta source lines. Either the closure " +
-			"tightened (follow-up from plan §3.2) or the extractor is " +
-			"not populating ExprValueSource on both arrows. Document the " +
+		fmt.Println("[informational] NOTE: over-bridging no longer observable " +
+			"— the closure tightened (plan §3.2) or extractor stopped " +
+			"populating ExprValueSource on both arrows. Document the " +
 			"change in the Phase C plan before closing as 'fixed'.")
 	}
+	assertRowSetMatchesCSV(t, "testdata/projects/valueflow-adversarial-name-collision", rows)
 }
 
 func keysOf(m map[string]struct{}) []string {
@@ -543,25 +674,19 @@ func keysOf(m map[string]struct{}) []string {
 	return out
 }
 
-// TestClosure_MayResolveToCapHit_SchemaRegistered — Phase C PR7 scope-
-// down smoke test for the `MayResolveToCapHit` diagnostic relation
-// (plan §2.2, §5.2). The relation is registered in the schema so
-// bridges and test harnesses can populate it manually; automatic
-// emission on evaluator *IterationCapError is tracked as follow-up.
+// TestClosure_MayResolveToCapHit_SchemaRegistered — schema-surface
+// smoke test for the `MayResolveToCapHit` diagnostic relation.
 //
-// This test asserts the schema-surface contract without requiring
-// the evaluator to hit a cap:
+// SCOPE: schema registration + manifest entry only. There is NO
+// evaluator wiring and NO caller yet. The relation will not appear
+// in any fact DB until follow-up issue #201 lands; behavioural
+// coverage (a fixture that forces a cap-hit and asserts a row
+// materialises) is tracked as follow-up issue #200.
 //
-//  1. The relation is registered in schema.Registry with the
-//     expected arity-3 shape (queryId, rulePred, lastDeltaSize).
-//  2. A caller can open the relation, write a diagnostic row, and
-//     read it back — i.e. the schema entry is wired through the
-//     DB I/O surface.
-//
-// Once the evaluator-side wiring lands, a follow-up test will assert
-// the relation populates automatically when a `MayResolveTo` stratum
-// hits the iteration cap on a synthetic low-cap fixture. For now,
-// the manual-population smoke test is the honest contract.
+// This test asserts:
+//  1. The relation is registered in schema.Registry with the expected
+//     arity-3 shape (queryId, rulePred, lastDeltaSize).
+//  2. Column names match the documented contract.
 func TestClosure_MayResolveToCapHit_SchemaRegistered(t *testing.T) {
 	def, ok := schema.Lookup("MayResolveToCapHit")
 	if !ok {
@@ -584,46 +709,6 @@ func TestClosure_MayResolveToCapHit_SchemaRegistered(t *testing.T) {
 	}
 }
 
-// TestClosure_MayResolveToCapHit_SyntheticPopulation demonstrates that a
-// Mastodon-like corpus produces zero cap-hits at
-// DefaultMaxIterations=100 (per wiki §"Phase C PR4 outcomes":
-// "No cap-hits observed across the 14-fixture corpus"), AND that a
-// synthetic low-cap forces a cap-hit observable at the evaluator
-// boundary as a *IterationCapError.
-//
-// This is the scope-down surface of plan §2.2's 1%-cap-hit-rate
-// assertion: for the current small-corpus fixtures the cap-hit count
-// is 0 and the rate is trivially < 1%. The real-Mastodon assertion
-// runs via the bench path in TestBench_MastodonPerfGate.
-func TestClosure_MayResolveToCapHit_SyntheticPopulation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping extraction-heavy integration test in short mode")
-	}
-	// Run all closure fixtures; track cap-hits seen.
-	capHits := 0
-	total := 0
-	for _, exp := range allClosureExpectations() {
-		rs := runClosureQuery(t,
-			"testdata/queries/v2/valueflow/all_mayResolveToRec_located.ql",
-			exp.projectDir)
-		total++
-		// Evaluator surfaces cap-hit as an error from eval.Evaluate,
-		// which runClosureQuery t.Fatal's on. Reaching here means no
-		// cap-hit fired on this fixture.
-		_ = rs
-	}
-	t.Logf("closure-integration corpus: %d queries, %d cap-hits observed (synthetic cap gate deferred)",
-		total, capHits)
-	if total == 0 {
-		t.Fatal("no closure fixtures evaluated — allClosureExpectations empty?")
-	}
-	// Rate check: <1% means < total/100. With 7 fixtures, floor at 0.
-	if rate := float64(capHits) / float64(total); rate > 0.01 {
-		t.Errorf("cap-hit rate %.2f%% exceeds 1%% (plan §2.2); %d of %d queries hit the cap",
-			rate*100, capHits, total)
-	}
-}
-
 // TestClosure_ManifestFileFieldsGreppable — rule (f). Manifest File
 // fields lie silently unless grep-checked. PR4 M2 found four
 // valueflow entries pointing at the wrong .qll. Per the wiki's
@@ -640,26 +725,96 @@ func TestClosure_MayResolveToCapHit_SyntheticPopulation(t *testing.T) {
 // consumed in any .qll, point File at the planned consumer site")
 // are excluded — those grep-miss by design until their bridge lands.
 func TestClosure_ManifestFileFieldsGreppable(t *testing.T) {
-	// Relations with an actual consumer line in the named .qll as of
-	// PR6 (verified by grep above). Additions here must be matched by
-	// a real reference in the .qll — do NOT add placeholder entries.
-	relations := []struct {
-		name string
-		file string
-	}{
-		{"MayResolveTo", "tsq_valueflow.qll"},
+	// Placeholder allowlist: manifest entries whose File field points
+	// at a PLANNED consumer surface (per PR4 M2 §"For relations
+	// populated by system rules but not yet consumed in any .qll,
+	// point File at the planned consumer site"). These are expected
+	// to grep-miss until their bridge consumer lands. Any entry NOT
+	// on this list that grep-misses is a manifest File-field lie and
+	// must be fixed before next release.
+	//
+	// Adding an entry here is a ratchet — every addition should be
+	// paired with a tracked follow-up for bridge consumer wiring.
+	knownPlaceholderEntries := map[string]string{
+		// Phase C PR7: schema-registered diagnostic, evaluator wiring
+		// deferred (follow-up #201). Consumer file will be
+		// tsq_valueflow.qll once emission lands.
+		"MayResolveToCapHit": "follow-up #201",
+
+		// Pre-PR7 baseline: manifest entries whose File field points
+		// at a planned consumer surface that does not yet reference
+		// the relation name. These pre-date PR7 and are captured here
+		// as a ratchet — PR7 is responsible only for not regressing
+		// the count upwards. Each SHOULD be tracked by a follow-up
+		// for bridge consumer wiring (tracked in aggregate under the
+		// v2 bridge-rollout plan, Phase D).
+		"AssignExpr":                               "pre-PR7 baseline",
+		"CallCalleeSym":                            "pre-PR7 baseline",
+		"CallResultSym":                            "pre-PR7 baseline",
+		"CommandInjection::CommandInjectionSink":   "pre-PR7 baseline",
+		"CommandInjection::CommandInjectionSource": "pre-PR7 baseline",
+		"Decorator":                                "pre-PR7 baseline",
+		"EnumDecl":                                 "pre-PR7 baseline",
+		"EnumMember":                               "pre-PR7 baseline",
+		"ExprInFunction":                           "pre-PR7 baseline",
+		"ExprValueSource":                          "pre-PR7 baseline",
+		"FileSystemAccess":                         "pre-PR7 baseline",
+		"GenericInstantiation":                     "pre-PR7 baseline",
+		"InterFlowStep":                            "pre-PR7 baseline",
+		"IntersectionMember":                       "pre-PR7 baseline",
+		"LocalFlowStep":                            "pre-PR7 baseline",
+		"MethodDeclDirect":                         "pre-PR7 baseline",
+		"MethodDeclInherited":                      "pre-PR7 baseline",
+		"NamespaceDecl":                            "pre-PR7 baseline",
+		"NamespaceMember":                          "pre-PR7 baseline",
+		"NonTaintableType":                         "pre-PR7 baseline",
+		"NullishCoalescing":                        "pre-PR7 baseline",
+		"ObjectLiteralSpread":                      "pre-PR7 baseline",
+		"OptionalChain":                            "pre-PR7 baseline",
+		"ParamBinding":                             "pre-PR7 baseline",
+		"PathTraversal::PathTraversalSink":         "pre-PR7 baseline",
+		"PathTraversal::PathTraversalSource":       "pre-PR7 baseline",
+		"RegExpLiteral":                            "pre-PR7 baseline",
+		"RegExpTerm":                               "pre-PR7 baseline",
+		"ReturnSym":                                "pre-PR7 baseline",
+		"SensitiveDataExpr":                        "pre-PR7 baseline",
+		"SqlInjection::SqlInjectionSink":           "pre-PR7 baseline",
+		"SqlInjection::SqlInjectionSource":         "pre-PR7 baseline",
+		"TemplateElement":                          "pre-PR7 baseline",
+		"TemplateExpression":                       "pre-PR7 baseline",
+		"TemplateLiteral":                          "pre-PR7 baseline",
+		"TypeAlias":                                "pre-PR7 baseline",
+		"TypeGuard":                                "pre-PR7 baseline",
+		"TypeInfo":                                 "pre-PR7 baseline",
+		"TypeMember":                               "pre-PR7 baseline",
+		"TypeParameter":                            "pre-PR7 baseline",
+		"UnionMember":                              "pre-PR7 baseline",
+		"Xss::XssSink":                             "pre-PR7 baseline",
+		"Xss::XssSource":                           "pre-PR7 baseline",
 	}
 	bridgeFiles := bridge.LoadBridge()
-	for _, rel := range relations {
-		data, ok := bridgeFiles[rel.file]
+	manifest := bridge.V1Manifest()
+	for _, entry := range manifest.Available {
+		data, ok := bridgeFiles[entry.File]
 		if !ok {
-			t.Errorf("manifest-grep: bridge file %s not loaded", rel.file)
+			// File not loaded at all — a separate test
+			// (TestLoadBridgeMatchesManifest) handles that.
 			continue
 		}
-		if !strings.Contains(string(data), rel.name) {
-			t.Errorf("manifest-grep: relation %s not mentioned in %s — "+
-				"File field lies. Fix the manifest entry before next release.",
-				rel.name, rel.file)
+		grepHit := strings.Contains(string(data), entry.Relation)
+		if grepHit {
+			continue
 		}
+		if reason, allowed := knownPlaceholderEntries[entry.Name]; allowed {
+			t.Logf("manifest-grep: %s is a known placeholder (%s) — "+
+				"File %s does not yet reference relation %q",
+				entry.Name, reason, entry.File, entry.Relation)
+			continue
+		}
+		t.Errorf("manifest-grep: relation %q (manifest entry %q) not "+
+			"mentioned in %s — File field lies. Either wire up a "+
+			"consumer in the named .qll, or add %q to "+
+			"knownPlaceholderEntries with a follow-up reference.",
+			entry.Relation, entry.Name, entry.File, entry.Name)
 	}
 }

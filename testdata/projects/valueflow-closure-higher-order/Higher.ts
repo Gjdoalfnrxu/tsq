@@ -10,12 +10,17 @@
 // definition site (lfsReturnToCallSite) and then through the VarDecl
 // init (lfsVarInit) to the use-site callee reference.
 //
-// Hand-computed expected reachability set:
+// Observed reachability set (mayResolveToRec; see
+// mayResolveTo.expected.csv):
 //
-//   sourceExpr line 17 (arrow `(x) => x + step`) reaches:
-//     - line 17 itself              (base)
-//     - line 21 `inc5` VarDecl init (via lfsReturnToCallSite)
-//     - line 22 callee in `inc5(10)` (via lfsVarInit forward)
+//   Higher.ts:25 → :25   (makeIncrementer function base)
+//   Higher.ts:26 → :26   (returned arrow `(x) => x + step` base)
+//   Higher.ts:26 → :30   (back-edge from VarDecl site into arrow)
+//   Higher.ts:29 → :29   (useIt function base)
+//   Higher.ts:30 → :26   (inc5 VarDecl init reaches arrow — lfsReturnToCallSite)
+//   Higher.ts:30 → :30   (VarDecl base)
+//   Higher.ts:31 → :26   (callee `inc5` reaches arrow — HOF composition under test)
+//   Higher.ts:31 → :31   (call-site base)
 
 export function makeIncrementer(step: number): (x: number) => number {
   return (x: number) => x + step;

@@ -11,11 +11,20 @@
 // fixture pins it so a regression that silently tightens the semantics
 // is caught.
 //
-// Hand-computed expected reachability set (keyed by line):
+// Observed reachability set (mayResolveToRec; see
+// mayResolveTo.expected.csv for the machine-readable form). The
+// load-bearing forward edge pinned by the test is the spread-element
+// composition: the Provider value literal on line 38 reaches the
+// base `{ ping: ... }` literal on line 33 via lfsSpreadElement.
 //
-//   sourceExpr line 22 (arrow `() => { base() }`) reaches line 22, and
-//   also reaches the spread-composed value literal on line 26 via
-//   lfsSpreadElement, and thence to consumer FieldRead at line 31.
+//   ContextSpread.tsx:29 → :29   (import stmt base)
+//   ContextSpread.tsx:31 → :31   (type alias site)
+//   ContextSpread.tsx:33 → :33   (base `{ ping: () => { } }` literal)
+//   ContextSpread.tsx:36 → :36   (`const key = 'derived';`)
+//   ContextSpread.tsx:37 → :37   (inner createContext default literal)
+//   ContextSpread.tsx:38 → :33   (Provider spread literal reaches base  ← load-bearing)
+//   ContextSpread.tsx:38 → :36   (Provider spread literal reaches `key`)
+//   ContextSpread.tsx:38 → :38   (Provider spread literal base)
 
 import { createContext, useContext, ReactNode } from 'react';
 
