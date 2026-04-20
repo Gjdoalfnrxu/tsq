@@ -27,6 +27,11 @@ func localFlowStepBaseRels(overrides map[string]*eval.Relation) map[string]*eval
 	base["FieldRead"] = eval.NewRelation("FieldRead", 3)
 	base["FieldWrite"] = eval.NewRelation("FieldWrite", 4)
 	base["Await"] = eval.NewRelation("Await", 2)
+	// PR8 (#202 Gap A): lfsJsxPropBind EDB inputs.
+	base["JsxAttribute"] = eval.NewRelation("JsxAttribute", 3)
+	base["JsxElement"] = eval.NewRelation("JsxElement", 3)
+	base["ParamDestructurePattern"] = eval.NewRelation("ParamDestructurePattern", 2)
+	base["JsxExpressionInner"] = eval.NewRelation("JsxExpressionInner", 2)
 	for k, v := range overrides {
 		base[k] = v
 	}
@@ -200,6 +205,74 @@ func TestLfsAwait(t *testing.T) {
 	rs := evalStep(t, baseRels, "lfsAwait")
 	if len(rs.Rows) != 1 || !resultContains(rs, iv(400), iv(600)) {
 		t.Fatalf("expected lfsAwait(400, 600), got %v", rs.Rows)
+	}
+}
+
+// TestLfsJsxPropBind — `<Inner value={cfg} onClick={handler} />` flows
+// `cfg` only to in-body references of the `value` destructured binding,
+// and `handler` only to references of the `onClick` binding. Exercises
+// field-sensitivity on the DestructureField.sourceField ↔ JsxAttribute.name
+// join: a single-attribute-single-field fixture would pass even if the
+// field-name join were ignored. See #202 Gap A.
+func TestLfsJsxPropBind(t *testing.T) {
+	// JSX site: elem=700, tagSym=50, fn=1.
+	// value attr: wrapper=412, inner cfg=413.
+	// onClick attr: wrapper=422, inner handler=423.
+	// Component: Parameter(fn=1, idx=0, paramNode=80, paramSym=10).
+	// Destructure: ParamDestructurePattern(80, 85).
+	// Fields: value→bindSym=20, onClick→bindSym=30.
+	// In-body uses: ExprMayRef(513, 20) [value use], ExprMayRef(523, 30) [onClick use].
+	baseRels := localFlowStepBaseRels(map[string]*eval.Relation{
+		"JsxAttribute": makeRel("JsxAttribute", 3,
+			iv(700), sv("value"), iv(412),
+			iv(700), sv("onClick"), iv(422),
+		),
+		"JsxExpressionInner": makeRel("JsxExpressionInner", 2,
+			iv(412), iv(413),
+			iv(422), iv(423),
+		),
+		"JsxElement":              makeRel("JsxElement", 3, iv(700), iv(701), iv(50)),
+		"FunctionSymbol":          makeRel("FunctionSymbol", 2, iv(50), iv(1)),
+		"Parameter":               makeRel("Parameter", 6, iv(1), iv(0), sv("{ value, onClick }"), iv(80), iv(10), sv("")),
+		"ParamDestructurePattern": makeRel("ParamDestructurePattern", 2, iv(80), iv(85)),
+		"DestructureField": makeRel("DestructureField", 5,
+			iv(85), sv("value"), sv("value"), iv(20), iv(0),
+			iv(85), sv("onClick"), sv("onClick"), iv(30), iv(1),
+		),
+		"ExprMayRef": makeRel("ExprMayRef", 2,
+			iv(513), iv(20),
+			iv(523), iv(30),
+		),
+	})
+	rs := evalStep(t, baseRels, "lfsJsxPropBind")
+	// Pin exact expected row set — two field-sensitive edges and nothing else.
+	// Critically: NO (413 → 523) and NO (423 → 513) — those would indicate
+	// the field-name join was dropped.
+	want := [][2]eval.IntVal{
+		{iv(413), iv(513)}, // cfg → value-use
+		{iv(423), iv(523)}, // handler → onClick-use
+	}
+	if len(rs.Rows) != len(want) {
+		t.Fatalf("expected %d lfsJsxPropBind rows, got %d: %v", len(want), len(rs.Rows), rs.Rows)
+	}
+	for _, w := range want {
+		if !resultContains(rs, w[0], w[1]) {
+			t.Errorf("expected lfsJsxPropBind(%v, %v) in rows, got %v", w[0], w[1], rs.Rows)
+		}
+	}
+	// Negative: field-name join must reject cross-field wiring.
+	if resultContains(rs, iv(413), iv(523)) {
+		t.Errorf("field-sensitivity violated: cfg (413) leaked to onClick-use (523); rows=%v", rs.Rows)
+	}
+	if resultContains(rs, iv(423), iv(513)) {
+		t.Errorf("field-sensitivity violated: handler (423) leaked to value-use (513); rows=%v", rs.Rows)
+	}
+	rsUnion := evalStep(t, baseRels, "LocalFlowStep")
+	if !resultContains(rsUnion, iv(413), iv(513)) {
+		t.Errorf("LocalFlowStep should contain (413, 513), got %v", rsUnion.Rows)
+	}
+	if !resultContains(rsUnion, iv(423), iv(523)) {
+		t.Errorf("LocalFlowStep should contain (423, 523), got %v", rsUnion.Rows)
 	}
 }
 

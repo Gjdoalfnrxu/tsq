@@ -334,25 +334,29 @@ func allClosureExpectations() []closureExpectation {
 	// observed count changes.
 	return []closureExpectation{
 		{
-			// Direct prop pass (R1). Fixture advertises "lfsVarInit +
-			// lfsParamBind composed" but under the current PR6 closure
-			// the param-path row (Inner's `value` at line 20) does NOT
-			// appear. Pins below are identity-only — see follow-up
-			// issue #202 for closing the composition gap.
-			// Observed 4 rows: 17→17, 24→24, 25→24, 25→25.
+			// Direct prop pass (R1). Exercises the full
+			// "lfsVarInit + lfsJsxPropBind composed" path — cfg literal
+			// at line 28 reaches the destructured `value` use inside
+			// Inner at line 24. Closed by PR8 / #202 Gap A.
+			// Observed 5 rows: 21→21, 24→28, 28→28, 29→28, 29→29.
 			name:       "direct_prop",
 			projectDir: "testdata/projects/valueflow-closure-direct-prop",
 			pins: []locRow{
 				// base: cfg object literal resolves to itself (line 28)
 				{valueSuffix: "DirectProp.tsx", valueLine: 28,
 					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
-				// JSX expr (line 29) reaches cfg literal — non-identity
-				// forward edge (lfsObjectLiteralStore composition).
+				// JSX prop (line 29) reaches cfg literal — composition
+				// of lfsVarInit through the inner JSX-expr identifier.
 				{valueSuffix: "DirectProp.tsx", valueLine: 29,
 					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
+				// lfsJsxPropBind load-bearing edge: the `value` use
+				// inside Inner (line 24) reaches the cfg literal
+				// (line 28) — this is the #202 Gap A composition.
+				{valueSuffix: "DirectProp.tsx", valueLine: 24,
+					sourceSuffix: "DirectProp.tsx", sourceLine: 28},
 			},
-			minTotal: 2,  // ~50% of observed 4
-			maxTotal: 12, // ~3× observed — catches Cartesian blow-up
+			minTotal: 3,  // ~50% of observed 5 (rounded up to cover the 3 pins)
+			maxTotal: 15, // ~3× observed — catches Cartesian blow-up
 		},
 		{
 			// Context provider with own-fields (R2). Fixture advertises
@@ -534,6 +538,67 @@ func TestClosure_WholeClosureIntegration(t *testing.T) {
 			// fails the test until the CSV is regenerated.
 			assertRowSetMatchesCSV(t, exp.projectDir, rows)
 		})
+	}
+}
+
+// TestClosure_ArrowComponentJsxPropBind — arrow-assigned component
+// coverage for PR #203 / #202 Gap A.
+//
+// SCOPE: idiomatic React style — `const Arrow = ({value}) => value`
+// — that `DirectProp` doesn't cover (DirectProp uses a named
+// `function Inner({value})` declaration). This test pins the
+// `lfsJsxPropBind` composition edge for an arrow-assigned component.
+//
+// Empirical outcome (2026-04-20): walker's FunctionSymbol emission
+// covers arrow-assigned components, so `lfsJsxPropBind` fires on
+// both declaration styles and the 17 → 20 edge is a hard
+// regression guard. If a future extractor change silently drops
+// arrow-component FunctionSymbol emission, this test fails fast
+// with the specific "edge absent" signal.
+func TestClosure_ArrowComponentJsxPropBind(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping extraction-heavy integration test in short mode")
+	}
+	rs := runClosureQuery(t,
+		"testdata/queries/v2/valueflow/all_mayResolveToRec_located.ql",
+		"testdata/projects/valueflow-jsx-prop-bind-arrow")
+	rows := projectLocatedRows(t, rs)
+	t.Logf("arrow-component fixture rows=%d", len(rows))
+	if testing.Verbose() {
+		t.Logf("full row set:\n%s", dumpRows(rows))
+	}
+
+	// Base case must fire — if the walker extracts nothing the probe
+	// is meaningless.
+	if len(rows) == 0 {
+		t.Fatal("arrow-component fixture produced 0 rows; " +
+			"base-case identity should fire at minimum. Walker or " +
+			"query wiring regressed.")
+	}
+
+	// Target edge: destructured `value` use (inside ArrowInner body,
+	// line 17) reaches the `cfg` object literal (line 20) via the
+	// lfsJsxPropBind → mayResolveToRec composition. This is the
+	// arrow-assigned analogue of the direct_prop 24 → 28 pin.
+	target := locRow{
+		valueSuffix: "ArrowInner.tsx", valueLine: 17,
+		sourceSuffix: "ArrowInner.tsx", sourceLine: 20,
+	}
+	if !containsLocRow(rows, target) {
+		t.Errorf("arrow-component fixture: missing pinned edge "+
+			"ArrowInner.tsx:17 → ArrowInner.tsx:20. Likely cause: "+
+			"walker no longer emits FunctionSymbol(tagSym, fn) for "+
+			"arrow-assigned components, breaking lfsJsxPropBind "+
+			"composition on idiomatic React-FC style. Rows:\n%s",
+			dumpRows(rows))
+	}
+	// Ceiling guard — catches Cartesian blow-up on this fixture
+	// (observed 7, 3× = 21).
+	const ceiling = 21
+	if len(rows) > ceiling {
+		t.Errorf("arrow-component fixture: %d rows > ceiling %d — "+
+			"Cartesian blow-up suspected:\n%s",
+			len(rows), ceiling, dumpRows(rows))
 	}
 }
 
@@ -740,6 +805,14 @@ func TestClosure_ManifestFileFieldsGreppable(t *testing.T) {
 		// deferred (follow-up #201). Consumer file will be
 		// tsq_valueflow.qll once emission lands.
 		"MayResolveToCapHit": "follow-up #201",
+
+		// Phase C PR8 (#202 Gap A): walker-populated helper relations
+		// consumed by `lfsJsxPropBind` in the datalog layer. The QL
+		// bridge classes for both are scheduled for the Phase D
+		// react-final bridge rollout — listing them here as ratchet
+		// entries keeps the manifest grep honest until then.
+		"ParamDestructurePattern": "Phase D react-final bridge",
+		"JsxExpressionInner":      "Phase D react-final bridge",
 
 		// Pre-PR7 baseline: manifest entries whose File field points
 		// at a planned consumer surface that does not yet reference

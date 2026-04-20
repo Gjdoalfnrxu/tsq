@@ -50,13 +50,16 @@ import (
 // (same-module return-to-call edge) — the cross-module variant lives
 // in PR3's `ifsRetToCall` against `CallTargetCrossModule`.
 func LocalFlowStepRules() []datalog.Rule {
-	out := make([]datalog.Rule, 0, 22)
+	// Capacity: N per-kind rules + N union branches. Current N = 12
+	// (11 PR2 kinds + `lfsJsxPropBind` from PR8 / #202 Gap A).
+	out := make([]datalog.Rule, 0, 24)
 	out = append(out, lfsRules()...)
 	out = append(out, localFlowStepUnion()...)
 	return out
 }
 
-// lfsRules returns the eleven per-kind rules. Each emits its named IDB
+// lfsRules returns the twelve per-kind rules (11 PR2 kinds plus
+// `lfsJsxPropBind` from PR8 / #202 Gap A). Each emits its named IDB
 // head and is consumed by localFlowStepUnion.
 func lfsRules() []datalog.Rule {
 	return []datalog.Rule{
@@ -202,6 +205,74 @@ func lfsRules() []datalog.Rule {
 				"innerExpr": v("from"),
 			}),
 		),
+
+		// lfsJsxPropBind(from, to) :-
+		//     JsxAttribute(elem, propName, from),
+		//     JsxElement(elem, _, tagSym),
+		//     FunctionSymbol(tagSym, fn),
+		//     Parameter(fn, _, _, paramNode, _, _),
+		//     ParamDestructurePattern(paramNode, patternNode),
+		//     DestructureField(patternNode, propName, _, bindSym, _),
+		//     ExprMayRef(to, bindSym).
+		//
+		// Value-flow Phase C PR8 (#202 Gap A): bridges a JSX prop's
+		// value-expression at the element site to destructured-parameter uses
+		// inside the component body. Field-sensitive on the prop name —
+		// `DestructureField`'s `sourceField` column matches `JsxAttribute`'s
+		// `name`, so `<Inner value={cfg}/>` only flows `cfg` to the
+		// `value` binding inside `function Inner({value})`, not to siblings.
+		//
+		// Scope:
+		//   - Same-module call target via `FunctionSymbol`. The cross-module
+		//     variant composes via `ifsImportExport` on the tagSym ref in
+		//     `MayResolveToRec` already — PR8 deliberately does not double-
+		//     count it here.
+		//   - Object-destructure only (the common React-FC-props shape).
+		//     Array-destructure of JSX props is syntactically possible but
+		//     non-idiomatic; if it shows up in Mastodon row counts, split
+		//     out a sibling rule keyed on `ArrayDestructure`.
+		//   - Path-erased (PR2 posture): the field match on source name is
+		//     a structural precondition, not a `pathCompose` carrier. PR5's
+		//     access-path layer is where field-sensitivity gets tracked
+		//     through the closure proper.
+		//
+		// No overlap with lfsParamBind: JSX elements don't participate in
+		// CallArg/CallTarget (they route through JsxElement +
+		// FunctionSymbol), so the entry point is structurally disjoint.
+		// lfsParamBind's destructured-slot carve-out
+		// (`not ParameterDestructured(fn, idx)` on `ParamBinding`) is
+		// belt-and-braces, not load-bearing here.
+		rule("lfsJsxPropBind",
+			[]datalog.Term{v("from"), v("to")},
+			mustNamedLiteral("JsxAttribute", map[string]datalog.Term{
+				"element":   v("elem"),
+				"name":      v("propName"),
+				"valueExpr": v("wrapper"),
+			}),
+			// `JsxAttribute.valueExpr` points at the JsxExpression `{…}`
+			// punctuation wrapper (see tsq_react.qll's Provider-value
+			// path). `JsxExpressionInner` bridges the wrapper to the
+			// inner semantic expression so `from` anchors at the actual
+			// value-carrier (e.g. the `cfg` identifier in
+			// `<Inner value={cfg} />`).
+			pos("JsxExpressionInner", v("wrapper"), v("from")),
+			mustNamedLiteral("JsxElement", map[string]datalog.Term{
+				"id":     v("elem"),
+				"tagSym": v("tagSym"),
+			}),
+			pos("FunctionSymbol", v("tagSym"), v("fn")),
+			mustNamedLiteral("Parameter", map[string]datalog.Term{
+				"fn":        v("fn"),
+				"paramNode": v("paramNode"),
+			}),
+			pos("ParamDestructurePattern", v("paramNode"), v("patternNode")),
+			mustNamedLiteral("DestructureField", map[string]datalog.Term{
+				"parent":      v("patternNode"),
+				"sourceField": v("propName"),
+				"bindSym":     v("bindSym"),
+			}),
+			pos("ExprMayRef", v("to"), v("bindSym")),
+		),
 	}
 }
 
@@ -224,6 +295,7 @@ func localFlowStepUnion() []datalog.Rule {
 		"lfsFieldRead",
 		"lfsFieldWrite",
 		"lfsAwait",
+		"lfsJsxPropBind",
 	}
 	out := make([]datalog.Rule, 0, len(kinds))
 	head := []datalog.Term{v("from"), v("to")}

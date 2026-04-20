@@ -147,6 +147,12 @@ var stdlibCoverageAllowlist = map[string]string{
 	// extract/schema/relations.go for the scope-down note).
 	"MayResolveToCapHit": "value-flow Phase C PR7 cap-hit diagnostic; populated manually until evaluator wiring lands",
 
+	// Value-flow Phase C PR8 (#202 Gap A): walker-populated helper
+	// relations feeding `lfsJsxPropBind` in the datalog layer. QL
+	// bridge classes scheduled for Phase D react-final rollout.
+	"ParamDestructurePattern": "value-flow Phase C PR8 walker helper for lfsJsxPropBind; QL consumer deferred to Phase D",
+	"JsxExpressionInner":      "value-flow Phase C PR8 walker helper for lfsJsxPropBind; QL consumer deferred to Phase D",
+
 	// Framework model relations.
 	"ExpressHandler": "coverage_probe.ql added",
 

@@ -26,8 +26,10 @@ func TestV1ManifestAvailableCount(t *testing.T) {
 	// Value-flow Phase C PR3: +2 InterFlowStep + FlowStep = 130
 	// Value-flow Phase C PR4: +1 MayResolveTo = 131
 	// Value-flow Phase C PR7: +1 MayResolveToCapHit = 132
-	if got := len(m.Available); got != 132 {
-		t.Errorf("expected 132 available classes, got %d", got)
+	// Value-flow Phase C PR8 (#202 Gap A): +1 ParamDestructurePattern,
+	// +1 JsxExpressionInner = 134
+	if got := len(m.Available); got != 134 {
+		t.Errorf("expected 134 available classes, got %d", got)
 	}
 }
 

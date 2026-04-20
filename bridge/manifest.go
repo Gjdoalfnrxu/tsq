@@ -50,6 +50,13 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ParameterRest", Relation: "ParameterRest", File: "tsq_functions.qll"},
 			{Name: "ParameterOptional", Relation: "ParameterOptional", File: "tsq_functions.qll"},
 			{Name: "ParameterDestructured", Relation: "ParameterDestructured", File: "tsq_functions.qll"},
+			// Value-flow Phase C PR8 (#202 Gap A): destructured-param slot →
+			// pattern-node bridge. Populated by the walker alongside
+			// `ParameterDestructured`; consumer is `lfsJsxPropBind` in
+			// extract/rules/localflowstep.go. Points at tsq_functions.qll as
+			// the planned QL consumer site (bridge class authored alongside
+			// the Phase D react-final bridge rollout).
+			{Name: "ParamDestructurePattern", Relation: "ParamDestructurePattern", File: "tsq_functions.qll"},
 			{Name: "ParamIsFunctionType", Relation: "ParamIsFunctionType", File: "tsq_functions.qll"},
 			{Name: "Call", Relation: "Call", File: "tsq_calls.qll"},
 			{Name: "CallArg", Relation: "CallArg", File: "tsq_calls.qll"},
@@ -69,6 +76,11 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "ObjectLiteralSpread", Relation: "ObjectLiteralSpread", File: "tsq_expressions.qll"},
 			{Name: "JsxElement", Relation: "JsxElement", File: "tsq_jsx.qll"},
 			{Name: "JsxAttribute", Relation: "JsxAttribute", File: "tsq_jsx.qll"},
+			// Value-flow Phase C PR8 (#202 Gap A): JSX `{…}` wrapper →
+			// inner expression bridge used by `lfsJsxPropBind`. Points at
+			// tsq_jsx.qll as the planned QL consumer site (bridge class
+			// authored alongside the Phase D react-final bridge rollout).
+			{Name: "JsxExpressionInner", Relation: "JsxExpressionInner", File: "tsq_jsx.qll"},
 			{Name: "ImportBinding", Relation: "ImportBinding", File: "tsq_imports.qll"},
 			{Name: "ExportBinding", Relation: "ExportBinding", File: "tsq_imports.qll"},
 			{Name: "ExtractError", Relation: "ExtractError", File: "tsq_errors.qll"},

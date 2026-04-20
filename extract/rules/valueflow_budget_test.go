@@ -125,6 +125,12 @@ func TestLocalFlowStepKindsNonZero(t *testing.T) {
 		"valueflow-multihop",
 		"valueflow-negative",
 		"valueflow-fnref",
+		// PR8 (#202 Gap A): JSX prop → destructured-param closure
+		// fixture. The only corpus fixture that currently exercises
+		// the `lfsJsxPropBind` shape; if it goes missing, the
+		// per-kind floor below would read 0 and the regression guard
+		// would fire.
+		"valueflow-closure-direct-prop",
 	}
 
 	// Per-kind floors. Each value is ~50% of observed total — catches
@@ -146,6 +152,13 @@ func TestLocalFlowStepKindsNonZero(t *testing.T) {
 		"lfsFieldRead":          50,
 		"lfsFieldWrite":         4,
 		"lfsAwait":              3,
+		// PR8 (#202 Gap A): closed by `valueflow-closure-direct-prop`
+		// (the only corpus fixture that currently exercises the JSX
+		// prop → destructured-param shape). Floor = 1 row keeps the
+		// regression guard active without over-fitting to a single
+		// fixture's expected row count — if more fixtures land that
+		// exercise the shape, bump this honestly.
+		"lfsJsxPropBind": 1,
 	}
 
 	totals := map[string]int{}

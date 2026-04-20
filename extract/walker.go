@@ -371,12 +371,59 @@ func (fw *FactWalker) emitParameters(fnNode ASTNode, fnID uint32) {
 		}
 		if isDestructured {
 			fw.emit("ParameterDestructured", fnID, idx)
+			// Value-flow Phase C PR8 (#202 Gap A): link the Parameter row's
+			// paramNode to the ObjectPattern/ArrayPattern that carries the
+			// DestructureField rows so `lfsJsxPropBind` can compose the
+			// JSX-prop → destructured-param-use edge. Identity case: when the
+			// param node IS the pattern (arrow `({v}) =>` with no
+			// RequiredParameter wrapper), emit (paramID, paramID).
+			patNode := destructurePatternNode(param, pKind)
+			var patID uint32
+			if patNode != nil {
+				patID = fw.nid(patNode)
+			} else {
+				patID = paramID
+			}
+			fw.emit("ParamDestructurePattern", paramID, patID)
 		}
 		if isFnType {
 			fw.emit("ParamIsFunctionType", fnID, idx)
 		}
 		idx++
 	}
+}
+
+// destructurePatternNode returns the ObjectPattern/ArrayPattern node
+// underlying a destructured parameter slot, peeling the
+// RequiredParameter / OptionalParameter / AssignmentPattern wrappers. Returns
+// nil when the param slot IS the pattern (bare arrow `({v}) =>`) — the caller
+// then emits the identity row.
+func destructurePatternNode(param ASTNode, pKind string) ASTNode {
+	switch pKind {
+	case "ObjectPattern", "ArrayPattern":
+		// Bare pattern at the parameter slot (arrow function without a
+		// RequiredParameter wrapper). Caller should emit identity.
+		return nil
+	case "RequiredParameter", "OptionalParameter":
+		patNode := childByField(param, "pattern")
+		if patNode == nil {
+			patNode = childByField(param, "name")
+		}
+		if patNode != nil {
+			pk := patNode.Kind()
+			if pk == "ObjectPattern" || pk == "ArrayPattern" {
+				return patNode
+			}
+		}
+	case "AssignmentPattern":
+		if left := childByField(param, "left"); left != nil {
+			lk := left.Kind()
+			if lk == "ObjectPattern" || lk == "ArrayPattern" {
+				return left
+			}
+		}
+	}
+	return nil
 }
 
 // isDestructuredParamKind reports whether the parameter slot's pattern is
@@ -1112,11 +1159,27 @@ func (fw *FactWalker) emitJsxAttr(node ASTNode, elementID uint32) {
 				continue
 			}
 			valueID = fw.nid(child)
+			valueNode = child // NB: also populates valueNode so JsxExpressionInner below can unwrap
 			break
 		}
 	}
 
 	fw.emit("JsxAttribute", elementID, attrName, valueID)
+
+	// Emit JsxExpressionInner(wrapperNode, innerNode) so the value-flow
+	// layer can bridge across the `{…}` punctuation wrapper without the
+	// whole bridge stack having to relearn the wrapper shape. Consumed
+	// by `lfsJsxPropBind` (see extract/rules/localflowstep.go). See #202
+	// Gap A for why this runs off an explicit helper relation rather than
+	// hoisting the unwrap into `JsxAttribute.valueExpr` directly — the
+	// existing `tsq_react.qll` Provider-value path already relies on
+	// `valueExpr` pointing at the JsxExpression wrapper and uses
+	// `Contains` to descend.
+	if valueNode != nil && valueNode.Kind() == "JsxExpression" {
+		if inner := firstNonPunctChild(valueNode); inner != nil {
+			fw.emit("JsxExpressionInner", fw.nid(valueNode), fw.nid(inner))
+		}
+	}
 }
 
 // ---- Template Literals ----
