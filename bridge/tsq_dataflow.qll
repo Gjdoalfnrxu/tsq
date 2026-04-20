@@ -1,34 +1,12 @@
 /**
- * Bridge library for intra-procedural dataflow relations (v2 Phase C1).
- * Maps LocalFlow and LocalFlowStar derived from system Datalog rules
- * over assignment, VarDecl, return, field, and destructuring facts.
- *
- * Value-flow Phase D PR1 (additive): re-exports the recursive
- * `mayResolveTo` closure from `tsq_valueflow.qll` on the dataflow
- * surface, for consumers that want value-flow-backed local resolution
- * without importing the valueflow bridge directly. Two surfaces:
- *   - `predicate mayResolveTo(int valueExpr, int sourceExpr)`
- *     — predicate-style, parallels `LocalFlow`'s sibling predicate use.
- *   - `class MayResolveTo extends @may_resolve_to`
- *     — class-style, indexed by `valueExpr`, with `getSource()` as the
- *       multi-valued getter for resolved sources.
- * Both are thin wrappers over the system `MayResolveTo` relation
- * populated by `extract/rules/mayresolveto.go` (Phase C PR4). No new
- * recursion is introduced at the QL layer; the planner's recursive-IDB
- * estimator and magic-set rewrite (Phase B PR3/PR4) handle sizing.
- *
- * This PR is purely additive. No existing predicate or class is
- * modified. Consumers of `mayResolveToRec` in `tsq_valueflow.qll`
- * continue to work unchanged — the Phase D PR1 surface is a secondary
- * view, not a replacement. See `docs/design/valueflow-phase-d-plan.md`
- * §2 PR2 for the migration sequencing.
+ * Bridge library for intra-procedural dataflow relations.
+ * Maps LocalFlow / LocalFlowStar (v2 Phase C1) and re-exports the
+ * recursive `mayResolveTo` closure (Phase D PR1, additive) on the
+ * dataflow surface — predicate + class shapes over the same system
+ * relation that backs `mayResolveToRec` in `tsq_valueflow.qll`.
+ * Rule (c) overlap is intentional: two consumer-facing views of one
+ * relation. See wiki Valueflow/phase-d-pr1 for design narrative.
  */
-
-// Forward declaration of the system relation populated by
-// extract/rules/mayresolveto.go (Phase C PR4). The relation has the
-// same shape as the one consumed by `mayResolveToRec` in
-// tsq_valueflow.qll; this .qll re-exports it on the dataflow surface
-// without re-declaring its body.
 
 /**
  * A local (intra-procedural) data-flow edge within a single function.
@@ -72,47 +50,31 @@ class LocalFlowStar extends @local_flow_star {
 }
 
 /**
- * Value-flow Phase D PR1 — predicate re-export of `mayResolveToRec`.
+ * Holds when value-expression `valueExpr` may resolve to source
+ * expression `sourceExpr` via the Phase C recursive `FlowStep`
+ * closure (`extract/rules/mayresolveto.go`). Thin wrapper over the
+ * system `MayResolveTo` relation; no QL-layer recursion.
  *
- * Thin wrapper over the system `MayResolveTo(v, s)` relation — the
- * transitive closure of `FlowStep` starting from `ExprValueSource`,
- * populated by `extract/rules/mayresolveto.go` (Phase C PR4). Exposes
- * the closure on the `tsq::dataflow` surface so consumers that already
- * import `tsq::dataflow` for `LocalFlow` / `LocalFlowStar` can reach
- * value-flow-backed resolution without importing `tsq::valueflow`
- * directly.
- *
- * Semantically identical to `mayResolveToRec(v, s)` in
- * `tsq_valueflow.qll`; the same underlying relation backs both. No
- * additional recursion is introduced.
- *
- * Non-recursive at the QL layer: the predicate body is a single
- * literal call into the system IDB head `MayResolveTo`. Phase B's
- * recursive-IDB estimator sizes the closure at the system rule, not
- * here.
+ * Example:
+ *   from ASTNode v, ASTNode s
+ *   where mayResolveTo(v, s)
+ *   select v, s
  */
 predicate mayResolveTo(int valueExpr, int sourceExpr) {
     MayResolveTo(valueExpr, sourceExpr)
 }
 
 /**
- * Value-flow Phase D PR1 — class wrapper for `mayResolveTo`.
+ * Class surface for the `MayResolveTo` closure — indexed by the
+ * value expression, with `getSource()` returning each resolved
+ * source. Same underlying relation as the `mayResolveTo` predicate;
+ * pick whichever fits the consumer. Sibling of the `mayResolveToRec`
+ * predicate in `tsq_valueflow.qll` (rule (c) overlap — intentional).
  *
- * `MayResolveTo` classifies an expression node `v` that has at least
- * one resolved source in the Phase C recursive closure. Indexed by
- * `valueExpr`: `this` is the value-expression whose resolution is
- * being asked about. `getSource()` is the multi-valued getter that
- * returns each resolved source expression; use it in a `from`-clause
- * existential to iterate resolutions.
- *
- * Example (consumer usage):
+ * Example:
  *   from MayResolveTo v, ASTNode s
  *   where s = v.getSource()
  *   select v, s
- *
- * Class surface parallels `LocalFlow` / `LocalFlowStar` in this file.
- * Predicate surface is `mayResolveTo` (above) — pick whichever fits
- * the consumer better. Both are the same relation.
  */
 class MayResolveTo extends @may_resolve_to {
     MayResolveTo() { MayResolveTo(this, _) }

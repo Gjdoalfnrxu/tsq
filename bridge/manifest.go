@@ -152,10 +152,11 @@ func v2Manifest() *CapabilityManifest {
 			{Name: "FlowStep", Relation: "FlowStep", File: "tsq_valueflow.qll"},
 			// v2 Phase C PR4 (value-flow): recursive may-resolve-to closure
 			// over FlowStep. Populated by extract/rules/mayresolveto.go;
-			// QL consumer is `mayResolveToRec` in tsq_valueflow.qll.
-			// Bridge migration to swap R1–R4 shape predicates over to this
-			// recursive form is PR6.
-			{Name: "MayResolveTo", Relation: "MayResolveTo", File: "tsq_valueflow.qll"},
+			// Phase D PR1 added class `MayResolveTo` + predicate `mayResolveTo`
+			// wrappers in tsq_dataflow.qll (class-defining site). The
+			// `mayResolveToRec` predicate in tsq_valueflow.qll still wraps
+			// the same relation for bridge-migration compatibility.
+			{Name: "MayResolveTo", Relation: "MayResolveTo", File: "tsq_dataflow.qll"},
 			// v2 Phase C PR7 (value-flow): cap-hit diagnostic relation.
 			// Schema surface only; automatic population from evaluator
 			// *IterationCapError events is tracked as follow-up. Per
