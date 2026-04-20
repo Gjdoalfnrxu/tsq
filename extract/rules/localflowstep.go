@@ -236,9 +236,12 @@ func lfsRules() []datalog.Rule {
 		//     access-path layer is where field-sensitivity gets tracked
 		//     through the closure proper.
 		//
-		// Overlap: none with `lfsParamBind`. `lfsParamBind` carves out
-		// destructured slots via `not ParameterDestructured(fn, idx)` on
-		// `ParamBinding` — the precise path this rule fills.
+		// No overlap with lfsParamBind: JSX elements don't participate in
+		// CallArg/CallTarget (they route through JsxElement +
+		// FunctionSymbol), so the entry point is structurally disjoint.
+		// lfsParamBind's destructured-slot carve-out
+		// (`not ParameterDestructured(fn, idx)` on `ParamBinding`) is
+		// belt-and-braces, not load-bearing here.
 		rule("lfsJsxPropBind",
 			[]datalog.Term{v("from"), v("to")},
 			mustNamedLiteral("JsxAttribute", map[string]datalog.Term{

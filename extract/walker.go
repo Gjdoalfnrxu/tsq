@@ -1159,7 +1159,7 @@ func (fw *FactWalker) emitJsxAttr(node ASTNode, elementID uint32) {
 				continue
 			}
 			valueID = fw.nid(child)
-			valueNode = child
+			valueNode = child // NB: also populates valueNode so JsxExpressionInner below can unwrap
 			break
 		}
 	}

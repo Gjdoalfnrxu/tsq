@@ -577,10 +577,14 @@ predicate jsxAttrValueObject(int valueAttrExpr, int objExpr) {
  * `contextSymLink*` splits follow to stay away from disjunction-poisoning
  * (#166).
  *
- * Retirement path: promote the unwrap to an `lfsJsxExpressionUnwrap`
- * step rule in `extract/rules/localflowstep.go`; once shipped, the
- * `JsxWrapped` branch collapses into `mayResolveToRec` and the wrapper
- * composition retires. Follow-up tracked in the PR6 wiki section.
+ * Deferred: `lfsJsxPropBind` now handles JSX-prop-specific unwrap via
+ * the `JsxExpressionInner` inline helper EDB (PR #203). A generalised
+ * `lfsJsxExpressionUnwrap` step kind remains open — needed only if a
+ * non-prop JSX unwrap surface emerges (e.g. JsxExpression children of a
+ * JsxElement body, or attribute positions outside the prop-binding
+ * shape `lfsJsxPropBind` covers). Until then the `JsxWrapped` branch
+ * stays — it guards the Provider-value Contains() path, which is not
+ * subsumed by `lfsJsxPropBind`'s destructure-keyed composition.
  */
 predicate mayResolveToObjectExprDirect(int valueExpr, int objExpr) {
     mayResolveToRec(valueExpr, objExpr) and

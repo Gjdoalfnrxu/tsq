@@ -541,6 +541,67 @@ func TestClosure_WholeClosureIntegration(t *testing.T) {
 	}
 }
 
+// TestClosure_ArrowComponentJsxPropBind — arrow-assigned component
+// coverage for PR #203 / #202 Gap A.
+//
+// SCOPE: idiomatic React style — `const Arrow = ({value}) => value`
+// — that `DirectProp` doesn't cover (DirectProp uses a named
+// `function Inner({value})` declaration). This test pins the
+// `lfsJsxPropBind` composition edge for an arrow-assigned component.
+//
+// Empirical outcome (2026-04-20): walker's FunctionSymbol emission
+// covers arrow-assigned components, so `lfsJsxPropBind` fires on
+// both declaration styles and the 17 → 20 edge is a hard
+// regression guard. If a future extractor change silently drops
+// arrow-component FunctionSymbol emission, this test fails fast
+// with the specific "edge absent" signal.
+func TestClosure_ArrowComponentJsxPropBind(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping extraction-heavy integration test in short mode")
+	}
+	rs := runClosureQuery(t,
+		"testdata/queries/v2/valueflow/all_mayResolveToRec_located.ql",
+		"testdata/projects/valueflow-jsx-prop-bind-arrow")
+	rows := projectLocatedRows(t, rs)
+	t.Logf("arrow-component fixture rows=%d", len(rows))
+	if testing.Verbose() {
+		t.Logf("full row set:\n%s", dumpRows(rows))
+	}
+
+	// Base case must fire — if the walker extracts nothing the probe
+	// is meaningless.
+	if len(rows) == 0 {
+		t.Fatal("arrow-component fixture produced 0 rows; " +
+			"base-case identity should fire at minimum. Walker or " +
+			"query wiring regressed.")
+	}
+
+	// Target edge: destructured `value` use (inside ArrowInner body,
+	// line 17) reaches the `cfg` object literal (line 20) via the
+	// lfsJsxPropBind → mayResolveToRec composition. This is the
+	// arrow-assigned analogue of the direct_prop 24 → 28 pin.
+	target := locRow{
+		valueSuffix: "ArrowInner.tsx", valueLine: 17,
+		sourceSuffix: "ArrowInner.tsx", sourceLine: 20,
+	}
+	if !containsLocRow(rows, target) {
+		t.Errorf("arrow-component fixture: missing pinned edge "+
+			"ArrowInner.tsx:17 → ArrowInner.tsx:20. Likely cause: "+
+			"walker no longer emits FunctionSymbol(tagSym, fn) for "+
+			"arrow-assigned components, breaking lfsJsxPropBind "+
+			"composition on idiomatic React-FC style. Rows:\n%s",
+			dumpRows(rows))
+	}
+	// Ceiling guard — catches Cartesian blow-up on this fixture
+	// (observed 7, 3× = 21).
+	const ceiling = 21
+	if len(rows) > ceiling {
+		t.Errorf("arrow-component fixture: %d rows > ceiling %d — "+
+			"Cartesian blow-up suspected:\n%s",
+			len(rows), ceiling, dumpRows(rows))
+	}
+}
+
 // TestClosure_RecursiveFunctionDoesNotHang asserts the recursive-
 // function fixture does not hang or blow the planner cap. The closure
 // terminates / produces some rows on a recursive function declaration.
