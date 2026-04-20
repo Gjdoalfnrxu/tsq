@@ -144,6 +144,14 @@ func v2Manifest() *CapabilityManifest {
 			// Bridge migration to swap R1–R4 shape predicates over to this
 			// recursive form is PR6.
 			{Name: "MayResolveTo", Relation: "MayResolveTo", File: "tsq_valueflow.qll"},
+			// v2 Phase C PR7 (value-flow): cap-hit diagnostic relation.
+			// Schema surface only; automatic population from evaluator
+			// *IterationCapError events is tracked as follow-up. Per
+			// PR4 M2 ("For relations populated by system rules but not
+			// yet consumed in any .qll, point File at the planned
+			// consumer site"), File points at tsq_valueflow.qll — the
+			// target consumer once the evaluator wiring lands.
+			{Name: "MayResolveToCapHit", Relation: "MayResolveToCapHit", File: "tsq_valueflow.qll"},
 			// v2 Phase F: framework models
 			{Name: "ExpressHandler", Relation: "ExpressHandler", File: "tsq_express.qll"},
 			// v2 Phase D: taint analysis
